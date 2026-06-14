@@ -332,13 +332,15 @@ impl RedisBroker {
     ///
     /// # Errors
     ///
-    /// Returns [`RedisError::NotConnected`] when the broker has not connected.
+    /// Returns [`RedisError::NotConnected`] when the broker has not connected, or
+    /// [`RedisError::InvalidOptions`] when `def` names a recovery ZSET without a `min_idle`.
     #[allow(
         clippy::unused_async,
         reason = "async for parity with the other subscribe methods and the SubscriptionSource shape"
     )]
     pub async fn subscribe_list(&self, def: RedisList) -> Result<RedisListSubscriber, RedisError> {
         let pool = self.connected()?;
+        let recovery = def.recovery_config()?;
         Ok(RedisListSubscriber::new(
             pool,
             def.key().to_owned(),
@@ -347,6 +349,7 @@ impl RedisBroker {
             def.block_or_default(),
             def.codec_handle(),
             def.poison_policy(),
+            recovery,
         ))
     }
 

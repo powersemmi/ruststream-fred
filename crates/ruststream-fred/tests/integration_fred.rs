@@ -469,6 +469,51 @@ async fn reliable_list_max_deliveries_dead_letters() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reliable_list_recovery_returns_orphaned_entry() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = RedisBroker::standalone(url);
+    connect(&broker).await;
+    let key = unique_key("list_recovery");
+    let zset = format!("{key}.inflight");
+
+    broker
+        .list_publisher()
+        .publish(OutgoingMessage::new(key.as_str(), b"job-x"))
+        .await
+        .expect("lpush");
+
+    let mut sub = broker
+        .subscribe_list(
+            RedisList::new(&key)
+                .reliable()
+                .min_idle(Duration::from_millis(50))
+                .recovery_zset(zset)
+                // Tight block so the in-loop watchdog polls frequently.
+                .block(Duration::from_millis(50)),
+        )
+        .await
+        .expect("subscribe reliable list with recovery");
+
+    let mut stream = Box::pin(sub.stream());
+    // Claim the entry, then drop the handle without acking: a dead consumer leaves it stranded on
+    // the processing list, tracked in the recovery ZSET.
+    let first = next(&mut stream).await.expect("first claim");
+    assert_eq!(first.payload(), b"job-x");
+    drop(first);
+
+    // Once it has been idle past min_idle, the watchdog returns it to the main list and the same
+    // subscription re-claims it.
+    let recovered = next(&mut stream).await.expect("recovered redelivery");
+    assert_eq!(recovered.payload(), b"job-x");
+    recovered.ack().await.expect("ack");
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cluster_round_trip() {
     let Some(node) = env("REDIS_CLUSTER_TEST_URL") else {
         return;

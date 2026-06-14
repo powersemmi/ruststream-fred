@@ -14,6 +14,8 @@
 //! redis-cli LPUSH jobs '{"id":1}'
 //! ```
 
+use std::time::Duration;
+
 use ruststream::runtime::{AppInfo, HandlerResult, RustStream};
 use ruststream::subscriber;
 use ruststream_fred::{RedisBroker, RedisList};
@@ -42,6 +44,22 @@ async fn run_reliable_job(job: &Job) -> HandlerResult {
 }
 // --8<-- [end:reliable]
 
+// --8<-- [start:recovery]
+// Reliable mode with orphan recovery: a dead consumer's in-flight job is returned to the queue. The
+// recovery ZSET key is named explicitly, and min_idle must exceed the longest legitimate handler
+// runtime (set it too low and a still-running job gets recovered and processed twice).
+#[subscriber(
+    RedisList::new("jobs.recoverable")
+        .reliable()
+        .min_idle(Duration::from_secs(30))
+        .recovery_zset("jobs.recoverable.inflight")
+)]
+async fn run_recoverable_job(job: &Job) -> HandlerResult {
+    println!("running recoverable job {}", job.id);
+    HandlerResult::Ack
+}
+// --8<-- [end:recovery]
+
 #[ruststream::app]
 fn app() -> RustStream {
     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
@@ -49,6 +67,7 @@ fn app() -> RustStream {
         |b| {
             b.include(run_job);
             b.include(run_reliable_job);
+            b.include(run_recoverable_job);
         },
     )
 }

@@ -22,6 +22,7 @@ mod list;
 mod message;
 mod publisher;
 mod pubsub;
+mod recovery;
 mod stream;
 mod subscriber;
 
