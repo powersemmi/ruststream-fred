@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use fred::clients::Pool;
-use fred::interfaces::ListInterface;
+use fred::interfaces::{KeysInterface, ListInterface};
 use fred::types::lists::LMoveDirection;
 use futures::Stream;
 use futures::stream::unfold;
@@ -344,19 +344,25 @@ impl Partitioned for RedisListMessage {
 pub struct RedisListPublisher {
     pool: Arc<tokio::sync::OnceCell<Pool>>,
     codec: Option<SharedEnvelope>,
+    ttl: Option<Duration>,
 }
 
 impl Debug for RedisListPublisher {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RedisListPublisher")
             .field("codec", &self.codec.is_some())
+            .field("ttl", &self.ttl)
             .finish_non_exhaustive()
     }
 }
 
 impl RedisListPublisher {
     pub(crate) fn new(pool: Arc<tokio::sync::OnceCell<Pool>>) -> Self {
-        Self { pool, codec: None }
+        Self {
+            pool,
+            codec: None,
+            ttl: None,
+        }
     }
 
     /// Serializes the header/payload envelope with `codec` (must match the subscriber). Without it
@@ -366,6 +372,39 @@ impl RedisListPublisher {
         self.codec = Some(Arc::new(codec));
         self
     }
+
+    /// Sets a time-to-live on the list key, refreshed (`PEXPIRE`) on every publish, so an idle
+    /// queue auto-expires. Off by default: without it the list lives until drained or deleted.
+    ///
+    /// This is a per-key TTL on the whole list, not per-entry: Redis lists have no per-element
+    /// expiry, only the key can expire. Each publish pushes the entry and re-arms the key's TTL in
+    /// one pipeline, so an actively used queue never expires and only an idle one does. A sub-
+    /// millisecond `ttl` is clamped up to 1ms, since `PEXPIRE 0` would delete the key outright.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::time::Duration;
+    /// use ruststream_fred::RedisBroker;
+    ///
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// let broker = RedisBroker::connect("redis://localhost:6379").await?;
+    /// let publisher = broker.list_publisher().ttl(Duration::from_secs(300));
+    /// # let _ = publisher;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub const fn ttl(mut self, ttl: Duration) -> Self {
+        self.ttl = Some(ttl);
+        self
+    }
+}
+
+/// Converts a TTL to the positive millisecond count `PEXPIRE` expects, clamping a sub-millisecond
+/// value up to 1 (a `PEXPIRE 0` deletes the key instead of expiring it).
+fn ttl_millis(ttl: Duration) -> i64 {
+    i64::try_from(ttl.as_millis()).unwrap_or(i64::MAX).max(1)
 }
 
 impl ruststream::Publisher for RedisListPublisher {
@@ -374,10 +413,39 @@ impl ruststream::Publisher for RedisListPublisher {
     async fn publish(&self, msg: ruststream::OutgoingMessage<'_>) -> Result<(), Self::Error> {
         let pool = self.pool.get().cloned().ok_or(RedisError::NotConnected)?;
         let body = frame(self.codec.as_ref(), msg.payload(), msg.headers());
-        let _: i64 = pool
+        let Some(ttl) = self.ttl else {
+            let _: i64 = pool
+                .lpush(msg.name(), body)
+                .await
+                .map_err(RedisError::publish)?;
+            return Ok(());
+        };
+        // Push the entry and re-arm the key TTL in one pipeline, so an actively used queue keeps
+        // resetting its expiry and only an idle one is allowed to lapse.
+        let pipeline = pool.next().pipeline();
+        let _: () = pipeline
             .lpush(msg.name(), body)
             .await
             .map_err(RedisError::publish)?;
+        let _: () = pipeline
+            .pexpire(msg.name(), ttl_millis(ttl), None)
+            .await
+            .map_err(RedisError::publish)?;
+        let _: Vec<fred::types::Value> = pipeline.all().await.map_err(RedisError::publish)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ttl_millis_converts_and_clamps() {
+        assert_eq!(ttl_millis(Duration::from_secs(60)), 60_000);
+        assert_eq!(ttl_millis(Duration::from_millis(1)), 1);
+        // A sub-millisecond TTL must not become PEXPIRE 0 (which deletes the key).
+        assert_eq!(ttl_millis(Duration::from_nanos(1)), 1);
+        assert_eq!(ttl_millis(Duration::ZERO), 1);
     }
 }

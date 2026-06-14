@@ -160,6 +160,12 @@ lossless binary frame by default, or a readable codec-serialized envelope when a
 ends (`.codec(JsonCodec)`). Recovering entries stranded on a processing list by a dead consumer (a
 ZSET watchdog) is not in 0.4; for a durable, recoverable queue prefer Redis Streams.
 
+An idle list can be bounded with a key TTL: `broker.list_publisher().ttl(Duration::from_secs(300))`
+re-arms a `PEXPIRE` on the list key on every publish, so an actively used queue never expires and
+only an idle one lapses. It is off by default and per-key (the whole list), not per-entry - Redis
+lists have no per-element expiry. Pub/Sub has no equivalent (`PUBLISH` stores nothing to expire), and
+streams bound their size with trimming rather than a TTL.
+
 ## Testing
 
 The `testing` feature ships `RedisTestBroker` / `RedisTestClient`, a handler-stub dispatcher that
