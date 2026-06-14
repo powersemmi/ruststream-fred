@@ -190,7 +190,9 @@ services:
       retries: 15
       start_period: 2s
 
-  # One-shot: forms the cluster once every node answers PING, then exits 0.
+  # Forms the cluster once every node answers PING, then stays alive so its healthcheck
+  # (cluster_state:ok) is the cluster-ready signal for `docker compose up --wait`. A one-shot
+  # container that exited would instead make `--wait` report failure even on success.
   redis-cluster-init:
     image: redis:7-alpine
     network_mode: host
@@ -208,12 +210,14 @@ services:
         redis-cli --cluster create
         127.0.0.1:7000 127.0.0.1:7001 127.0.0.1:7002
         127.0.0.1:7003 127.0.0.1:7004 127.0.0.1:7005
-        --cluster-replicas 1 --cluster-yes;
-        for i in $(seq 1 60); do
-        redis-cli -p 7000 cluster info | grep -q cluster_state:ok && exit 0;
-        sleep 1; done;
-        echo 'cluster failed to form'; exit 1
-    restart: "no"
+        --cluster-replicas 1 --cluster-yes || true;
+        exec sleep infinity
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 7000 cluster info | grep -q cluster_state:ok"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+      start_period: 3s
 
   # ----- Sentinel (1 master + 1 replica + 3 sentinels) --------------------------------------------
   redis-sentinel-master:
