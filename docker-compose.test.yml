@@ -1,0 +1,285 @@
+name: ruststream-tests
+
+# Three Redis topologies for the integration tests, each independent:
+#
+#   * standalone  - redis://127.0.0.1:6379                  (REDIS_TEST_URL)
+#   * cluster     - redis-cluster://127.0.0.1:7000          (REDIS_CLUSTER_TEST_URL)
+#   * sentinel    - redis-sentinel://127.0.0.1:26379?...    (REDIS_SENTINEL_TEST_URL, master "mymaster")
+#
+# The cluster and sentinel services use `network_mode: host` so every node announces and reaches
+# its peers on 127.0.0.1 (cluster gossip and sentinel failover break behind docker's bridge NAT
+# unless the announced address matches what clients use). Host networking is a Linux feature; on
+# other platforms run only the standalone service.
+
+services:
+  # ----- Standalone -------------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: ruststream-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 2s
+
+  # ----- Cluster (3 masters + 3 replicas) ---------------------------------------------------------
+  redis-cluster-0: &cluster-node
+    image: redis:7-alpine
+    network_mode: host
+    command:
+      - redis-server
+      - --port
+      - "7000"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-ip
+      - 127.0.0.1
+      - --cluster-announce-port
+      - "7000"
+      - --cluster-announce-bus-port
+      - "17000"
+      - --appendonly
+      - "yes"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "7000", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 2s
+
+  redis-cluster-1:
+    <<: *cluster-node
+    command:
+      - redis-server
+      - --port
+      - "7001"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-ip
+      - 127.0.0.1
+      - --cluster-announce-port
+      - "7001"
+      - --cluster-announce-bus-port
+      - "17001"
+      - --appendonly
+      - "yes"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "7001", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 2s
+
+  redis-cluster-2:
+    <<: *cluster-node
+    command:
+      - redis-server
+      - --port
+      - "7002"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-ip
+      - 127.0.0.1
+      - --cluster-announce-port
+      - "7002"
+      - --cluster-announce-bus-port
+      - "17002"
+      - --appendonly
+      - "yes"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "7002", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 2s
+
+  redis-cluster-3:
+    <<: *cluster-node
+    command:
+      - redis-server
+      - --port
+      - "7003"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-ip
+      - 127.0.0.1
+      - --cluster-announce-port
+      - "7003"
+      - --cluster-announce-bus-port
+      - "17003"
+      - --appendonly
+      - "yes"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "7003", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 2s
+
+  redis-cluster-4:
+    <<: *cluster-node
+    command:
+      - redis-server
+      - --port
+      - "7004"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-ip
+      - 127.0.0.1
+      - --cluster-announce-port
+      - "7004"
+      - --cluster-announce-bus-port
+      - "17004"
+      - --appendonly
+      - "yes"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "7004", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 2s
+
+  redis-cluster-5:
+    <<: *cluster-node
+    command:
+      - redis-server
+      - --port
+      - "7005"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-ip
+      - 127.0.0.1
+      - --cluster-announce-port
+      - "7005"
+      - --cluster-announce-bus-port
+      - "17005"
+      - --appendonly
+      - "yes"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "7005", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 2s
+
+  # One-shot: forms the cluster once every node answers PING, then exits 0.
+  redis-cluster-init:
+    image: redis:7-alpine
+    network_mode: host
+    depends_on:
+      redis-cluster-0: { condition: service_healthy }
+      redis-cluster-1: { condition: service_healthy }
+      redis-cluster-2: { condition: service_healthy }
+      redis-cluster-3: { condition: service_healthy }
+      redis-cluster-4: { condition: service_healthy }
+      redis-cluster-5: { condition: service_healthy }
+    command:
+      - sh
+      - -c
+      - >-
+        redis-cli --cluster create
+        127.0.0.1:7000 127.0.0.1:7001 127.0.0.1:7002
+        127.0.0.1:7003 127.0.0.1:7004 127.0.0.1:7005
+        --cluster-replicas 1 --cluster-yes;
+        for i in $(seq 1 60); do
+        redis-cli -p 7000 cluster info | grep -q cluster_state:ok && exit 0;
+        sleep 1; done;
+        echo 'cluster failed to form'; exit 1
+    restart: "no"
+
+  # ----- Sentinel (1 master + 1 replica + 3 sentinels) --------------------------------------------
+  redis-sentinel-master:
+    image: redis:7-alpine
+    network_mode: host
+    command: ["redis-server", "--port", "6380", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6380", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 2s
+
+  redis-sentinel-replica:
+    image: redis:7-alpine
+    network_mode: host
+    depends_on:
+      redis-sentinel-master: { condition: service_healthy }
+    command:
+      ["redis-server", "--port", "6381", "--replicaof", "127.0.0.1", "6380", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6381", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 2s
+
+  redis-sentinel-1: &sentinel-node
+    image: redis:7-alpine
+    network_mode: host
+    depends_on:
+      redis-sentinel-master: { condition: service_healthy }
+      redis-sentinel-replica: { condition: service_healthy }
+    command:
+      - sh
+      - -c
+      - "printf 'port 26379\\nsentinel monitor mymaster 127.0.0.1 6380 2\\nsentinel down-after-milliseconds mymaster 5000\\nsentinel failover-timeout mymaster 10000\\n' > /tmp/sentinel.conf && redis-server /tmp/sentinel.conf --sentinel"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 2s
+
+  redis-sentinel-2:
+    <<: *sentinel-node
+    command:
+      - sh
+      - -c
+      - "printf 'port 26380\\nsentinel monitor mymaster 127.0.0.1 6380 2\\nsentinel down-after-milliseconds mymaster 5000\\nsentinel failover-timeout mymaster 10000\\n' > /tmp/sentinel.conf && redis-server /tmp/sentinel.conf --sentinel"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26380", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 2s
+
+  redis-sentinel-3:
+    <<: *sentinel-node
+    command:
+      - sh
+      - -c
+      - "printf 'port 26381\\nsentinel monitor mymaster 127.0.0.1 6380 2\\nsentinel down-after-milliseconds mymaster 5000\\nsentinel failover-timeout mymaster 10000\\n' > /tmp/sentinel.conf && redis-server /tmp/sentinel.conf --sentinel"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26381", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 2s

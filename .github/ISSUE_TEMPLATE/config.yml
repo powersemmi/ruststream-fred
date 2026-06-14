@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://powersemmi.github.io/ruststream-fred/
+    about: The Redis broker guide - check here before opening an issue.

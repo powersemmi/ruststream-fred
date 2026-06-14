@@ -1,0 +1,52 @@
+[package]
+name = "ruststream-fred"
+description = "Redis / Valkey broker implementation (Streams) for the RustStream messaging framework, backed by fred."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["redis", "streams", "messaging", "broker", "faststream"]
+categories = ["asynchronous", "network-programming"]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+testing = ["ruststream/conformance"]
+
+[dev-dependencies]
+# The conformance harness drives the testing-feature broker; macros + json power the runnable
+# fred_* examples (the docs site embeds their snippets), and serde decodes their message types.
+ruststream = { workspace = true, features = ["conformance", "macros", "json"] }
+serde = { version = "1", features = ["derive"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+[dependencies]
+ruststream = { workspace = true, default-features = false }
+fred.workspace = true
+bytes.workspace = true
+futures.workspace = true
+serde = { version = "1", features = ["derive"] }
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+# The fred_* examples are the docs-site snippet sources; keep them runnable and snippet-checked here.
+[[example]]
+name = "fred_streams"
+
+[[example]]
+name = "fred_reclaim"
+
+[[example]]
+name = "fred_pubsub"
+
+[[example]]
+name = "fred_list"
+
+[[example]]
+name = "fred_transaction"

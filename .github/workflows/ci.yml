@@ -1,0 +1,175 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust ${{ matrix.toolchain }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [stable, msrv]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: ruststream-fred
+
+      - uses: actions/checkout@v4
+        with:
+          repository: powersemmi/ruststream
+          persist-credentials: false
+          path: ruststream
+
+      # The MSRV leg follows `rust-version` in Cargo.toml, so an MSRV bump is a one-line change.
+      - name: Resolve toolchain
+        id: toolchain
+        working-directory: ruststream-fred
+        env:
+          TOOLCHAIN: ${{ matrix.toolchain }}
+        run: |
+          if [ "$TOOLCHAIN" = "msrv" ]; then
+            TOOLCHAIN="$(sed -n 's/^rust-version *= *"\(.*\)"/\1/p' Cargo.toml)"
+            test -n "$TOOLCHAIN"
+          fi
+          echo "toolchain=$TOOLCHAIN" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.toolchain.outputs.toolchain }}
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ruststream-fred
+
+      - name: cargo fmt
+        if: matrix.toolchain == 'stable'
+        working-directory: ruststream-fred
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        if: matrix.toolchain == 'stable'
+        working-directory: ruststream-fred
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: cargo check (no default features)
+        working-directory: ruststream-fred
+        run: cargo check --workspace --no-default-features
+
+      - name: cargo check (all features)
+        working-directory: ruststream-fred
+        run: cargo check --workspace --all-targets --all-features
+
+      - name: cargo test (handler-stub only, no live broker)
+        working-directory: ruststream-fred
+        run: cargo test --workspace --all-features
+
+  broker-integration:
+    name: "Broker integration (Redis: standalone, cluster, sentinel)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: ruststream-fred
+
+      - uses: actions/checkout@v4
+        with:
+          repository: powersemmi/ruststream
+          persist-credentials: false
+          path: ruststream
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ruststream-fred
+
+      # The compose file brings up all three topologies (standalone, a 6-node cluster, and a
+      # sentinel set) on host networking, so every node announces and reaches its peers on
+      # 127.0.0.1 - the same addresses the test process uses. `--wait` blocks until every service is
+      # healthy and the one-shot cluster-init has formed the cluster.
+      - name: Start Redis topologies
+        working-directory: ruststream-fred
+        run: docker compose -f docker-compose.test.yml up -d --wait
+
+      - name: Run Redis integration tests (standalone + cluster + sentinel)
+        working-directory: ruststream-fred
+        env:
+          REDIS_TEST_URL: redis://127.0.0.1:6379
+          REDIS_CLUSTER_TEST_URL: 127.0.0.1:7000
+          REDIS_SENTINEL_TEST_URL: 127.0.0.1:26379
+        run: cargo test -p ruststream-fred --test integration_fred -- --test-threads=1
+
+      - name: Run Redis conformance suite
+        working-directory: ruststream-fred
+        env:
+          REDIS_TEST_URL: redis://127.0.0.1:6379
+        run: cargo test -p ruststream-fred --features testing --test conformance_fred -- --test-threads=1
+
+      - name: Stop Redis topologies
+        if: always()
+        working-directory: ruststream-fred
+        run: docker compose -f docker-compose.test.yml down -v
+
+  security:
+    name: Security scans
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: ruststream-fred
+
+      # cargo-deny resolves the whole dependency graph, so the cross-repo `ruststream`
+      # path dependency must be present. Mirror the rust job's sibling layout and run the
+      # tool natively (the Docker action only mounts this workspace, not the sibling).
+      - uses: actions/checkout@v4
+        with:
+          repository: powersemmi/ruststream
+          persist-credentials: false
+          path: ruststream
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      # Dependency-graph gate: RustSec advisories, license allow-list, duplicate
+      # versions, and registry sources, per the checked-in deny.toml. Not path-
+      # gated: advisories arrive over time, not only with manifest changes.
+      - name: cargo deny
+        working-directory: ruststream-fred
+        run: cargo deny check
+
+      # No cache: there is no uv.lock anymore (uvx resolves the tools on the fly).
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: codespell
+        working-directory: ruststream-fred
+        run: uvx codespell
+
+      - name: zizmor
+        working-directory: ruststream-fred
+        run: uvx zizmor .github/workflows
