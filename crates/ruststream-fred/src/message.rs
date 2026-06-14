@@ -1,6 +1,7 @@
 //! Delivered-message wrapper that implements [`IncomingMessage`].
 
 use std::fmt::{Debug, Formatter};
+use std::time::Duration;
 
 use bytes::Bytes;
 use fred::clients::Pool;
@@ -10,6 +11,7 @@ use ruststream::{AckError, Headers, IncomingMessage, Partitioned};
 
 use crate::convert::fields_for_publish;
 use crate::deadletter::{self, PoisonPolicy, REASON_DROPPED, REASON_MAX_DELIVERIES};
+use crate::delay::{self, DelayConfig};
 
 /// The well-known header key for per-message routing / partitioning.
 ///
@@ -38,6 +40,8 @@ pub struct RedisMessage {
     headers: Headers,
     ack: Option<AckHandle>,
     policy: PoisonPolicy,
+    /// Set when the subscription opted into a durable ZSET delay queue; makes `nack_after` native.
+    delay: Option<DelayConfig>,
 }
 
 impl Debug for RedisMessage {
@@ -52,6 +56,10 @@ impl Debug for RedisMessage {
 }
 
 impl RedisMessage {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal constructor mirroring the descriptor"
+    )]
     pub(crate) fn new(
         pool: Pool,
         key: String,
@@ -60,6 +68,7 @@ impl RedisMessage {
         payload: Bytes,
         headers: Headers,
         policy: PoisonPolicy,
+        delay: Option<DelayConfig>,
     ) -> Self {
         Self {
             payload,
@@ -71,6 +80,7 @@ impl RedisMessage {
                 id,
             }),
             policy,
+            delay,
         }
     }
 
@@ -139,6 +149,40 @@ impl IncomingMessage for RedisMessage {
             .await
             .map_err(broker_err)?;
         }
+        xack(&handle).await
+    }
+
+    /// Native delayed redelivery is available only when the subscription opted into a durable ZSET
+    /// delay queue with [`RedisStream::delayed_retry`](crate::RedisStream::delayed_retry); otherwise
+    /// the runtime applies its broker-agnostic deferred-republish fallback.
+    fn supports_nack_after(&self) -> bool {
+        self.delay.is_some()
+    }
+
+    /// Schedules the message for redelivery no sooner than `delay` from now via the configured ZSET
+    /// delay queue (`ZADD` the delayed copy, then `XACK` the original), with the retry-count header
+    /// incremented. The subscriber's sweeper re-`XADD`s it to the source stream once due.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AckError::Unsupported`] when the subscription did not opt into a delay queue, or
+    /// [`AckError::Broker`] when the `ZADD` or `XACK` fails.
+    async fn nack_after(mut self, delay: Duration) -> Result<(), AckError> {
+        let handle = self.ack.take().expect("RedisMessage settled twice");
+        let Some(cfg) = self.delay.as_ref() else {
+            return Err(AckError::Unsupported);
+        };
+        // ZADD the delayed copy before XACK-ing the original, so a crash in between leaves a
+        // duplicate (the scheduled copy plus the still-pending original) rather than a loss.
+        delay::schedule(
+            &handle.pool,
+            cfg,
+            &handle.id,
+            &self.payload,
+            &self.headers,
+            delay,
+        )
+        .await?;
         xack(&handle).await
     }
 }

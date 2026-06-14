@@ -21,8 +21,8 @@ use ruststream::codec::JsonCodec;
 use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::{Broker, Headers, IncomingMessage, OutgoingMessage, Publisher, Subscriber};
 use ruststream_fred::{
-    DEAD_LETTER_REASON_HEADER, DELIVERY_COUNT_HEADER, IDLE_MS_HEADER, RedisBroker, RedisList,
-    RedisPubSub, RedisStream, StreamStart,
+    DEAD_LETTER_REASON_HEADER, DELIVERY_COUNT_HEADER, DelayedRetry, IDLE_MS_HEADER, RedisBroker,
+    RedisList, RedisPubSub, RedisStream, StreamStart,
 };
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -508,6 +508,54 @@ async fn reliable_list_recovery_returns_orphaned_entry() {
     let recovered = next(&mut stream).await.expect("recovered redelivery");
     assert_eq!(recovered.payload(), b"job-x");
     recovered.ack().await.expect("ack");
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_retry_zset_redelivers_after_delay_with_incremented_count() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = RedisBroker::standalone(url);
+    connect(&broker).await;
+    let key = unique_key("delayed");
+    let zset = format!("{key}.delayed");
+
+    let mut sub = broker
+        .subscribe(
+            RedisStream::new(&key)
+                .group("workers")
+                .delayed_retry(DelayedRetry::DurableZset {
+                    key: zset,
+                    ttl: None,
+                })
+                // Tight block so the in-loop sweeper polls the delay ZSET frequently.
+                .block(Duration::from_millis(50)),
+        )
+        .await
+        .expect("subscribe");
+    broker
+        .publisher()
+        .publish(OutgoingMessage::new(key.as_str(), b"retry-me"))
+        .await
+        .expect("publish");
+
+    let mut stream = Box::pin(sub.stream());
+    let first = next(&mut stream).await.expect("first delivery");
+    assert_eq!(first.payload(), b"retry-me");
+    // Native durable delay: ZADD to the delay ZSET, XACK the original.
+    first
+        .nack_after(Duration::from_millis(200))
+        .await
+        .expect("nack_after schedules the delayed retry");
+
+    // The sweeper replays the due entry; the redelivery carries retry-count 1.
+    let second = next(&mut stream).await.expect("redelivery after the delay");
+    assert_eq!(second.payload(), b"retry-me");
+    assert_eq!(second.headers().get_str(RETRY_COUNT_HEADER), Some("1"));
+    second.ack().await.expect("ack");
 
     drop(stream);
     broker.shutdown().await.expect("shutdown");

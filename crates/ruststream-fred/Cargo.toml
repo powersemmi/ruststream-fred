@@ -46,6 +46,9 @@ name = "fred_reclaim"
 name = "fred_dead_letter"
 
 [[example]]
+name = "fred_delayed_retry"
+
+[[example]]
 name = "fred_pubsub"
 
 [[example]]

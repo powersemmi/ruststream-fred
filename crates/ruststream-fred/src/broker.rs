@@ -273,6 +273,7 @@ impl RedisBroker {
             def.block_or_default(),
             def.mode(),
             def.poison_policy(),
+            def.delay_config(),
         ))
     }
 
