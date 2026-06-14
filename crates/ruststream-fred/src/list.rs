@@ -29,8 +29,10 @@ use fred::types::lists::LMoveDirection;
 use futures::Stream;
 use futures::stream::unfold;
 use ruststream::codec::Codec;
+use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::{AckError, Headers, IncomingMessage, Partitioned, SubscriptionSource};
 
+use crate::deadletter::{self, PoisonPolicy, REASON_DROPPED, REASON_MAX_DELIVERIES};
 use crate::envelope::{SharedEnvelope, frame, unframe};
 use crate::{RedisBroker, error::RedisError, message::PARTITION_KEY_HEADER};
 
@@ -62,6 +64,8 @@ pub struct RedisList {
     processing: Option<String>,
     block: Option<Duration>,
     codec: Option<SharedEnvelope>,
+    dead_letter: Option<String>,
+    max_deliveries: Option<u64>,
 }
 
 impl Debug for RedisList {
@@ -71,6 +75,7 @@ impl Debug for RedisList {
             .field("reliable", &self.reliable)
             .field("processing", &self.processing)
             .field("codec", &self.codec.is_some())
+            .field("dead_letter", &self.dead_letter)
             .finish_non_exhaustive()
     }
 }
@@ -84,6 +89,8 @@ impl RedisList {
             processing: None,
             block: None,
             codec: None,
+            dead_letter: None,
+            max_deliveries: None,
         }
     }
 
@@ -113,6 +120,25 @@ impl RedisList {
         self
     }
 
+    /// In reliable mode, routes dropped and poison entries to the named dead-letter list (`LPUSH`)
+    /// instead of discarding them, tagged with
+    /// [`DEAD_LETTER_REASON_HEADER`](crate::DEAD_LETTER_REASON_HEADER). Off by default. Has no effect
+    /// on a simple list, which cannot ack. See [`crate::deadletter`].
+    pub fn dead_letter(mut self, key: impl Into<String>) -> Self {
+        self.dead_letter = Some(key.into());
+        self
+    }
+
+    /// In reliable mode, caps how many times an entry may be `nack(requeue = true)`-ed before it is
+    /// treated as poison (dead-lettered or, with no dead-letter list, discarded). Off by default.
+    ///
+    /// Lists have no native delivery counter, so this tracks the framework retry-count header carried
+    /// in the entry's envelope.
+    pub const fn max_deliveries(mut self, max: u64) -> Self {
+        self.max_deliveries = Some(max);
+        self
+    }
+
     /// The list key this subscription consumes.
     #[must_use]
     pub fn key(&self) -> &str {
@@ -136,6 +162,13 @@ impl RedisList {
     pub(crate) fn codec_handle(&self) -> Option<SharedEnvelope> {
         self.codec.clone()
     }
+
+    pub(crate) fn poison_policy(&self) -> PoisonPolicy {
+        PoisonPolicy {
+            dead_letter: self.dead_letter.clone(),
+            max_deliveries: self.max_deliveries,
+        }
+    }
 }
 
 impl SubscriptionSource<RedisBroker> for RedisList {
@@ -158,6 +191,7 @@ pub struct RedisListSubscriber {
     processing: String,
     block: Duration,
     codec: Option<SharedEnvelope>,
+    policy: PoisonPolicy,
 }
 
 impl Debug for RedisListSubscriber {
@@ -177,6 +211,7 @@ impl RedisListSubscriber {
         processing: String,
         block: Duration,
         codec: Option<SharedEnvelope>,
+        policy: PoisonPolicy,
     ) -> Self {
         Self {
             pool,
@@ -185,6 +220,7 @@ impl RedisListSubscriber {
             processing,
             block,
             codec,
+            policy,
         }
     }
 
@@ -207,6 +243,8 @@ impl RedisListSubscriber {
                 main_key: self.key.clone(),
                 processing_key: self.processing.clone(),
                 value: raw,
+                codec: self.codec.clone(),
+                policy: self.policy.clone(),
             }),
         }
     }
@@ -268,6 +306,9 @@ struct ListAck {
     processing_key: String,
     /// The raw wire value (framed), needed verbatim to `LREM` it from the processing list.
     value: Vec<u8>,
+    /// The framing codec, so a poison-policy requeue can re-frame with an updated retry count.
+    codec: Option<SharedEnvelope>,
+    policy: PoisonPolicy,
 }
 
 /// A list-queue delivery. In simple mode `ack` / `nack` are unsupported; in reliable mode `ack`
@@ -308,16 +349,66 @@ impl IncomingMessage for RedisListMessage {
             return Err(AckError::Unsupported);
         };
         if requeue {
-            // Return the entry to the head of the main list before removing it from processing, so a
-            // crash in between leaves a duplicate rather than losing it.
-            let _: i64 = handle
-                .pool
-                .lpush(handle.main_key.as_str(), handle.value.clone())
-                .await
-                .map_err(|err| AckError::Broker(Box::new(err)))?;
+            if handle.policy.is_active() {
+                let next = next_retry_count(&self.headers);
+                if handle.policy.is_poison(next) {
+                    list_dead_letter(&handle, &self.payload, &self.headers, REASON_MAX_DELIVERIES)
+                        .await?;
+                } else {
+                    // Re-frame with the incremented retry count and return it to the main list,
+                    // before removing the original from processing (a crash leaves a duplicate).
+                    let mut headers = self.headers.clone();
+                    headers.insert(RETRY_COUNT_HEADER, next.to_string());
+                    let body = frame(handle.codec.as_ref(), &self.payload, &headers);
+                    lpush(&handle.pool, handle.main_key.as_str(), body).await?;
+                }
+            } else {
+                // No poison policy: return the original entry verbatim to the main list.
+                lpush(&handle.pool, handle.main_key.as_str(), handle.value.clone()).await?;
+            }
+        } else if handle.policy.is_active() {
+            list_dead_letter(&handle, &self.payload, &self.headers, REASON_DROPPED).await?;
         }
         lrem(&handle).await
     }
+}
+
+fn ack_broker(err: fred::error::Error) -> AckError {
+    AckError::Broker(Box::new(err))
+}
+
+/// The next framework retry-count value (the current envelope header plus one, or one when absent).
+fn next_retry_count(headers: &Headers) -> u64 {
+    headers
+        .get_str(RETRY_COUNT_HEADER)
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0)
+        + 1
+}
+
+async fn lpush(pool: &Pool, key: &str, body: Vec<u8>) -> Result<(), AckError> {
+    let _: i64 = pool.lpush(key, body).await.map_err(ack_broker)?;
+    Ok(())
+}
+
+/// `LPUSH`es a tagged copy onto the configured dead-letter list, or does nothing when none is set
+/// (the caller's `LREM` then discards the entry). Runs before the `LREM`, so a crash leaves a
+/// duplicate rather than a loss.
+async fn list_dead_letter(
+    handle: &ListAck,
+    payload: &[u8],
+    headers: &Headers,
+    reason: &'static str,
+) -> Result<(), AckError> {
+    if let Some(dlq) = handle.policy.dead_letter_key() {
+        let body = frame(
+            handle.codec.as_ref(),
+            payload,
+            &deadletter::with_reason(headers, reason),
+        );
+        lpush(&handle.pool, dlq, body).await?;
+    }
+    Ok(())
 }
 
 async fn lrem(handle: &ListAck) -> Result<(), AckError> {
@@ -325,7 +416,7 @@ async fn lrem(handle: &ListAck) -> Result<(), AckError> {
         .pool
         .lrem(handle.processing_key.as_str(), 1, handle.value.clone())
         .await
-        .map_err(|err| AckError::Broker(Box::new(err)))?;
+        .map_err(ack_broker)?;
     Ok(())
 }
 

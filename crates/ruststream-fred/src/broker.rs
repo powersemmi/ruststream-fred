@@ -272,6 +272,7 @@ impl RedisBroker {
             def.count_or_default(),
             def.block_or_default(),
             def.mode(),
+            def.poison_policy(),
         ))
     }
 
@@ -345,6 +346,7 @@ impl RedisBroker {
             def.processing_or_default(),
             def.block_or_default(),
             def.codec_handle(),
+            def.poison_policy(),
         ))
     }
 

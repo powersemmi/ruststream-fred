@@ -15,6 +15,7 @@
 
 mod broker;
 mod convert;
+mod deadletter;
 mod envelope;
 mod error;
 mod list;
@@ -25,6 +26,7 @@ mod stream;
 mod subscriber;
 
 pub use broker::RedisBroker;
+pub use deadletter::{DEAD_LETTER_REASON_HEADER, DELIVERY_COUNT_HEADER, IDLE_MS_HEADER};
 pub use error::RedisError;
 pub use list::{RedisList, RedisListMessage, RedisListPublisher, RedisListSubscriber};
 pub use message::{PARTITION_KEY_HEADER, RedisMessage};

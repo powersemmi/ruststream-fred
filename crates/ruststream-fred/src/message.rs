@@ -5,9 +5,11 @@ use std::fmt::{Debug, Formatter};
 use bytes::Bytes;
 use fred::clients::Pool;
 use fred::interfaces::StreamsInterface;
+use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::{AckError, Headers, IncomingMessage, Partitioned};
 
 use crate::convert::fields_for_publish;
+use crate::deadletter::{self, PoisonPolicy, REASON_DROPPED, REASON_MAX_DELIVERIES};
 
 /// The well-known header key for per-message routing / partitioning.
 ///
@@ -35,6 +37,7 @@ pub struct RedisMessage {
     payload: Bytes,
     headers: Headers,
     ack: Option<AckHandle>,
+    policy: PoisonPolicy,
 }
 
 impl Debug for RedisMessage {
@@ -56,6 +59,7 @@ impl RedisMessage {
         id: String,
         payload: Bytes,
         headers: Headers,
+        policy: PoisonPolicy,
     ) -> Self {
         Self {
             payload,
@@ -66,6 +70,7 @@ impl RedisMessage {
                 group,
                 id,
             }),
+            policy,
         }
     }
 
@@ -99,17 +104,68 @@ impl IncomingMessage for RedisMessage {
     async fn nack(mut self, requeue: bool) -> Result<(), AckError> {
         let handle = self.ack.take().expect("RedisMessage settled twice");
         if requeue {
-            // Republish a copy to the tail before acking the original, so a crash in between
-            // leaves a duplicate rather than losing the message (at-least-once).
-            let fields = fields_for_publish(&self.payload, &self.headers);
-            let _: String = handle
-                .pool
-                .xadd(handle.key.as_str(), false, None::<()>, "*", fields)
-                .await
-                .map_err(|err| AckError::Broker(Box::new(err)))?;
+            if self.policy.is_active() {
+                let next = next_retry_count(&self.headers);
+                if self.policy.is_poison(next) {
+                    // The framework retry-count reached the cap: dead-letter (or discard) instead
+                    // of redelivering, then ack the original.
+                    deadletter::settle_poison_stream(
+                        &handle.pool,
+                        &self.policy,
+                        &self.payload,
+                        &self.headers,
+                        REASON_MAX_DELIVERIES,
+                    )
+                    .await
+                    .map_err(broker_err)?;
+                } else {
+                    let mut headers = self.headers.clone();
+                    headers.insert(RETRY_COUNT_HEADER, next.to_string());
+                    republish(&handle, &self.payload, &headers).await?;
+                }
+            } else {
+                // No poison policy: republish verbatim, the plain at-least-once retry.
+                republish(&handle, &self.payload, &self.headers).await?;
+            }
+        } else if self.policy.is_active() {
+            // Drop: dead-letter it (or discard when no dead-letter stream is set) before acking.
+            deadletter::settle_poison_stream(
+                &handle.pool,
+                &self.policy,
+                &self.payload,
+                &self.headers,
+                REASON_DROPPED,
+            )
+            .await
+            .map_err(broker_err)?;
         }
         xack(&handle).await
     }
+}
+
+/// The next framework retry-count value (the current header plus one, or one when absent).
+fn next_retry_count(headers: &Headers) -> u64 {
+    headers
+        .get_str(RETRY_COUNT_HEADER)
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0)
+        + 1
+}
+
+fn broker_err(err: fred::error::Error) -> AckError {
+    AckError::Broker(Box::new(err))
+}
+
+/// Re-appends a copy of the message to the tail of its stream (the at-least-once retry). Runs before
+/// the caller's `XACK` so a crash leaves a duplicate rather than a loss.
+async fn republish(handle: &AckHandle, payload: &[u8], headers: &Headers) -> Result<(), AckError> {
+    let fields = fields_for_publish(payload, headers);
+    let _: String = handle
+        .pool
+        .xadd(handle.key.as_str(), false, None::<()>, "*", fields)
+        .await
+        .map_err(broker_err)?;
+    Ok(())
 }
 
 async fn xack(handle: &AckHandle) -> Result<(), AckError> {
@@ -121,6 +177,6 @@ async fn xack(handle: &AckHandle) -> Result<(), AckError> {
             handle.id.as_str(),
         )
         .await
-        .map_err(|err| AckError::Broker(Box::new(err)))?;
+        .map_err(broker_err)?;
     Ok(())
 }
