@@ -26,6 +26,35 @@ services:
       retries: 10
       start_period: 2s
 
+  # ----- Standalone with auth ---------------------------------------------------------------------
+  # A password-protected standalone for the auth integration tests: the default user carries a
+  # requirepass (`.password("s3cr3t")`), plus an ACL user `worker` (`.credentials("worker", ...)`).
+  # Exposed on 6385 (REDIS_AUTH_TEST_URL) so it never clashes with the plain standalone on 6379.
+  redis-auth:
+    image: redis:7-alpine
+    container_name: ruststream-redis-auth
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - s3cr3t
+      - --user
+      - worker
+      - "on"
+      - ">workerpass"
+      - "~*"
+      - "&*"
+      - "+@all"
+    ports:
+      - "127.0.0.1:6385:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "s3cr3t", "--no-auth-warning", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 2s
+
   # ----- Cluster (3 masters + 3 replicas) ---------------------------------------------------------
   redis-cluster-0: &cluster-node
     image: redis:7-alpine

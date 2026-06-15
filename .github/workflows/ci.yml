@@ -114,6 +114,7 @@ jobs:
         working-directory: ruststream-fred
         env:
           REDIS_TEST_URL: redis://127.0.0.1:6379
+          REDIS_AUTH_TEST_URL: redis://127.0.0.1:6385
           REDIS_CLUSTER_TEST_URL: 127.0.0.1:7000
           REDIS_SENTINEL_TEST_URL: 127.0.0.1:26379
         run: cargo test -p ruststream-fred --test integration_fred -- --test-threads=1
