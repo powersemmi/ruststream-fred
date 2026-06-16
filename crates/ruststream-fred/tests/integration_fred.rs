@@ -17,8 +17,12 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use ruststream::codec::JsonCodec;
+use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::{Broker, Headers, IncomingMessage, OutgoingMessage, Publisher, Subscriber};
-use ruststream_fred::{RedisBroker, RedisList, RedisPubSub, RedisStream};
+use ruststream_fred::{
+    DEAD_LETTER_REASON_HEADER, DELIVERY_COUNT_HEADER, IDLE_MS_HEADER, RedisBroker, RedisList,
+    RedisPubSub, RedisStream, StreamStart,
+};
 
 const WAIT: Duration = Duration::from_secs(5);
 
@@ -162,6 +166,304 @@ async fn standalone_reclaim_picks_up_pending_entries() {
     reclaimed.ack().await.expect("ack");
 
     drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// Reads and acks the single entry sitting in a dead-letter stream, from the beginning.
+async fn read_dead_letter_stream(broker: &RedisBroker, key: &str) -> Headers {
+    let mut sub = broker
+        .subscribe(
+            RedisStream::new(key)
+                .group("dlq-readers")
+                .start_id(StreamStart::Beginning),
+        )
+        .await
+        .expect("subscribe dlq");
+    let mut stream = Box::pin(sub.stream());
+    let dead = next(&mut stream).await.expect("dead-letter entry");
+    assert_eq!(dead.payload(), b"poison");
+    let headers = dead.headers().clone();
+    dead.ack().await.expect("ack dlq");
+    drop(stream);
+    headers
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stream_drop_routes_to_dead_letter() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = RedisBroker::standalone(url);
+    connect(&broker).await;
+    let key = unique_key("dlq_drop");
+    let dlq = format!("{key}.dlq");
+
+    let mut sub = broker
+        .subscribe(RedisStream::new(&key).group("workers").dead_letter(&dlq))
+        .await
+        .expect("subscribe");
+    broker
+        .publisher()
+        .publish(OutgoingMessage::new(key.as_str(), b"poison"))
+        .await
+        .expect("publish");
+
+    let mut stream = Box::pin(sub.stream());
+    let first = next(&mut stream).await.expect("delivery");
+    first.nack(false).await.expect("drop to dead-letter");
+    drop(stream);
+
+    let headers = read_dead_letter_stream(&broker, &dlq).await;
+    assert_eq!(headers.get_str(DEAD_LETTER_REASON_HEADER), Some("dropped"));
+    broker.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stream_max_deliveries_dead_letters_after_cap() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = RedisBroker::standalone(url);
+    connect(&broker).await;
+    let key = unique_key("dlq_cap");
+    let dlq = format!("{key}.dlq");
+
+    let mut sub = broker
+        .subscribe(
+            RedisStream::new(&key)
+                .group("workers")
+                .dead_letter(&dlq)
+                .max_deliveries(2),
+        )
+        .await
+        .expect("subscribe");
+    broker
+        .publisher()
+        .publish(OutgoingMessage::new(key.as_str(), b"poison"))
+        .await
+        .expect("publish");
+
+    let mut stream = Box::pin(sub.stream());
+    // Retry once: count goes 0 -> 1 (< 2), so it is republished.
+    next(&mut stream)
+        .await
+        .expect("delivery 1")
+        .nack(true)
+        .await
+        .expect("requeue");
+    // Second delivery carries retry-count 1; nacking it again reaches the cap (2) -> dead-letter.
+    let second = next(&mut stream).await.expect("delivery 2");
+    assert_eq!(second.headers().get_str(RETRY_COUNT_HEADER), Some("1"));
+    second.nack(true).await.expect("requeue past cap");
+    drop(stream);
+
+    let headers = read_dead_letter_stream(&broker, &dlq).await;
+    assert_eq!(
+        headers.get_str(DEAD_LETTER_REASON_HEADER),
+        Some("max-deliveries")
+    );
+    broker.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stream_reclaim_exposes_delivery_count_and_idle() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = RedisBroker::standalone(url);
+    connect(&broker).await;
+    let key = unique_key("dlq_meta");
+
+    let mut worker = broker
+        .subscribe(RedisStream::new(&key).group("workers").consumer("dead"))
+        .await
+        .expect("subscribe worker");
+    broker
+        .publisher()
+        .publish(OutgoingMessage::new(key.as_str(), b"stuck"))
+        .await
+        .expect("publish");
+    {
+        let mut s = Box::pin(worker.stream());
+        drop(next(&mut s).await.expect("worker delivery"));
+    }
+    drop(worker);
+
+    // A high cap activates the policy (so the counts are exposed) without dead-lettering.
+    let mut recovery = broker
+        .subscribe(
+            RedisStream::reclaim(&key, Duration::from_millis(1))
+                .group("workers")
+                .consumer("rec")
+                .max_deliveries(10)
+                .block(Duration::from_millis(50)),
+        )
+        .await
+        .expect("subscribe recovery");
+    let mut stream = Box::pin(recovery.stream());
+    let reclaimed = next(&mut stream).await.expect("reclaimed delivery");
+    assert_eq!(reclaimed.payload(), b"stuck");
+    // Delivered once to the dead worker, then claimed here: native delivery count 2.
+    assert_eq!(
+        reclaimed.headers().get_str(DELIVERY_COUNT_HEADER),
+        Some("2")
+    );
+    assert!(reclaimed.headers().get_str(IDLE_MS_HEADER).is_some());
+    reclaimed.ack().await.expect("ack");
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stream_reclaim_caps_to_dead_letter() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = RedisBroker::standalone(url);
+    connect(&broker).await;
+    let key = unique_key("dlq_reclaim");
+    let dlq = format!("{key}.dlq");
+
+    let mut worker = broker
+        .subscribe(RedisStream::new(&key).group("workers").consumer("dead"))
+        .await
+        .expect("subscribe worker");
+    broker
+        .publisher()
+        .publish(OutgoingMessage::new(key.as_str(), b"poison"))
+        .await
+        .expect("publish");
+    {
+        let mut s = Box::pin(worker.stream());
+        drop(next(&mut s).await.expect("worker delivery"));
+    }
+    drop(worker);
+
+    // Native delivery count after the reclaim is 2, past the cap of 1, so it is dead-lettered and
+    // never delivered: the poll times out with nothing.
+    let mut recovery = broker
+        .subscribe(
+            RedisStream::reclaim(&key, Duration::from_millis(1))
+                .group("workers")
+                .consumer("rec")
+                .dead_letter(&dlq)
+                .max_deliveries(1)
+                .block(Duration::from_millis(50)),
+        )
+        .await
+        .expect("subscribe recovery");
+    let mut stream = Box::pin(recovery.stream());
+    let polled = tokio::time::timeout(Duration::from_millis(500), stream.next()).await;
+    assert!(polled.is_err(), "a poison reclaim must not be delivered");
+    drop(stream);
+
+    let headers = read_dead_letter_stream(&broker, &dlq).await;
+    assert_eq!(
+        headers.get_str(DEAD_LETTER_REASON_HEADER),
+        Some("max-deliveries")
+    );
+    broker.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reliable_list_drop_routes_to_dead_letter() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = RedisBroker::standalone(url);
+    connect(&broker).await;
+    let key = unique_key("list_dlq_drop");
+    let dlq = format!("{key}.dlq");
+
+    broker
+        .list_publisher()
+        .publish(OutgoingMessage::new(key.as_str(), b"poison"))
+        .await
+        .expect("lpush");
+
+    let mut sub = broker
+        .subscribe_list(
+            RedisList::new(&key)
+                .reliable()
+                .dead_letter(&dlq)
+                .block(Duration::from_millis(50)),
+        )
+        .await
+        .expect("subscribe reliable list");
+    let mut stream = Box::pin(sub.stream());
+    next(&mut stream)
+        .await
+        .expect("delivery")
+        .nack(false)
+        .await
+        .expect("drop to dead-letter");
+    drop(stream);
+
+    let mut dlq_sub = broker
+        .subscribe_list(RedisList::new(&dlq).block(Duration::from_millis(500)))
+        .await
+        .expect("subscribe dlq list");
+    let mut dlq_stream = Box::pin(dlq_sub.stream());
+    let dead = next(&mut dlq_stream).await.expect("dead-letter entry");
+    assert_eq!(dead.payload(), b"poison");
+    assert_eq!(
+        dead.headers().get_str(DEAD_LETTER_REASON_HEADER),
+        Some("dropped")
+    );
+    drop(dlq_stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reliable_list_max_deliveries_dead_letters() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = RedisBroker::standalone(url);
+    connect(&broker).await;
+    let key = unique_key("list_dlq_cap");
+    let dlq = format!("{key}.dlq");
+
+    broker
+        .list_publisher()
+        .publish(OutgoingMessage::new(key.as_str(), b"poison"))
+        .await
+        .expect("lpush");
+
+    let mut sub = broker
+        .subscribe_list(
+            RedisList::new(&key)
+                .reliable()
+                .dead_letter(&dlq)
+                .max_deliveries(2)
+                .block(Duration::from_millis(50)),
+        )
+        .await
+        .expect("subscribe reliable list");
+    let mut stream = Box::pin(sub.stream());
+    next(&mut stream)
+        .await
+        .expect("delivery 1")
+        .nack(true)
+        .await
+        .expect("requeue");
+    let second = next(&mut stream).await.expect("delivery 2");
+    assert_eq!(second.headers().get_str(RETRY_COUNT_HEADER), Some("1"));
+    second.nack(true).await.expect("requeue past cap");
+    drop(stream);
+
+    let mut dlq_sub = broker
+        .subscribe_list(RedisList::new(&dlq).block(Duration::from_millis(500)))
+        .await
+        .expect("subscribe dlq list");
+    let mut dlq_stream = Box::pin(dlq_sub.stream());
+    let dead = next(&mut dlq_stream).await.expect("dead-letter entry");
+    assert_eq!(dead.payload(), b"poison");
+    assert_eq!(
+        dead.headers().get_str(DEAD_LETTER_REASON_HEADER),
+        Some("max-deliveries")
+    );
+    drop(dlq_stream);
     broker.shutdown().await.expect("shutdown");
 }
 

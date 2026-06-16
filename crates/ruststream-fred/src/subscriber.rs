@@ -11,9 +11,11 @@ use futures::Stream;
 use futures::stream::unfold;
 use ruststream::{BatchSubscriber, Subscriber};
 
-use crate::{
-    convert::parts_from_fields, error::RedisError, message::RedisMessage, stream::ReadMode,
+use crate::convert::{HEADER_PREFIX, parts_from_fields};
+use crate::deadletter::{
+    self, DELIVERY_COUNT_HEADER, IDLE_MS_HEADER, PoisonPolicy, REASON_MAX_DELIVERIES,
 };
+use crate::{error::RedisError, message::RedisMessage, stream::ReadMode};
 
 /// One decoded stream entry: its ID and field map.
 type Entry = (String, HashMap<String, Vec<u8>>);
@@ -43,6 +45,7 @@ pub struct RedisSubscriber {
     count: u64,
     block: Duration,
     mode: ReadMode,
+    policy: PoisonPolicy,
     /// Reclaim cursor; advances across `XAUTOCLAIM` calls, unused in fresh mode.
     cursor: String,
     /// Entries fetched but not yet yielded.
@@ -61,6 +64,10 @@ impl Debug for RedisSubscriber {
 }
 
 impl RedisSubscriber {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal constructor mirroring the descriptor"
+    )]
     pub(crate) fn new(
         pool: Pool,
         key: String,
@@ -69,6 +76,7 @@ impl RedisSubscriber {
         count: u64,
         block: Duration,
         mode: ReadMode,
+        policy: PoisonPolicy,
     ) -> Self {
         Self {
             pool,
@@ -78,6 +86,7 @@ impl RedisSubscriber {
             count,
             block,
             mode,
+            policy,
             cursor: RECLAIM_START.to_owned(),
             buffer: VecDeque::new(),
         }
@@ -92,6 +101,7 @@ impl RedisSubscriber {
             id,
             payload,
             headers,
+            self.policy.clone(),
         )
     }
 
@@ -149,9 +159,84 @@ impl RedisSubscriber {
         // Nothing left to reclaim this pass: avoid a hot loop until more entries go stale.
         if entries.is_empty() {
             tokio::time::sleep(self.block).await;
+            return Ok(entries);
         }
-        Ok(entries)
+        // Plain reclaim with no poison policy: skip the extra XPENDING and deliver as-is.
+        if !self.policy.is_active() {
+            return Ok(entries);
+        }
+        self.enrich_reclaimed(entries).await
     }
+
+    /// Annotates reclaimed entries with their native delivery count and idle time, and dead-letters
+    /// (or drops) any that have exceeded `max_deliveries` instead of redelivering them.
+    async fn enrich_reclaimed(&self, entries: Vec<Entry>) -> Result<Vec<Entry>, RedisError> {
+        let meta = self.pending_meta().await?;
+        let mut out = Vec::with_capacity(entries.len());
+        for (id, mut fields) in entries {
+            let (idle, count) = meta.get(&id).copied().unwrap_or((0, 0));
+            if self.policy.is_poison(count) {
+                self.dead_letter_reclaimed(&id, &fields).await?;
+                continue;
+            }
+            insert_meta_header(&mut fields, DELIVERY_COUNT_HEADER, count);
+            insert_meta_header(&mut fields, IDLE_MS_HEADER, idle);
+            out.push((id, fields));
+        }
+        Ok(out)
+    }
+
+    /// Maps each of this consumer's pending entry IDs to its `(idle_ms, delivery_count)` via
+    /// extended `XPENDING`, which - unlike `XAUTOCLAIM` - reports the native delivery count.
+    async fn pending_meta(&self) -> Result<HashMap<String, (u64, u64)>, RedisError> {
+        let rows: Vec<(String, String, u64, u64)> = self
+            .pool
+            .xpending(
+                self.key.as_str(),
+                self.group.as_str(),
+                (0_u64, "-", "+", self.count, self.consumer.as_str()),
+            )
+            .await
+            .map_err(RedisError::stream)?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, _consumer, idle, count)| (id, (idle, count)))
+            .collect())
+    }
+
+    /// Routes a poison reclaimed entry to its dead-letter stream (or discards it when none is set),
+    /// then `XACK`s it so it leaves the pending list.
+    async fn dead_letter_reclaimed(
+        &self,
+        id: &str,
+        fields: &HashMap<String, Vec<u8>>,
+    ) -> Result<(), RedisError> {
+        let (payload, headers) = parts_from_fields(fields.clone());
+        deadletter::settle_poison_stream(
+            &self.pool,
+            &self.policy,
+            &payload,
+            &headers,
+            REASON_MAX_DELIVERIES,
+        )
+        .await
+        .map_err(RedisError::stream)?;
+        let _: i64 = self
+            .pool
+            .xack(self.key.as_str(), self.group.as_str(), id)
+            .await
+            .map_err(RedisError::stream)?;
+        Ok(())
+    }
+}
+
+/// Injects a `u64`-valued well-known header into an entry's raw field map (under the `h:` prefix),
+/// so it surfaces as a [`Headers`](ruststream::Headers) entry on the delivered message.
+fn insert_meta_header(fields: &mut HashMap<String, Vec<u8>>, name: &str, value: u64) {
+    fields.insert(
+        format!("{HEADER_PREFIX}{name}"),
+        value.to_string().into_bytes(),
+    );
 }
 
 impl Subscriber for RedisSubscriber {

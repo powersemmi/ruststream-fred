@@ -43,6 +43,9 @@ name = "fred_streams"
 name = "fred_reclaim"
 
 [[example]]
+name = "fred_dead_letter"
+
+[[example]]
 name = "fred_pubsub"
 
 [[example]]

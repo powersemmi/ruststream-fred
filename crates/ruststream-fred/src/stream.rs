@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use ruststream::SubscriptionSource;
 
+use crate::deadletter::PoisonPolicy;
 use crate::{RedisBroker, error::RedisError, subscriber::RedisSubscriber};
 
 const DEFAULT_COUNT: u64 = 64;
@@ -85,6 +86,8 @@ pub struct RedisStream {
     block: Option<Duration>,
     start: StreamStart,
     mode: ReadMode,
+    dead_letter: Option<String>,
+    max_deliveries: Option<u64>,
 }
 
 impl RedisStream {
@@ -100,6 +103,8 @@ impl RedisStream {
             block: None,
             start: StreamStart::New,
             mode: ReadMode::Fresh,
+            dead_letter: None,
+            max_deliveries: None,
         }
     }
 
@@ -118,6 +123,8 @@ impl RedisStream {
             block: None,
             start: StreamStart::New,
             mode: ReadMode::Reclaim { min_idle },
+            dead_letter: None,
+            max_deliveries: None,
         }
     }
 
@@ -154,6 +161,25 @@ impl RedisStream {
         self
     }
 
+    /// Routes dropped and poison messages to the named dead-letter stream instead of discarding
+    /// them. Off by default. The copy is tagged with
+    /// [`DEAD_LETTER_REASON_HEADER`](crate::DEAD_LETTER_REASON_HEADER). See [`crate::deadletter`].
+    pub fn dead_letter(mut self, key: impl Into<String>) -> Self {
+        self.dead_letter = Some(key.into());
+        self
+    }
+
+    /// Caps how many times a message may be delivered before it is treated as poison (dead-lettered
+    /// or, with no dead-letter stream, discarded). Off by default.
+    ///
+    /// The cap is checked against both the framework retry-count header (the `nack`/republish loop)
+    /// and the native stream delivery count (the reclaim loop), so a message poisoning either way is
+    /// caught.
+    pub const fn max_deliveries(mut self, max: u64) -> Self {
+        self.max_deliveries = Some(max);
+        self
+    }
+
     /// The stream key this subscription reads.
     #[must_use]
     pub fn key(&self) -> &str {
@@ -187,6 +213,13 @@ impl RedisStream {
 
     pub(crate) fn mode(&self) -> ReadMode {
         self.mode.clone()
+    }
+
+    pub(crate) fn poison_policy(&self) -> PoisonPolicy {
+        PoisonPolicy {
+            dead_letter: self.dead_letter.clone(),
+            max_deliveries: self.max_deliveries,
+        }
     }
 }
 
