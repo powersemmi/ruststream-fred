@@ -442,6 +442,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#dead-letter-and-poison-cap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dead-letter and poison cap
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#topologies" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -626,6 +637,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#dead-letter-and-poison-cap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dead-letter and poison cap
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#topologies" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -786,34 +808,66 @@ a healthy consumer's in-flight message gets reclaimed and processed twice.</p>
   a duplicate.</li>
 <li><code>nack(requeue = false)</code> -&gt; <code>XACK</code> to drop.</li>
 </ul>
+<h2 id="dead-letter-and-poison-cap">Dead-letter and poison cap<a class="headerlink" href="#dead-letter-and-poison-cap" title="Permanent link">&para;</a></h2>
+<p>By default a failing message is redelivered forever and a <code>nack(requeue = false)</code> discards it. Two
+opt-in settings on a <code>RedisStream</code> (and on a reliable <code>RedisList</code>) bound that:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1">// Cap redeliveries at 5. On the 5th failed delivery (or an explicit drop) the message is copied to</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="c1">// the &quot;orders.dlq&quot; stream, tagged with the reason, rather than retried forever or discarded.</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="cp">#[subscriber(</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="cp">    RedisStream::new(</span><span class="s">&quot;orders&quot;</span><span class="cp">)</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="cp">        .group(</span><span class="s">&quot;workers&quot;</span><span class="cp">)</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="cp">        .dead_letter(</span><span class="s">&quot;orders.dlq&quot;</span><span class="cp">)</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="cp">        .max_deliveries(5)</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="cp">)]</span>
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">handle_order</span><span class="p">(</span><span class="n">order</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Order</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">HandlerResult</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="n">order</span><span class="p">.</span><span class="n">id</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mi">0</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="w">        </span><span class="c1">// A poison message: nack to retry. Once the cap is reached it is dead-lettered for you.</span>
+<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">Nack</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">requeue</span><span class="p">:</span><span class="w"> </span><span class="nc">true</span><span class="w"> </span><span class="p">};</span>
+<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="w">    </span><span class="p">}</span>
+<a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a><span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;processed order {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">order</span><span class="p">.</span><span class="n">id</span><span class="p">);</span>
+<a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a><span class="w">    </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">Ack</span>
+<a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a><span class="p">}</span>
+</code></pre></div>
+<ul>
+<li><code>dead_letter(key)</code> copies dropped and poison messages to the named key - same transport family,
+  stream to stream or list to list - instead of discarding them. The copy is tagged with the
+  <code>x-dead-letter-reason</code> header (<code>dropped</code> or <code>max-deliveries</code>) and written before the original is
+  acked, so a crash leaves a duplicate rather than a loss.</li>
+<li><code>max_deliveries(n)</code> caps the delivery count. It is checked against both the framework retry-count
+  header (the <code>nack</code>/republish loop) and, on the reclaim path, the native Redis Streams delivery
+  count, so a message poisoning either way is caught. Reclaimed deliveries also carry
+  <code>redis-delivery-count</code> and <code>redis-idle-ms</code> headers, so a handler can branch or dead-letter
+  manually.</li>
+</ul>
+<p>Simple List and Pub/Sub cannot ack, so they have no dead-letter path.</p>
 <h2 id="topologies">Topologies<a class="headerlink" href="#topologies" title="Permanent link">&para;</a></h2>
 <p>One crate, three named constructors. Each is synchronous and connects lazily:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># standalone</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="c1"># RedisBroker::standalone(&quot;redis://localhost:6379&quot;)</span>
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="c1"># cluster (one reachable seed node is enough; the rest is discovered)</span>
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># RedisBroker::cluster([&quot;127.0.0.1:7000&quot;, &quot;127.0.0.1:7001&quot;])</span>
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="c1"># sentinel (the monitored primary&#39;s name plus the sentinels)</span>
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="c1"># RedisBroker::sentinel(&quot;mymaster&quot;, [&quot;127.0.0.1:26379&quot;])</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># standalone</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="c1"># RedisBroker::standalone(&quot;redis://localhost:6379&quot;)</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="c1"># cluster (one reachable seed node is enough; the rest is discovered)</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># RedisBroker::cluster([&quot;127.0.0.1:7000&quot;, &quot;127.0.0.1:7001&quot;])</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="c1"># sentinel (the monitored primary&#39;s name plus the sentinels)</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="c1"># RedisBroker::sentinel(&quot;mymaster&quot;, [&quot;127.0.0.1:26379&quot;])</span>
 </code></pre></div>
 <h2 id="transactions">Transactions<a class="headerlink" href="#transactions" title="Permanent link">&para;</a></h2>
 <p>On standalone and sentinel the stream publisher is transactional (<code>begin_transaction</code> buffers,
 <code>commit</code> flushes the whole batch in publish order through a single <code>fred</code> pipeline, <code>abort</code>
 discards). The idiomatic way to use it is a batch-publishing handler wired with a <code>.transactional()</code>
 publisher: every reply is committed atomically.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1">// A batch-publishing handler: each reply in the returned Vec is published to `processed`, all</span>
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="c1">// committed atomically when the transactional publisher commits.</span>
-<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="cp">#[subscriber(batch(</span><span class="s">&quot;orders&quot;</span><span class="cp">), publish(</span><span class="s">&quot;processed&quot;</span><span class="cp">))]</span>
-<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">process</span><span class="p">(</span><span class="n">orders</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="p">[</span><span class="n">Order</span><span class="p">])</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="nb">Vec</span><span class="o">&lt;</span><span class="n">Order</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span><span class="n">HandlerResult</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="n">orders</span><span class="p">.</span><span class="n">is_empty</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="nb">Err</span><span class="p">(</span><span class="n">HandlerResult</span><span class="p">::</span><span class="nb">drop</span><span class="p">());</span>
-<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">    </span><span class="p">}</span>
-<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="w">    </span><span class="nb">Ok</span><span class="p">(</span><span class="n">orders</span><span class="p">.</span><span class="n">iter</span><span class="p">().</span><span class="n">map</span><span class="p">(</span><span class="o">|</span><span class="n">o</span><span class="o">|</span><span class="w"> </span><span class="n">Order</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">id</span><span class="p">:</span><span class="w"> </span><span class="nc">o</span><span class="p">.</span><span class="n">id</span><span class="w"> </span><span class="p">}).</span><span class="n">collect</span><span class="p">())</span>
-<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1">// A batch-publishing handler: each reply in the returned Vec is published to `processed`, all</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="c1">// committed atomically when the transactional publisher commits.</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="cp">#[subscriber(batch(</span><span class="s">&quot;orders&quot;</span><span class="cp">), publish(</span><span class="s">&quot;processed&quot;</span><span class="cp">))]</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">process</span><span class="p">(</span><span class="n">orders</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="p">[</span><span class="n">Order</span><span class="p">])</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="nb">Vec</span><span class="o">&lt;</span><span class="n">Order</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span><span class="n">HandlerResult</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="n">orders</span><span class="p">.</span><span class="n">is_empty</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="nb">Err</span><span class="p">(</span><span class="n">HandlerResult</span><span class="p">::</span><span class="nb">drop</span><span class="p">());</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">    </span><span class="p">}</span>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">    </span><span class="nb">Ok</span><span class="p">(</span><span class="n">orders</span><span class="p">.</span><span class="n">iter</span><span class="p">().</span><span class="n">map</span><span class="p">(</span><span class="o">|</span><span class="n">o</span><span class="o">|</span><span class="w"> </span><span class="n">Order</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">id</span><span class="p">:</span><span class="w"> </span><span class="nc">o</span><span class="p">.</span><span class="n">id</span><span class="w"> </span><span class="p">}).</span><span class="n">collect</span><span class="p">())</span>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="p">}</span>
 </code></pre></div>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1">// .transactional() uses RedisPublisher&#39;s TransactionalPublisher impl: the batch&#39;s replies</span>
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="c1">// are buffered and flushed as one pipeline on commit.</span>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="kd">let</span><span class="w"> </span><span class="n">processed</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">TypedPublisher</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">b</span><span class="p">.</span><span class="n">broker</span><span class="p">().</span><span class="n">publisher</span><span class="p">()).</span><span class="n">transactional</span><span class="p">();</span>
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="n">b</span><span class="p">.</span><span class="n">include_batch_publishing</span><span class="p">(</span><span class="n">process</span><span class="p">,</span><span class="w"> </span><span class="n">processed</span><span class="p">);</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1">// .transactional() uses RedisPublisher&#39;s TransactionalPublisher impl: the batch&#39;s replies</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="c1">// are buffered and flushed as one pipeline on commit.</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="kd">let</span><span class="w"> </span><span class="n">processed</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">TypedPublisher</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">b</span><span class="p">.</span><span class="n">broker</span><span class="p">().</span><span class="n">publisher</span><span class="p">()).</span><span class="n">transactional</span><span class="p">();</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="n">b</span><span class="p">.</span><span class="n">include_batch_publishing</span><span class="p">(</span><span class="n">process</span><span class="p">,</span><span class="w"> </span><span class="n">processed</span><span class="p">);</span>
 </code></pre></div>
 <p>Cluster does not offer this (buffered keys may hash to different nodes), so the transaction returns
 an error there.</p>
@@ -821,47 +875,29 @@ an error there.</p>
 <p>Pub/Sub is fire-and-forget: no durability, no consumer groups, no ack (<code>ack</code> / <code>nack</code> report
 <code>Unsupported</code>). A <code>RedisPubSub</code> descriptor selects the channel and mode. Classic broadcasts
 cluster-wide and supports patterns:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1">// Classic broadcast subscription that re-publishes each event to an `audit` channel. The macro</span>
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="c1">// `publish(&quot;audit&quot;)` form publishes the handler&#39;s return value through the publisher wired at mount.</span>
-<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="cp">#[subscriber(RedisPubSub::new(</span><span class="s">&quot;events&quot;</span><span class="cp">), publish(</span><span class="s">&quot;audit&quot;</span><span class="cp">))]</span>
-<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">on_event</span><span class="p">(</span><span class="n">event</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Event</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Event</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;event: {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">event</span><span class="p">.</span><span class="n">kind</span><span class="p">);</span>
-<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">    </span><span class="n">Event</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">        </span><span class="n">kind</span><span class="p">:</span><span class="w"> </span><span class="nc">event</span><span class="p">.</span><span class="n">kind</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
-<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="w">    </span><span class="p">}</span>
-<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1">// Classic broadcast subscription that re-publishes each event to an `audit` channel. The macro</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="c1">// `publish(&quot;audit&quot;)` form publishes the handler&#39;s return value through the publisher wired at mount.</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="cp">#[subscriber(RedisPubSub::new(</span><span class="s">&quot;events&quot;</span><span class="cp">), publish(</span><span class="s">&quot;audit&quot;</span><span class="cp">))]</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">on_event</span><span class="p">(</span><span class="n">event</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Event</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Event</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;event: {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">event</span><span class="p">.</span><span class="n">kind</span><span class="p">);</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">    </span><span class="n">Event</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">        </span><span class="n">kind</span><span class="p">:</span><span class="w"> </span><span class="nc">event</span><span class="p">.</span><span class="n">kind</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="w">    </span><span class="p">}</span>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="p">}</span>
 </code></pre></div>
 <p>Sharded delivery (<code>SSUBSCRIBE</code>, Redis 7+) stays slot-local so it scales across a cluster, at the cost
 of patterns. Enable it per subscription with <code>.mode(PubSubMode::Sharded)</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1">// Sharded subscription (`SSUBSCRIBE`): on a cluster this stays slot-local and scales. It belongs on</span>
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="c1">// a cluster broker (below), and pairs with a sharded publisher</span>
-<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="c1">// (`broker.pubsub_publisher().mode(Sharded)`).</span>
-<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="cp">#[subscriber(RedisPubSub::new(</span><span class="s">&quot;events&quot;</span><span class="cp">).mode(PubSubMode::Sharded))]</span>
-<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">on_event_sharded</span><span class="p">(</span><span class="n">event</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Event</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">HandlerResult</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;sharded event: {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">event</span><span class="p">.</span><span class="n">kind</span><span class="p">);</span>
-<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">    </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">Ack</span>
-<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1">// Sharded subscription (`SSUBSCRIBE`): on a cluster this stays slot-local and scales. It belongs on</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="c1">// a cluster broker (below), and pairs with a sharded publisher</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="c1">// (`broker.pubsub_publisher().mode(Sharded)`).</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="cp">#[subscriber(RedisPubSub::new(</span><span class="s">&quot;events&quot;</span><span class="cp">).mode(PubSubMode::Sharded))]</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">on_event_sharded</span><span class="p">(</span><span class="n">event</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Event</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">HandlerResult</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;sharded event: {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">event</span><span class="p">.</span><span class="n">kind</span><span class="p">);</span>
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">    </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">Ack</span>
+<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="p">}</span>
 </code></pre></div>
 <p>Because RustStream is multi-broker, one service can run classic Pub/Sub on a standalone server and
 sharded Pub/Sub on a cluster at the same time - each handler mounts on its own broker:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="cp">#[ruststream::app]</span>
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="k">fn</span><span class="w"> </span><span class="nf">app</span><span class="p">()</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">RustStream</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="n">RustStream</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">AppInfo</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="s">&quot;events&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;0.1.0&quot;</span><span class="p">))</span>
-<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">        </span><span class="p">.</span><span class="n">with_broker</span><span class="p">(</span><span class="n">RedisBroker</span><span class="p">::</span><span class="n">standalone</span><span class="p">(</span><span class="s">&quot;redis://localhost:6379&quot;</span><span class="p">),</span><span class="w"> </span><span class="o">|</span><span class="n">b</span><span class="o">|</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">            </span><span class="c1">// `publish(&quot;audit&quot;)` sends through this Pub/Sub publisher (PUBLISH), not the default</span>
-<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">            </span><span class="c1">// stream publisher (XADD).</span>
-<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">audit</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">TypedPublisher</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">b</span><span class="p">.</span><span class="n">broker</span><span class="p">().</span><span class="n">pubsub_publisher</span><span class="p">());</span>
-<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="w">            </span><span class="n">b</span><span class="p">.</span><span class="n">include_publishing</span><span class="p">(</span><span class="n">on_event</span><span class="p">,</span><span class="w"> </span><span class="n">audit</span><span class="p">);</span>
-<a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="w">        </span><span class="p">})</span>
-<a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="w">        </span><span class="p">.</span><span class="n">with_broker</span><span class="p">(</span><span class="n">RedisBroker</span><span class="p">::</span><span class="n">cluster</span><span class="p">([</span><span class="s">&quot;redis://localhost:7000&quot;</span><span class="p">]),</span><span class="w"> </span><span class="o">|</span><span class="n">b</span><span class="o">|</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="w">            </span><span class="n">b</span><span class="p">.</span><span class="n">include</span><span class="p">(</span><span class="n">on_event_sharded</span><span class="p">);</span>
-<a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a><span class="w">        </span><span class="p">})</span>
-<a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a><span class="p">}</span>
-</code></pre></div>
-<p>To publish, mount the handler with <code>include_publishing</code> and a <code>broker.pubsub_publisher()</code> (add
-<code>.mode(PubSubMode::Sharded)</code> to match a sharded subscriber). The classic handler above uses the macro
-<code>publish("audit")</code> form, so its return value goes out through that Pub/Sub publisher - not the default
-stream publisher:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="cp">#[ruststream::app]</span>
 <a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="k">fn</span><span class="w"> </span><span class="nf">app</span><span class="p">()</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">RustStream</span><span class="w"> </span><span class="p">{</span>
 <a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">    </span><span class="n">RustStream</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">AppInfo</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="s">&quot;events&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;0.1.0&quot;</span><span class="p">))</span>
@@ -876,6 +912,24 @@ stream publisher:</p>
 <a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a><span class="w">        </span><span class="p">})</span>
 <a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a><span class="p">}</span>
 </code></pre></div>
+<p>To publish, mount the handler with <code>include_publishing</code> and a <code>broker.pubsub_publisher()</code> (add
+<code>.mode(PubSubMode::Sharded)</code> to match a sharded subscriber). The classic handler above uses the macro
+<code>publish("audit")</code> form, so its return value goes out through that Pub/Sub publisher - not the default
+stream publisher:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="cp">#[ruststream::app]</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="k">fn</span><span class="w"> </span><span class="nf">app</span><span class="p">()</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">RustStream</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">    </span><span class="n">RustStream</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">AppInfo</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="s">&quot;events&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;0.1.0&quot;</span><span class="p">))</span>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="w">        </span><span class="p">.</span><span class="n">with_broker</span><span class="p">(</span><span class="n">RedisBroker</span><span class="p">::</span><span class="n">standalone</span><span class="p">(</span><span class="s">&quot;redis://localhost:6379&quot;</span><span class="p">),</span><span class="w"> </span><span class="o">|</span><span class="n">b</span><span class="o">|</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="w">            </span><span class="c1">// `publish(&quot;audit&quot;)` sends through this Pub/Sub publisher (PUBLISH), not the default</span>
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="w">            </span><span class="c1">// stream publisher (XADD).</span>
+<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">audit</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">TypedPublisher</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">b</span><span class="p">.</span><span class="n">broker</span><span class="p">().</span><span class="n">pubsub_publisher</span><span class="p">());</span>
+<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a><span class="w">            </span><span class="n">b</span><span class="p">.</span><span class="n">include_publishing</span><span class="p">(</span><span class="n">on_event</span><span class="p">,</span><span class="w"> </span><span class="n">audit</span><span class="p">);</span>
+<a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a><span class="w">        </span><span class="p">})</span>
+<a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a><span class="w">        </span><span class="p">.</span><span class="n">with_broker</span><span class="p">(</span><span class="n">RedisBroker</span><span class="p">::</span><span class="n">cluster</span><span class="p">([</span><span class="s">&quot;redis://localhost:7000&quot;</span><span class="p">]),</span><span class="w"> </span><span class="o">|</span><span class="n">b</span><span class="o">|</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a><span class="w">            </span><span class="n">b</span><span class="p">.</span><span class="n">include</span><span class="p">(</span><span class="n">on_event_sharded</span><span class="p">);</span>
+<a id="__codelineno-12-12" name="__codelineno-12-12" href="#__codelineno-12-12"></a><span class="w">        </span><span class="p">})</span>
+<a id="__codelineno-12-13" name="__codelineno-12-13" href="#__codelineno-12-13"></a><span class="p">}</span>
+</code></pre></div>
 <p>Headers travel in a frame around the payload: a lossless binary frame by default, or - when you set a
 codec on both the publisher and the subscriber (<code>.codec(JsonCodec)</code>) - a readable codec-serialized
 <code>{headers, payload}</code> envelope (so the wire value is legible JSON in tools like RedisInsight). A raw
@@ -884,21 +938,21 @@ value an external client published is delivered as the payload with empty header
 <p>A list is a competing-consumers queue: a producer <code>LPUSH</code>es, consumers pop from the right, and each
 entry goes to exactly one consumer (no fan-out, no replay). Simple mode is at-most-once (<code>BRPOP</code>, no
 ack):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1">// Simple at-most-once work queue: BRPOP, no ack.</span>
-<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="cp">#[subscriber(RedisList::new(</span><span class="s">&quot;jobs&quot;</span><span class="cp">))]</span>
-<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">run_job</span><span class="p">(</span><span class="n">job</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Job</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">HandlerResult</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;running job {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">job</span><span class="p">.</span><span class="n">id</span><span class="p">);</span>
-<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="w">    </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">Ack</span>
-<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="c1">// Simple at-most-once work queue: BRPOP, no ack.</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="cp">#[subscriber(RedisList::new(</span><span class="s">&quot;jobs&quot;</span><span class="cp">))]</span>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">run_job</span><span class="p">(</span><span class="n">job</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Job</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">HandlerResult</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;running job {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">job</span><span class="p">.</span><span class="n">id</span><span class="p">);</span>
+<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="w">    </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">Ack</span>
+<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="p">}</span>
 </code></pre></div>
 <p>Reliable mode moves each entry to a processing list and removes it on ack (at-least-once), so a
 crashed handler does not silently lose its job:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="c1">// Reliable at-least-once work queue: the job moves to a processing list and is removed on ack.</span>
-<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="cp">#[subscriber(RedisList::new(</span><span class="s">&quot;jobs.reliable&quot;</span><span class="cp">).reliable())]</span>
-<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">run_reliable_job</span><span class="p">(</span><span class="n">job</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Job</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">HandlerResult</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;running reliable job {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">job</span><span class="p">.</span><span class="n">id</span><span class="p">);</span>
-<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="w">    </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">Ack</span>
-<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="c1">// Reliable at-least-once work queue: the job moves to a processing list and is removed on ack.</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="cp">#[subscriber(RedisList::new(</span><span class="s">&quot;jobs.reliable&quot;</span><span class="cp">).reliable())]</span>
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">run_reliable_job</span><span class="p">(</span><span class="n">job</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Job</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">HandlerResult</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;running reliable job {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">job</span><span class="p">.</span><span class="n">id</span><span class="p">);</span>
+<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="w">    </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">Ack</span>
+<a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="p">}</span>
 </code></pre></div>
 <p>Publish with <code>broker.list_publisher()</code> (<code>LPUSH</code>). Headers travel in the same frame as Pub/Sub: a
 lossless binary frame by default, or a readable codec-serialized envelope when a codec is set on both
@@ -910,8 +964,8 @@ routes by exact stream key with no server. It reproduces routing, ack/nack, and 
 the framework's conformance suite. It does not simulate consumer-group cursors, <code>XAUTOCLAIM</code>
 redelivery, trimming, or dead-letter routing - exercise those against a real Redis server (see the
 crate's <code>integration_fred</code> tests and <code>docker-compose.test.yml</code>).</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="k">[dev-dependencies]</span>
-<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="n">ruststream-fred</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">version</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;0.4&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">features</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;testing&quot;</span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="k">[dev-dependencies]</span>
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="n">ruststream-fred</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">version</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;0.4&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">features</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;testing&quot;</span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
 </code></pre></div>
 
 
