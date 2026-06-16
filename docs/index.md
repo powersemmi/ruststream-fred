@@ -1,37 +1,39 @@
-# ruststream-fred
+# Redis broker
 
-**`ruststream-fred`** is the Redis broker for the
-[RustStream](https://powersemmi.github.io/ruststream/) messaging framework. It is built on Redis
-Streams: durable consumer groups with acknowledgement, redelivery, and crash recovery, across
-standalone, cluster, and sentinel topologies. It ships an in-process test broker under its `testing`
+`ruststream-fred` is the Redis broker for the [RustStream](https://powersemmi.github.io/ruststream/)
+framework. It is built on Redis Streams: every subscription reads through a consumer group, so
+deliveries are durable and acknowledged. It also ships an in-memory test broker under its `testing`
 feature.
 
-Handlers, routers, codecs, and middleware come from the framework; this crate supplies the
-transport, and nothing broker-specific leaks back into the framework.
-
 ```toml
-ruststream = { version = "0.4", features = ["macros", "json"] }
+ruststream = { version = "0.4", features = ["macros"] }
 ruststream-fred = "0.4"
 serde = { version = "1", features = ["derive"] }
 ```
 
-```rust
---8<-- "crates/ruststream-fred/examples/fred_streams.rs:app"
+`RedisBroker::standalone` is synchronous and does no I/O, so a Redis service is assembled with the
+same `#[ruststream::app]` macro as any other broker. The runtime connects the broker once at startup,
+before opening subscriptions.
+
+## Topologies
+
+One crate, three named constructors. Each is synchronous and connects lazily:
+
+```toml
+# standalone
+# RedisBroker::standalone("redis://localhost:6379")
+# cluster (one reachable seed node is enough; the rest is discovered)
+# RedisBroker::cluster(["127.0.0.1:7000", "127.0.0.1:7001"])
+# sentinel (the monitored primary's name plus the sentinels)
+# RedisBroker::sentinel("mymaster", ["127.0.0.1:26379"])
 ```
 
-## Where to go next
+## Transport guides
 
-<div class="grid cards" markdown>
-
-- :material-database: **[Redis guide](redis.md)** - streams, consumer groups, reclaim, topologies, and testing.
-- :material-book-open-variant: **[RustStream docs](https://powersemmi.github.io/ruststream/)** - the framework itself: subscribers, routing, codecs, middleware, the CLI.
-- :material-language-rust: **[API reference](https://docs.rs/ruststream-fred)** - the crate's rustdoc on docs.rs.
-
-</div>
-
-## How this site relates to the RustStream docs
-
-This site documents the Redis broker only. Framework concepts that apply to every broker (writing
-subscribers, publishing, routing, codecs, middleware, observability, the CLI) live in the
-[RustStream documentation](https://powersemmi.github.io/ruststream/). The pages here cover what is
-specific to Redis and link back to the framework docs where the two meet.
+- [Redis Streams](streams.md) — consumer groups, fresh tail vs reclaim, delayed retry.
+- [Redis Lists](lists.md) — competing-consumers work queue, reliable mode, orphan recovery.
+- [Pub/Sub](pubsub.md) — classic and sharded broadcast.
+- [Dead-letter and poison cap](dead-letter.md) — bound infinite redelivery.
+- [Authentication and TLS](auth-tls.md) — credentials and TLS on every topology.
+- [Transactions](transactions.md) — batch publishing on standalone and sentinel.
+- [Testing](testing.md) — in-process handler-stub broker.
