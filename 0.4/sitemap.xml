@@ -5,7 +5,31 @@
          <lastmod>2026-06-16</lastmod>
     </url>
     <url>
-         <loc>https://powersemmi.github.io/ruststream-fred/0.4/redis/</loc>
+         <loc>https://powersemmi.github.io/ruststream-fred/0.4/auth-tls/</loc>
+         <lastmod>2026-06-16</lastmod>
+    </url>
+    <url>
+         <loc>https://powersemmi.github.io/ruststream-fred/0.4/dead-letter/</loc>
+         <lastmod>2026-06-16</lastmod>
+    </url>
+    <url>
+         <loc>https://powersemmi.github.io/ruststream-fred/0.4/lists/</loc>
+         <lastmod>2026-06-16</lastmod>
+    </url>
+    <url>
+         <loc>https://powersemmi.github.io/ruststream-fred/0.4/pubsub/</loc>
+         <lastmod>2026-06-16</lastmod>
+    </url>
+    <url>
+         <loc>https://powersemmi.github.io/ruststream-fred/0.4/streams/</loc>
+         <lastmod>2026-06-16</lastmod>
+    </url>
+    <url>
+         <loc>https://powersemmi.github.io/ruststream-fred/0.4/testing/</loc>
+         <lastmod>2026-06-16</lastmod>
+    </url>
+    <url>
+         <loc>https://powersemmi.github.io/ruststream-fred/0.4/transactions/</loc>
          <lastmod>2026-06-16</lastmod>
     </url>
 </urlset>

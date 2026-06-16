@@ -10,29 +10,31 @@
       
       
       
-        <link rel="canonical" href="https://powersemmi.github.io/ruststream-fred/0.4/">
+        <link rel="canonical" href="https://powersemmi.github.io/ruststream-fred/0.4/auth-tls/">
       
       
+        <link rel="prev" href="../dead-letter/">
       
-        <link rel="next" href="streams/">
+      
+        <link rel="next" href="../transactions/">
       
       
         
       
       
-      <link rel="icon" href="assets/images/favicon.png">
+      <link rel="icon" href="../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
     
     
       
-        <title>ruststream-fred</title>
+        <title>Authentication and TLS - ruststream-fred</title>
       
     
     
-      <link rel="stylesheet" href="assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
       
         
-        <link rel="stylesheet" href="assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -51,7 +53,7 @@
       
     
     
-    <script>__md_scope=new URL(".",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -76,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#redis-broker" class="md-skip">
+        <a href="#authentication-and-tls" class="md-skip">
           Skip to content
         </a>
       
@@ -96,7 +98,7 @@
 
 <header class="md-header md-header--shadow" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="." title="ruststream-fred" class="md-header__button md-logo" aria-label="ruststream-fred" data-md-component="logo">
+    <a href=".." title="ruststream-fred" class="md-header__button md-logo" aria-label="ruststream-fred" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -116,7 +118,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Home
+              Authentication and TLS
             
           </span>
         </div>
@@ -234,7 +236,7 @@
 
 <nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="." title="ruststream-fred" class="md-nav__button md-logo" aria-label="ruststream-fred" data-md-component="logo">
+    <a href=".." title="ruststream-fred" class="md-nav__button md-logo" aria-label="ruststream-fred" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -261,37 +263,10 @@
       
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Home
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="." class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
         
   
   
@@ -307,48 +282,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#topologies" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Topologies
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#transport-guides" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Transport guides
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -357,8 +290,10 @@
       
   
   
+    
   
   
+  
     
     
       
@@ -385,11 +320,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
         
           
           <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
@@ -410,7 +345,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_2">
             <span class="md-nav__icon md-icon"></span>
             
@@ -428,7 +363,7 @@
   
   
     <li class="md-nav__item">
-      <a href="streams/" class="md-nav__link">
+      <a href="../streams/" class="md-nav__link">
         
   
   
@@ -456,7 +391,7 @@
   
   
     <li class="md-nav__item">
-      <a href="lists/" class="md-nav__link">
+      <a href="../lists/" class="md-nav__link">
         
   
   
@@ -484,7 +419,7 @@
   
   
     <li class="md-nav__item">
-      <a href="pubsub/" class="md-nav__link">
+      <a href="../pubsub/" class="md-nav__link">
         
   
   
@@ -512,7 +447,7 @@
   
   
     <li class="md-nav__item">
-      <a href="dead-letter/" class="md-nav__link">
+      <a href="../dead-letter/" class="md-nav__link">
         
   
   
@@ -537,10 +472,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="auth-tls/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authentication and TLS
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -556,6 +518,48 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#tls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TLS
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#further-auth-features" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Further auth features
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -568,7 +572,7 @@
   
   
     <li class="md-nav__item">
-      <a href="transactions/" class="md-nav__link">
+      <a href="../transactions/" class="md-nav__link">
         
   
   
@@ -596,7 +600,7 @@
   
   
     <li class="md-nav__item">
-      <a href="testing/" class="md-nav__link">
+      <a href="../testing/" class="md-nav__link">
         
   
   
@@ -705,10 +709,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#topologies" class="md-nav__link">
+  <a href="#tls" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Topologies
+        TLS
       
     </span>
   </a>
@@ -716,10 +720,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#transport-guides" class="md-nav__link">
+  <a href="#further-auth-features" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Transport guides
+        Further auth features
       
     </span>
   </a>
@@ -743,7 +747,7 @@
 
 
   
-    <a href="https://github.com/powersemmi/ruststream-fred/edit/main/docs/index.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/powersemmi/ruststream-fred/edit/main/docs/auth-tls.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -751,37 +755,38 @@
   
 
 
-<h1 id="redis-broker">Redis broker<a class="headerlink" href="#redis-broker" title="Permanent link">&para;</a></h1>
-<p><code>ruststream-fred</code> is the Redis broker for the <a href="https://powersemmi.github.io/ruststream/">RustStream</a>
-framework. It is built on Redis Streams: every subscription reads through a consumer group, so
-deliveries are durable and acknowledged. It also ships an in-memory test broker under its <code>testing</code>
-feature.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">ruststream</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">version</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;0.4&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">features</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;macros&quot;</span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">ruststream-fred</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;0.4&quot;</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">serde</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">version</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;1&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">features</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;derive&quot;</span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
+<h1 id="authentication-and-tls">Authentication and TLS<a class="headerlink" href="#authentication-and-tls" title="Permanent link">&para;</a></h1>
+<p>The standalone URL carries credentials (<code>redis://user:pass@host</code>), but the bare <code>cluster</code> /
+<code>sentinel</code> seed lists cannot. Builders set them on every topology, mapping onto fred's config:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1">// ACL username + password on a cluster. Bare seed lists cannot encode credentials, so the</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="c1">// builder is the only way to authenticate a cluster or sentinel topology.</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="kd">let</span><span class="w"> </span><span class="n">_broker</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">RedisBroker</span><span class="p">::</span><span class="n">cluster</span><span class="p">([</span><span class="s">&quot;10.0.0.1:6379&quot;</span><span class="p">]).</span><span class="n">credentials</span><span class="p">(</span><span class="s">&quot;worker&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;s3cr3t&quot;</span><span class="p">);</span>
 </code></pre></div>
-<p><code>RedisBroker::standalone</code> is synchronous and does no I/O, so a Redis service is assembled with the
-same <code>#[ruststream::app]</code> macro as any other broker. The runtime connects the broker once at startup,
-before opening subscriptions.</p>
-<h2 id="topologies">Topologies<a class="headerlink" href="#topologies" title="Permanent link">&para;</a></h2>
-<p>One crate, three named constructors. Each is synchronous and connects lazily:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># standalone</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="c1"># RedisBroker::standalone(&quot;redis://localhost:6379&quot;)</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="c1"># cluster (one reachable seed node is enough; the rest is discovered)</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="c1"># RedisBroker::cluster([&quot;127.0.0.1:7000&quot;, &quot;127.0.0.1:7001&quot;])</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="c1"># sentinel (the monitored primary&#39;s name plus the sentinels)</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="c1"># RedisBroker::sentinel(&quot;mymaster&quot;, [&quot;127.0.0.1:26379&quot;])</span>
+<p>For a password-only <code>AUTH</code> (the legacy <code>requirepass</code> form, no ACL user) use <code>.password(...)</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1">// Password-only AUTH (legacy requirepass, no ACL user) on a sentinel topology.</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="kd">let</span><span class="w"> </span><span class="n">_broker</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">RedisBroker</span><span class="p">::</span><span class="n">sentinel</span><span class="p">(</span><span class="s">&quot;mymaster&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">[</span><span class="s">&quot;10.0.0.1:26379&quot;</span><span class="p">]).</span><span class="n">password</span><span class="p">(</span><span class="s">&quot;s3cr3t&quot;</span><span class="p">);</span>
 </code></pre></div>
-<h2 id="transport-guides">Transport guides<a class="headerlink" href="#transport-guides" title="Permanent link">&para;</a></h2>
+<p>Credentials set programmatically override any in a standalone URL.</p>
+<h2 id="tls">TLS<a class="headerlink" href="#tls" title="Permanent link">&para;</a></h2>
+<p>TLS lives behind additive, off-by-default features that map onto fred's TLS backends - <code>tls-rustls</code>
+(rustls with aws-lc-rs), <code>tls-rustls-ring</code> (rustls with ring), and <code>tls-native-tls</code>. With one
+enabled, pass a <code>TlsConfig</code> (or any <code>TlsConnector</code>) on any topology; a standalone broker can also
+use a <code>rediss://</code> / <code>valkeys://</code> URL:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1">// System trust roots, no client certificate. The same TlsConnector works on every topology.</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="kd">let</span><span class="w"> </span><span class="n">tls</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">TlsConnector</span><span class="p">::</span><span class="n">default_rustls</span><span class="p">()</span><span class="o">?</span><span class="p">;</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="kd">let</span><span class="w"> </span><span class="n">_broker</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">RedisBroker</span><span class="p">::</span><span class="n">cluster</span><span class="p">([</span><span class="s">&quot;10.0.0.1:6379&quot;</span><span class="p">]).</span><span class="n">tls</span><span class="p">(</span><span class="n">tls</span><span class="p">);</span>
+</code></pre></div>
+<h2 id="further-auth-features">Further auth features<a class="headerlink" href="#further-auth-features" title="Permanent link">&para;</a></h2>
+<p>Two further auth features are off by default:</p>
 <ul>
-<li><a href="streams/">Redis Streams</a> — consumer groups, fresh tail vs reclaim, delayed retry.</li>
-<li><a href="lists/">Redis Lists</a> — competing-consumers work queue, reliable mode, orphan recovery.</li>
-<li><a href="pubsub/">Pub/Sub</a> — classic and sharded broadcast.</li>
-<li><a href="dead-letter/">Dead-letter and poison cap</a> — bound infinite redelivery.</li>
-<li><a href="auth-tls/">Authentication and TLS</a> — credentials and TLS on every topology.</li>
-<li><a href="transactions/">Transactions</a> — batch publishing on standalone and sentinel.</li>
-<li><a href="testing/">Testing</a> — in-process handler-stub broker.</li>
+<li><code>sentinel-auth</code> adds <code>.sentinel_credentials(user, pass)</code> / <code>.sentinel_password(pass)</code> for
+  credentials that authenticate to the sentinels, distinct from the data-node credentials.</li>
+<li><code>credential-provider</code> accepts <code>.credential_provider(provider)</code>, a callback that supplies and can
+  rotate the username/password on each <code>AUTH</code> / <code>HELLO</code> (IAM-style auth); it takes precedence over
+  static credentials.</li>
 </ul>
+<p>For full control (custom reconnection, performance, or TLS policy beyond these builders), build a
+fred <code>Pool</code> yourself and wrap it with <code>RedisBroker::from_pool</code>.</p>
 
 
 
@@ -857,11 +862,11 @@ before opening subscriptions.</p>
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": ".", "features": ["navigation.sections", "navigation.top", "navigation.tracking", "navigation.indexes", "content.code.copy", "content.code.annotate", "content.action.edit", "search.suggest", "search.highlight", "toc.follow"], "search": "assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "navigation.tracking", "navigation.indexes", "content.code.copy", "content.code.annotate", "content.action.edit", "search.suggest", "search.highlight", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
     
     
   
-      <script src="assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
       
     
   
