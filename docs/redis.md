@@ -178,8 +178,21 @@ crashed handler does not silently lose its job:
 
 Publish with `broker.list_publisher()` (`LPUSH`). Headers travel in the same frame as Pub/Sub: a
 lossless binary frame by default, or a readable codec-serialized envelope when a codec is set on both
-ends (`.codec(JsonCodec)`). Recovering entries stranded on a processing list by a dead consumer (a
-ZSET watchdog) is not in 0.4; for a durable, recoverable queue prefer Redis Streams.
+ends (`.codec(JsonCodec)`).
+
+A dead consumer can strand a reliable entry on its processing list, since Redis lists have no native
+pending tracking. Opt into a recovery watchdog by naming a ZSET key (off by default):
+
+```rust
+--8<-- "crates/ruststream-fred/examples/fred_list.rs:recovery"
+```
+
+Each claim is recorded in the ZSET (score = claim time); a sweeper folded into the subscription's
+read loop returns entries idle past `min_idle` to the main list, where a live consumer re-claims
+them. Like the Streams reclaim path, `min_idle` must exceed the longest legitimate handler runtime,
+or a still-running entry is recovered and processed twice. An optional `recovery_ttl` cleans up an
+abandoned ZSET key but must exceed `min_idle`. Without recovery, Redis Streams remain the recommended
+durable, recoverable path.
 
 An idle list can be bounded with a key TTL: `broker.list_publisher().ttl(Duration::from_secs(300))`
 re-arms a `PEXPIRE` on the list key on every publish, so an actively used queue never expires and

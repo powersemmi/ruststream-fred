@@ -10,9 +10,11 @@
 //!   `nack(requeue = false)` removes it.
 //!
 //! Reliable mode has no native idle/pending tracking, so a consumer that dies after `LMOVE` but
-//! before settling leaves its entry stranded on the processing list. Recovering those (a ZSET
-//! watchdog) is not implemented in 0.4; the durable, recoverable path is Redis Streams
-//! ([`crate::RedisStream`]).
+//! before settling leaves its entry stranded on the processing list. Opting into a recovery ZSET
+//! with [`RedisList::recovery_zset`] (and [`RedisList::min_idle`]) starts a watchdog that returns
+//! such orphans to the main list; without it (the default) reliable lists have no orphan recovery,
+//! and Redis Streams ([`crate::RedisStream`]) remain the recommended durable path. See
+//! [`crate::recovery`].
 //!
 //! Headers travel in a frame around the payload (see [`crate::envelope`]): a lossless binary frame
 //! by default, or a readable codec-serialized envelope when a codec is set with
@@ -24,6 +26,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use fred::clients::Pool;
+use fred::error::ErrorKind;
 use fred::interfaces::{KeysInterface, ListInterface};
 use fred::types::lists::LMoveDirection;
 use futures::Stream;
@@ -34,6 +37,7 @@ use ruststream::{AckError, Headers, IncomingMessage, Partitioned, SubscriptionSo
 
 use crate::deadletter::{self, PoisonPolicy, REASON_DROPPED, REASON_MAX_DELIVERIES};
 use crate::envelope::{SharedEnvelope, frame, unframe};
+use crate::recovery::{self, RecoveryConfig};
 use crate::{RedisBroker, error::RedisError, message::PARTITION_KEY_HEADER};
 
 const DEFAULT_BLOCK: Duration = Duration::from_secs(5);
@@ -42,6 +46,19 @@ const PROCESSING_SUFFIX: &str = ".processing";
 
 fn block_secs(block: Duration) -> f64 {
     block.as_secs_f64()
+}
+
+/// Normalizes a blocking pop (`BRPOP` / `BLMOVE`) result: fred reports a timed-out pop with nothing
+/// available as a timeout error rather than an empty reply, so treat that as "no entry this round"
+/// and let the read loop retry. Any other error propagates.
+fn empty_on_timeout<T>(
+    result: Result<Option<T>, fred::error::Error>,
+) -> Result<Option<T>, RedisError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(err) if matches!(err.kind(), ErrorKind::Timeout) => Ok(None),
+        Err(err) => Err(RedisError::stream(err)),
+    }
 }
 
 /// Describes one list subscription against [`crate::RedisBroker`].
@@ -66,6 +83,9 @@ pub struct RedisList {
     codec: Option<SharedEnvelope>,
     dead_letter: Option<String>,
     max_deliveries: Option<u64>,
+    min_idle: Option<Duration>,
+    recovery_zset: Option<String>,
+    recovery_ttl: Option<Duration>,
 }
 
 impl Debug for RedisList {
@@ -76,6 +96,9 @@ impl Debug for RedisList {
             .field("processing", &self.processing)
             .field("codec", &self.codec.is_some())
             .field("dead_letter", &self.dead_letter)
+            .field("max_deliveries", &self.max_deliveries)
+            .field("recovery_zset", &self.recovery_zset)
+            .field("recovery_ttl", &self.recovery_ttl)
             .finish_non_exhaustive()
     }
 }
@@ -91,6 +114,9 @@ impl RedisList {
             codec: None,
             dead_letter: None,
             max_deliveries: None,
+            min_idle: None,
+            recovery_zset: None,
+            recovery_ttl: None,
         }
     }
 
@@ -139,6 +165,37 @@ impl RedisList {
         self
     }
 
+    /// How long a claimed reliable-mode entry may sit idle on the processing list before the
+    /// recovery watchdog returns it to the main list. Required for (and only meaningful with)
+    /// [`recovery_zset`](Self::recovery_zset).
+    ///
+    /// It has no default and must exceed the longest legitimate handler runtime: set it too low and
+    /// a healthy consumer's in-flight entry gets recovered and processed twice.
+    pub const fn min_idle(mut self, min_idle: Duration) -> Self {
+        self.min_idle = Some(min_idle);
+        self
+    }
+
+    /// Opts reliable mode into orphan recovery, naming the ZSET key that tracks in-flight claims.
+    ///
+    /// Off by default (a dead consumer's entry stays stranded on the processing list). The key has
+    /// no sane default, so it is named explicitly here; pair it with [`min_idle`](Self::min_idle),
+    /// which is required when recovery is on. Reliable mode is implied. See [`crate::recovery`].
+    pub fn recovery_zset(mut self, key: impl Into<String>) -> Self {
+        self.recovery_zset = Some(key.into());
+        self.reliable = true;
+        self
+    }
+
+    /// An optional auto-cleanup TTL on the recovery ZSET key (refreshed on every claim).
+    ///
+    /// When set it must exceed [`min_idle`](Self::min_idle) (and the longest legitimate handler
+    /// runtime), or in-flight tracking is dropped before the watchdog can act.
+    pub const fn recovery_ttl(mut self, ttl: Duration) -> Self {
+        self.recovery_ttl = Some(ttl);
+        self
+    }
+
     /// The list key this subscription consumes.
     #[must_use]
     pub fn key(&self) -> &str {
@@ -169,6 +226,30 @@ impl RedisList {
             max_deliveries: self.max_deliveries,
         }
     }
+
+    /// Resolves the recovery settings, or `None` when recovery was not opted into.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RedisError::InvalidOptions`] when a recovery ZSET is named without a
+    /// [`min_idle`](Self::min_idle), which has no sane default.
+    pub(crate) fn recovery_config(&self) -> Result<Option<RecoveryConfig>, RedisError> {
+        let Some(zset_key) = self.recovery_zset.clone() else {
+            return Ok(None);
+        };
+        let min_idle = self.min_idle.ok_or_else(|| {
+            RedisError::InvalidOptions(format!(
+                "reliable list recovery on `{}` needs a min_idle: call .min_idle(duration) \
+                 alongside .recovery_zset(key)",
+                self.key
+            ))
+        })?;
+        Ok(Some(RecoveryConfig {
+            zset_key,
+            min_idle,
+            ttl: self.recovery_ttl,
+        }))
+    }
 }
 
 impl SubscriptionSource<RedisBroker> for RedisList {
@@ -192,6 +273,7 @@ pub struct RedisListSubscriber {
     block: Duration,
     codec: Option<SharedEnvelope>,
     policy: PoisonPolicy,
+    recovery: Option<RecoveryConfig>,
 }
 
 impl Debug for RedisListSubscriber {
@@ -199,11 +281,17 @@ impl Debug for RedisListSubscriber {
         f.debug_struct("RedisListSubscriber")
             .field("key", &self.key)
             .field("reliable", &self.reliable)
+            .field("poison", &self.policy.is_active())
+            .field("recovery", &self.recovery.is_some())
             .finish_non_exhaustive()
     }
 }
 
 impl RedisListSubscriber {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal constructor mirroring the descriptor"
+    )]
     pub(crate) fn new(
         pool: Pool,
         key: String,
@@ -212,6 +300,7 @@ impl RedisListSubscriber {
         block: Duration,
         codec: Option<SharedEnvelope>,
         policy: PoisonPolicy,
+        recovery: Option<RecoveryConfig>,
     ) -> Self {
         Self {
             pool,
@@ -221,6 +310,7 @@ impl RedisListSubscriber {
             block,
             codec,
             policy,
+            recovery,
         }
     }
 
@@ -233,7 +323,7 @@ impl RedisListSubscriber {
         }
     }
 
-    fn reliable_message(&self, raw: Vec<u8>) -> RedisListMessage {
+    fn reliable_message(&self, raw: Vec<u8>, recovery: Option<RecoveryHandle>) -> RedisListMessage {
         let (payload, headers) = unframe(self.codec.as_ref(), &raw);
         RedisListMessage {
             payload,
@@ -245,32 +335,48 @@ impl RedisListSubscriber {
                 value: raw,
                 codec: self.codec.clone(),
                 policy: self.policy.clone(),
+                recovery,
             }),
         }
     }
 
-    /// Blocks for the next entry, returning `None` when the pop times out (the caller loops).
+    /// Blocks for the next entry, returning `None` when the pop times out (the caller loops). When
+    /// recovery is enabled, first returns any orphaned entries to the main list so this same pop can
+    /// pick them up.
     async fn next_entry(&self) -> Result<Option<RedisListMessage>, RedisError> {
         let secs = block_secs(self.block);
         if self.reliable {
-            let value: Option<Vec<u8>> = self
-                .pool
-                .blmove(
-                    self.key.as_str(),
-                    self.processing.as_str(),
-                    LMoveDirection::Right,
-                    LMoveDirection::Left,
-                    secs,
-                )
-                .await
-                .map_err(RedisError::stream)?;
-            Ok(value.map(|v| self.reliable_message(v)))
+            if let Some(cfg) = &self.recovery {
+                recovery::sweep_orphans(&self.pool, cfg, &self.key, &self.processing).await?;
+            }
+            let value: Option<Vec<u8>> = empty_on_timeout(
+                self.pool
+                    .blmove(
+                        self.key.as_str(),
+                        self.processing.as_str(),
+                        LMoveDirection::Right,
+                        LMoveDirection::Left,
+                        secs,
+                    )
+                    .await,
+            )?;
+            let Some(value) = value else {
+                return Ok(None);
+            };
+            let handle = match &self.recovery {
+                Some(cfg) => {
+                    let member = recovery::record_claim(&self.pool, cfg, &value).await?;
+                    Some(RecoveryHandle {
+                        zset_key: cfg.zset_key.clone(),
+                        member,
+                    })
+                }
+                None => None,
+            };
+            Ok(Some(self.reliable_message(value, handle)))
         } else {
-            let popped: Option<(String, Vec<u8>)> = self
-                .pool
-                .brpop(self.key.as_str(), secs)
-                .await
-                .map_err(RedisError::stream)?;
+            let popped: Option<(String, Vec<u8>)> =
+                empty_on_timeout(self.pool.brpop(self.key.as_str(), secs).await)?;
             Ok(popped.map(|(_, v)| self.simple_message(&v)))
         }
     }
@@ -309,6 +415,15 @@ struct ListAck {
     /// The framing codec, so a poison-policy requeue can re-frame with an updated retry count.
     codec: Option<SharedEnvelope>,
     policy: PoisonPolicy,
+    /// Set when orphan recovery is enabled: the ZSET key and the member tracking this claim, so
+    /// settling removes its recovery tracking.
+    recovery: Option<RecoveryHandle>,
+}
+
+/// The recovery-ZSET coordinates for one in-flight reliable-list claim.
+struct RecoveryHandle {
+    zset_key: String,
+    member: Vec<u8>,
 }
 
 /// A list-queue delivery. In simple mode `ack` / `nack` are unsupported; in reliable mode `ack`
@@ -341,7 +456,7 @@ impl IncomingMessage for RedisListMessage {
         let Some(handle) = self.ack else {
             return Err(AckError::Unsupported);
         };
-        lrem(&handle).await
+        settle(&handle).await
     }
 
     async fn nack(self, requeue: bool) -> Result<(), AckError> {
@@ -369,7 +484,7 @@ impl IncomingMessage for RedisListMessage {
         } else if handle.policy.is_active() {
             list_dead_letter(&handle, &self.payload, &self.headers, REASON_DROPPED).await?;
         }
-        lrem(&handle).await
+        settle(&handle).await
     }
 }
 
@@ -411,12 +526,17 @@ async fn list_dead_letter(
     Ok(())
 }
 
-async fn lrem(handle: &ListAck) -> Result<(), AckError> {
+/// Removes the entry from the processing list and, when recovery is enabled, drops its tracking from
+/// the recovery ZSET.
+async fn settle(handle: &ListAck) -> Result<(), AckError> {
     let _: i64 = handle
         .pool
         .lrem(handle.processing_key.as_str(), 1, handle.value.clone())
         .await
         .map_err(ack_broker)?;
+    if let Some(rec) = &handle.recovery {
+        recovery::forget(&handle.pool, &rec.zset_key, &rec.member).await?;
+    }
     Ok(())
 }
 
