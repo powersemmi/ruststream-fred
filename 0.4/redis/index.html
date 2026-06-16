@@ -958,6 +958,11 @@ crashed handler does not silently lose its job:</p>
 lossless binary frame by default, or a readable codec-serialized envelope when a codec is set on both
 ends (<code>.codec(JsonCodec)</code>). Recovering entries stranded on a processing list by a dead consumer (a
 ZSET watchdog) is not in 0.4; for a durable, recoverable queue prefer Redis Streams.</p>
+<p>An idle list can be bounded with a key TTL: <code>broker.list_publisher().ttl(Duration::from_secs(300))</code>
+re-arms a <code>PEXPIRE</code> on the list key on every publish, so an actively used queue never expires and
+only an idle one lapses. It is off by default and per-key (the whole list), not per-entry - Redis
+lists have no per-element expiry. Pub/Sub has no equivalent (<code>PUBLISH</code> stores nothing to expire), and
+streams bound their size with trimming rather than a TTL.</p>
 <h2 id="testing">Testing<a class="headerlink" href="#testing" title="Permanent link">&para;</a></h2>
 <p>The <code>testing</code> feature ships <code>RedisTestBroker</code> / <code>RedisTestClient</code>, a handler-stub dispatcher that
 routes by exact stream key with no server. It reproduces routing, ack/nack, and headers, and passes
