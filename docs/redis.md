@@ -88,8 +88,13 @@ The standalone URL carries credentials (`redis://user:pass@host`), but the bare 
 `sentinel` seed lists cannot. Builders set them on every topology, mapping onto fred's config:
 
 ```rust
-// ACL user + password (Redis 6+), or .password("...") for a password-only AUTH (requirepass).
-// RedisBroker::cluster(["10.0.0.1:6379"]).credentials("worker", "s3cr3t")
+--8<-- "crates/ruststream-fred/examples/fred_auth.rs:credentials"
+```
+
+For a password-only `AUTH` (the legacy `requirepass` form, no ACL user) use `.password(...)`:
+
+```rust
+--8<-- "crates/ruststream-fred/examples/fred_auth.rs:password"
 ```
 
 Credentials set programmatically override any in a standalone URL.
@@ -100,9 +105,7 @@ enabled, pass a `TlsConfig` (or any `TlsConnector`) on any topology; a standalon
 use a `rediss://` / `valkeys://` URL:
 
 ```rust
-// use ruststream_fred::{RedisBroker, TlsConnector};
-// let tls = TlsConnector::default_rustls()?;             // system trust roots
-// RedisBroker::cluster(["10.0.0.1:6379"]).tls(tls)
+--8<-- "crates/ruststream-fred/examples/fred_tls.rs:tls"
 ```
 
 Two further auth features are off by default:

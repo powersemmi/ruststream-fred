@@ -67,4 +67,10 @@ name = "fred_pubsub"
 name = "fred_list"
 
 [[example]]
+name = "fred_auth"
+
+[[example]]
+name = "fred_tls"
+
+[[example]]
 name = "fred_transaction"
