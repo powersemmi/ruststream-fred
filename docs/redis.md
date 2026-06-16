@@ -90,6 +90,27 @@ opt-in settings on a `RedisStream` (and on a reliable `RedisList`) bound that:
 
 Simple List and Pub/Sub cannot ack, so they have no dead-letter path.
 
+## Delayed retry
+
+A handler can ask for a delayed redelivery (`HandlerResult::retry_after(delay)`), for example to back
+off a transient failure. Redis Streams have no native per-message delay, so by default the runtime
+falls back to an in-process timer that re-publishes the message after the delay - at-most-once over
+that window, since a crash before the timer fires loses the deferred copy.
+
+For a crash-safe alternative, opt a subscription into a durable ZSET delay queue. It is off by
+default and you name the ZSET key explicitly (the key has no sane default):
+
+```rust
+--8<-- "crates/ruststream-fred/examples/fred_delayed_retry.rs:handler"
+```
+
+A delayed delivery is `ZADD`ed to the named ZSET with a `fire_at` score, then the original is
+`XACK`ed; a sweeper folded into the subscription's read loop moves due entries back onto the stream
+with `XADD`, so the retry survives a restart. The sweeper's granularity is the read `block` interval,
+and the retry-count header is incremented on each pass. An optional TTL on the ZSET key cleans up an
+abandoned queue, but it must exceed the longest scheduled delay or pending entries are dropped before
+they fire. Scores are wall-clock epoch milliseconds, so keep clocks synced (NTP).
+
 ## Topologies
 
 One crate, three named constructors. Each is synchronous and connects lazily:

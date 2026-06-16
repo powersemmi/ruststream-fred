@@ -15,6 +15,7 @@ use crate::convert::{HEADER_PREFIX, parts_from_fields};
 use crate::deadletter::{
     self, DELIVERY_COUNT_HEADER, IDLE_MS_HEADER, PoisonPolicy, REASON_MAX_DELIVERIES,
 };
+use crate::delay::{self, DelayConfig};
 use crate::{error::RedisError, message::RedisMessage, stream::ReadMode};
 
 /// One decoded stream entry: its ID and field map.
@@ -46,6 +47,9 @@ pub struct RedisSubscriber {
     block: Duration,
     mode: ReadMode,
     policy: PoisonPolicy,
+    /// Set when the subscription opted into a durable ZSET delay queue; drives native `nack_after`
+    /// on each delivery and the due-entry sweep on each fetch.
+    delay: Option<DelayConfig>,
     /// Reclaim cursor; advances across `XAUTOCLAIM` calls, unused in fresh mode.
     cursor: String,
     /// Entries fetched but not yet yielded.
@@ -77,6 +81,7 @@ impl RedisSubscriber {
         block: Duration,
         mode: ReadMode,
         policy: PoisonPolicy,
+        delay: Option<DelayConfig>,
     ) -> Self {
         Self {
             pool,
@@ -87,6 +92,7 @@ impl RedisSubscriber {
             block,
             mode,
             policy,
+            delay,
             cursor: RECLAIM_START.to_owned(),
             buffer: VecDeque::new(),
         }
@@ -102,12 +108,18 @@ impl RedisSubscriber {
             payload,
             headers,
             self.policy.clone(),
+            self.delay.clone(),
         )
     }
 
     /// Fetches the next batch of entries into the buffer. A read that timed out with nothing
     /// pending leaves the buffer empty (the caller loops and reads again).
     async fn fetch(&mut self) -> Result<(), RedisError> {
+        // Replay any due delayed-retry entries before reading, so they re-enter the stream and get
+        // delivered through the normal read path. Granularity is the read block interval.
+        if let Some(cfg) = &self.delay {
+            delay::sweep_due(&self.pool, cfg, &self.key).await?;
+        }
         let entries = match self.mode.clone() {
             ReadMode::Fresh => self.fetch_fresh().await?,
             ReadMode::Reclaim { min_idle } => self.fetch_reclaim(min_idle).await?,

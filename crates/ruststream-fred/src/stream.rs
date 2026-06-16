@@ -17,6 +17,7 @@ use std::time::Duration;
 use ruststream::SubscriptionSource;
 
 use crate::deadletter::PoisonPolicy;
+use crate::delay::{DelayConfig, DelayedRetry};
 use crate::{RedisBroker, error::RedisError, subscriber::RedisSubscriber};
 
 const DEFAULT_COUNT: u64 = 64;
@@ -88,6 +89,7 @@ pub struct RedisStream {
     mode: ReadMode,
     dead_letter: Option<String>,
     max_deliveries: Option<u64>,
+    delayed_retry: Option<DelayedRetry>,
 }
 
 impl RedisStream {
@@ -105,6 +107,7 @@ impl RedisStream {
             mode: ReadMode::Fresh,
             dead_letter: None,
             max_deliveries: None,
+            delayed_retry: None,
         }
     }
 
@@ -125,6 +128,7 @@ impl RedisStream {
             mode: ReadMode::Reclaim { min_idle },
             dead_letter: None,
             max_deliveries: None,
+            delayed_retry: None,
         }
     }
 
@@ -180,6 +184,20 @@ impl RedisStream {
         self
     }
 
+    /// Opts this subscription into durable, crash-safe delayed retry backed by a ZSET delay queue.
+    ///
+    /// Off by default: without it, `retry_after(delay)` / `nack_after(delay)` degrade to the
+    /// runtime's broker-agnostic deferred re-publish (at-most-once over the delay window). With it,
+    /// a delayed delivery is `ZADD`ed to the named ZSET and replayed from there once due, so the
+    /// retry survives a process crash. See [`DelayedRetry`] for the key and TTL requirements.
+    ///
+    /// The sweeper that replays due entries runs inside this subscription's read loop, so its
+    /// granularity is the read [`block`](Self::block) interval.
+    pub fn delayed_retry(mut self, retry: DelayedRetry) -> Self {
+        self.delayed_retry = Some(retry);
+        self
+    }
+
     /// The stream key this subscription reads.
     #[must_use]
     pub fn key(&self) -> &str {
@@ -220,6 +238,10 @@ impl RedisStream {
             dead_letter: self.dead_letter.clone(),
             max_deliveries: self.max_deliveries,
         }
+    }
+
+    pub(crate) fn delay_config(&self) -> Option<DelayConfig> {
+        self.delayed_retry.as_ref().map(DelayConfig::from_retry)
     }
 }
 
