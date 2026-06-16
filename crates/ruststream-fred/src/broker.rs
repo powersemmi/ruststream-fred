@@ -4,6 +4,14 @@ use std::sync::Arc;
 
 use fred::clients::{Client, Pool};
 use fred::interfaces::{ClientLike, EventInterface, PubsubInterface, StreamsInterface};
+#[cfg(feature = "credential-provider")]
+use fred::types::config::CredentialProvider;
+#[cfg(any(
+    feature = "tls-rustls",
+    feature = "tls-rustls-ring",
+    feature = "tls-native-tls"
+))]
+use fred::types::config::TlsConfig;
 use fred::types::config::{Config, ServerConfig};
 use ruststream::{Broker, DescribeServer, ServerSpec, Subscribe};
 use tokio::sync::OnceCell;
@@ -70,6 +78,63 @@ fn parse_servers(addrs: &[String], default_port: u16) -> Result<Vec<(String, u16
         .collect()
 }
 
+/// Authentication and TLS settings recorded on the broker and folded into the `fred` [`Config`]
+/// at connect time, on every topology. Fields with no value are left untouched, so credentials
+/// supplied through a standalone `redis://user:pass@host` URL survive unless overridden here.
+#[derive(Clone, Default)]
+struct AuthConfig {
+    /// ACL username for the data nodes (`Config.username`).
+    username: Option<String>,
+    /// Password for the data nodes (`Config.password`).
+    password: Option<String>,
+    /// ACL username for authenticating to the sentinels, distinct from the data-node username.
+    #[cfg(feature = "sentinel-auth")]
+    sentinel_username: Option<String>,
+    /// Password for authenticating to the sentinels, distinct from the data-node password.
+    #[cfg(feature = "sentinel-auth")]
+    sentinel_password: Option<String>,
+    /// Explicit TLS configuration (`Config.tls`).
+    #[cfg(any(
+        feature = "tls-rustls",
+        feature = "tls-rustls-ring",
+        feature = "tls-native-tls"
+    ))]
+    tls: Option<TlsConfig>,
+    /// Dynamic/rotating credential provider (`Config.credential_provider`).
+    #[cfg(feature = "credential-provider")]
+    credential_provider: Option<Arc<dyn CredentialProvider>>,
+}
+
+// Redacts secrets: passwords never appear, and TLS / credential-provider show only presence. The
+// usernames are identifiers (not secrets) and are kept to aid debugging.
+impl std::fmt::Debug for AuthConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("AuthConfig");
+        s.field("username", &self.username);
+        s.field("password", &self.password.as_ref().map(|_| "<redacted>"));
+        #[cfg(feature = "sentinel-auth")]
+        {
+            s.field("sentinel_username", &self.sentinel_username);
+            s.field(
+                "sentinel_password",
+                &self.sentinel_password.as_ref().map(|_| "<redacted>"),
+            );
+        }
+        #[cfg(any(
+            feature = "tls-rustls",
+            feature = "tls-rustls-ring",
+            feature = "tls-native-tls"
+        ))]
+        s.field("tls", &self.tls.as_ref().map(|_| "<configured>"));
+        #[cfg(feature = "credential-provider")]
+        s.field(
+            "credential_provider",
+            &self.credential_provider.as_ref().map(|_| "<configured>"),
+        );
+        s.finish()
+    }
+}
+
 /// A Redis broker handle backed by a `fred` connection [`Pool`].
 ///
 /// Construct it synchronously with [`RedisBroker::standalone`] and let the runtime connect it at
@@ -105,6 +170,7 @@ pub struct RedisBroker {
     topology: Topology,
     pool_size: usize,
     default_group: Option<String>,
+    auth: AuthConfig,
 }
 
 impl std::fmt::Debug for RedisBroker {
@@ -113,6 +179,7 @@ impl std::fmt::Debug for RedisBroker {
             .field("topology", &self.topology)
             .field("pool_size", &self.pool_size)
             .field("default_group", &self.default_group)
+            .field("auth", &self.auth)
             .finish_non_exhaustive()
     }
 }
@@ -159,6 +226,7 @@ impl RedisBroker {
             topology,
             pool_size: DEFAULT_POOL_SIZE,
             default_group: None,
+            auth: AuthConfig::default(),
         }
     }
 
@@ -176,6 +244,147 @@ impl RedisBroker {
     #[must_use]
     pub fn default_group(mut self, group: impl Into<String>) -> Self {
         self.default_group = Some(group.into());
+        self
+    }
+
+    /// Sets the ACL `username` and `password` used to authenticate on connect, applied on every
+    /// topology (standalone, cluster, sentinel).
+    ///
+    /// This maps onto `fred`'s `Config.username` / `Config.password`, so authentication works
+    /// beyond the standalone `redis://user:pass@host` URL, which the bare `cluster` / `sentinel`
+    /// seed lists cannot express. Credentials set here override any in a standalone URL.
+    ///
+    /// For a password-only `AUTH` (the legacy `requirepass`, no ACL user) use
+    /// [`password`](Self::password).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ruststream_fred::RedisBroker;
+    ///
+    /// let broker = RedisBroker::cluster(["10.0.0.1:6379"]).credentials("worker", "s3cr3t");
+    /// # let _ = broker;
+    /// ```
+    #[must_use]
+    pub fn credentials(mut self, username: impl Into<String>, password: impl Into<String>) -> Self {
+        self.auth.username = Some(username.into());
+        self.auth.password = Some(password.into());
+        self
+    }
+
+    /// Sets a password-only `AUTH` (no ACL username; the legacy `requirepass` form), on every
+    /// topology. Use [`credentials`](Self::credentials) for an ACL user plus password.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ruststream_fred::RedisBroker;
+    ///
+    /// let broker = RedisBroker::sentinel("mymaster", ["10.0.0.1:26379"]).password("s3cr3t");
+    /// # let _ = broker;
+    /// ```
+    #[must_use]
+    pub fn password(mut self, password: impl Into<String>) -> Self {
+        self.auth.password = Some(password.into());
+        self
+    }
+
+    /// Sets the TLS configuration used on connect, on every topology. Accepts a `fred`
+    /// [`TlsConfig`] or anything convertible into one (for example a `TlsConnector`).
+    ///
+    /// Available behind the `tls-rustls`, `tls-rustls-ring`, or `tls-native-tls` feature; a
+    /// standalone broker can also enable TLS through a `rediss://` / `valkeys://` URL. The
+    /// `fred` re-exports [`TlsConfig`](crate::TlsConfig) / [`TlsConnector`](crate::TlsConnector)
+    /// provide `default_rustls()` / `default_native_tls()` shorthands for system-trust setups.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ruststream_fred::{RedisBroker, TlsConfig};
+    ///
+    /// fn build(tls: TlsConfig) -> RedisBroker {
+    ///     RedisBroker::cluster(["10.0.0.1:6379"]).tls(tls)
+    /// }
+    /// ```
+    #[cfg(any(
+        feature = "tls-rustls",
+        feature = "tls-rustls-ring",
+        feature = "tls-native-tls"
+    ))]
+    #[must_use]
+    pub fn tls(mut self, tls: impl Into<TlsConfig>) -> Self {
+        self.auth.tls = Some(tls.into());
+        self
+    }
+
+    /// Sets distinct credentials for authenticating to the sentinel nodes, separate from the
+    /// data-node [`credentials`](Self::credentials). Only meaningful on the sentinel topology.
+    ///
+    /// Available behind the `sentinel-auth` feature.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ruststream_fred::RedisBroker;
+    ///
+    /// let broker = RedisBroker::sentinel("mymaster", ["10.0.0.1:26379"])
+    ///     .credentials("worker", "data-pass")
+    ///     .sentinel_credentials("sentinel-user", "sentinel-pass");
+    /// # let _ = broker;
+    /// ```
+    #[cfg(feature = "sentinel-auth")]
+    #[must_use]
+    pub fn sentinel_credentials(
+        mut self,
+        username: impl Into<String>,
+        password: impl Into<String>,
+    ) -> Self {
+        self.auth.sentinel_username = Some(username.into());
+        self.auth.sentinel_password = Some(password.into());
+        self
+    }
+
+    /// Sets a password-only credential for authenticating to the sentinel nodes. Use
+    /// [`sentinel_credentials`](Self::sentinel_credentials) for an ACL user plus password.
+    ///
+    /// Available behind the `sentinel-auth` feature.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ruststream_fred::RedisBroker;
+    ///
+    /// let broker = RedisBroker::sentinel("mymaster", ["10.0.0.1:26379"])
+    ///     .sentinel_password("sentinel-pass");
+    /// # let _ = broker;
+    /// ```
+    #[cfg(feature = "sentinel-auth")]
+    #[must_use]
+    pub fn sentinel_password(mut self, password: impl Into<String>) -> Self {
+        self.auth.sentinel_password = Some(password.into());
+        self
+    }
+
+    /// Sets a dynamic credential provider that supplies (and can rotate) the username/password on
+    /// each `AUTH` / `HELLO`, for IAM-style auth. Takes precedence over static
+    /// [`credentials`](Self::credentials).
+    ///
+    /// Available behind the `credential-provider` feature.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::sync::Arc;
+    /// use ruststream_fred::{CredentialProvider, RedisBroker};
+    ///
+    /// fn build(provider: Arc<dyn CredentialProvider>) -> RedisBroker {
+    ///     RedisBroker::standalone("redis://localhost:6379").credential_provider(provider)
+    /// }
+    /// ```
+    #[cfg(feature = "credential-provider")]
+    #[must_use]
+    pub fn credential_provider(mut self, provider: Arc<dyn CredentialProvider>) -> Self {
+        self.auth.credential_provider = Some(provider);
         self
     }
 
@@ -200,31 +409,71 @@ impl RedisBroker {
             topology: Topology::Preconnected,
             pool_size: DEFAULT_POOL_SIZE,
             default_group: None,
+            auth: AuthConfig::default(),
         }
     }
 
-    /// Builds the `fred` config for this broker's topology.
+    /// Builds the `fred` config for this broker's topology, then folds in the auth/TLS settings.
     fn build_config(&self) -> Result<Config, RedisError> {
-        match &self.topology {
+        let mut config = match &self.topology {
             Topology::Standalone(url) => {
-                Config::from_url(url).map_err(|err| RedisError::Connect(Box::new(err)))
+                Config::from_url(url).map_err(|err| RedisError::Connect(Box::new(err)))?
             }
             Topology::Cluster(nodes) => {
                 let hosts = parse_servers(nodes, 6379)?;
-                Ok(Config {
+                Config {
                     server: ServerConfig::new_clustered(hosts),
                     ..Config::default()
-                })
+                }
             }
             Topology::Sentinel { service, hosts } => {
                 let hosts = parse_servers(hosts, 26379)?;
-                Ok(Config {
+                Config {
                     server: ServerConfig::new_sentinel(hosts, service.clone()),
                     ..Config::default()
-                })
+                }
             }
             // A preconnected pool never reaches connect()'s init path.
-            Topology::Preconnected => Err(RedisError::NotConnected),
+            Topology::Preconnected => return Err(RedisError::NotConnected),
+        };
+        self.apply_auth(&mut config);
+        Ok(config)
+    }
+
+    /// Folds the recorded auth/TLS settings into `config`. Each setting is applied only when set,
+    /// so credentials carried by a standalone URL survive unless explicitly overridden.
+    fn apply_auth(&self, config: &mut Config) {
+        if self.auth.username.is_some() {
+            config.username.clone_from(&self.auth.username);
+        }
+        if self.auth.password.is_some() {
+            config.password.clone_from(&self.auth.password);
+        }
+        #[cfg(any(
+            feature = "tls-rustls",
+            feature = "tls-rustls-ring",
+            feature = "tls-native-tls"
+        ))]
+        if self.auth.tls.is_some() {
+            config.tls.clone_from(&self.auth.tls);
+        }
+        #[cfg(feature = "credential-provider")]
+        if self.auth.credential_provider.is_some() {
+            config
+                .credential_provider
+                .clone_from(&self.auth.credential_provider);
+        }
+        #[cfg(feature = "sentinel-auth")]
+        if let ServerConfig::Sentinel {
+            username, password, ..
+        } = &mut config.server
+        {
+            if self.auth.sentinel_username.is_some() {
+                username.clone_from(&self.auth.sentinel_username);
+            }
+            if self.auth.sentinel_password.is_some() {
+                password.clone_from(&self.auth.sentinel_password);
+            }
         }
     }
 
@@ -488,5 +737,113 @@ mod tests {
         let spec = broker.describe_server();
         assert_eq!(spec.protocol, "redis");
         assert_eq!(spec.host, "localhost:6379");
+    }
+
+    // Credentials must reach the fred config on every topology, not just the standalone URL.
+    #[test]
+    fn credentials_apply_to_all_topologies() {
+        let brokers = [
+            RedisBroker::standalone("redis://localhost:6379").credentials("alice", "s3cr3t"),
+            RedisBroker::cluster(["127.0.0.1:7000"]).credentials("alice", "s3cr3t"),
+            RedisBroker::sentinel("mymaster", ["127.0.0.1:26379"]).credentials("alice", "s3cr3t"),
+        ];
+        for broker in brokers {
+            let config = broker.build_config().expect("config builds");
+            assert_eq!(config.username.as_deref(), Some("alice"));
+            assert_eq!(config.password.as_deref(), Some("s3cr3t"));
+        }
+    }
+
+    #[test]
+    fn password_only_sets_password_without_username() {
+        let config = RedisBroker::cluster(["127.0.0.1:7000"])
+            .password("requirepass")
+            .build_config()
+            .expect("config builds");
+        assert_eq!(config.username, None);
+        assert_eq!(config.password.as_deref(), Some("requirepass"));
+    }
+
+    // Programmatic credentials win over a standalone URL's userinfo.
+    #[test]
+    fn programmatic_credentials_override_standalone_url() {
+        let config = RedisBroker::standalone("redis://urluser:urlpass@localhost:6379")
+            .credentials("acluser", "aclpass")
+            .build_config()
+            .expect("config builds");
+        assert_eq!(config.username.as_deref(), Some("acluser"));
+        assert_eq!(config.password.as_deref(), Some("aclpass"));
+    }
+
+    // Without an override the URL's credentials are left untouched.
+    #[test]
+    fn url_credentials_preserved_without_override() {
+        let config = RedisBroker::standalone("redis://urluser:urlpass@localhost:6379")
+            .build_config()
+            .expect("config builds");
+        assert_eq!(config.username.as_deref(), Some("urluser"));
+        assert_eq!(config.password.as_deref(), Some("urlpass"));
+    }
+
+    #[test]
+    fn debug_redacts_password() {
+        let broker =
+            RedisBroker::standalone("redis://localhost:6379").credentials("alice", "s3cr3t");
+        let rendered = format!("{broker:?}");
+        assert!(
+            !rendered.contains("s3cr3t"),
+            "password must not appear in Debug output: {rendered}"
+        );
+        // The username is an identifier, not a secret, and is kept for debugging.
+        assert!(
+            rendered.contains("alice"),
+            "expected username in: {rendered}"
+        );
+    }
+
+    #[cfg(feature = "sentinel-auth")]
+    #[test]
+    fn sentinel_credentials_apply_to_sentinel_server() {
+        let config = RedisBroker::sentinel("mymaster", ["127.0.0.1:26379"])
+            .credentials("datauser", "datapass")
+            .sentinel_credentials("sentineluser", "sentinelpass")
+            .build_config()
+            .expect("config builds");
+        // Data-node credentials sit on the top-level config.
+        assert_eq!(config.username.as_deref(), Some("datauser"));
+        let ServerConfig::Sentinel {
+            username, password, ..
+        } = &config.server
+        else {
+            panic!("expected a sentinel server config");
+        };
+        assert_eq!(username.as_deref(), Some("sentineluser"));
+        assert_eq!(password.as_deref(), Some("sentinelpass"));
+    }
+
+    #[cfg(feature = "credential-provider")]
+    #[derive(Debug)]
+    struct StaticCredentials;
+
+    #[cfg(feature = "credential-provider")]
+    #[async_trait::async_trait]
+    impl CredentialProvider for StaticCredentials {
+        async fn fetch(
+            &self,
+            _server: Option<&fred::types::config::Server>,
+        ) -> Result<(Option<String>, Option<String>), fred::error::Error> {
+            Ok((Some("rotating".into()), Some("token".into())))
+        }
+    }
+
+    #[cfg(feature = "credential-provider")]
+    #[test]
+    fn credential_provider_is_applied() {
+        let provider: Arc<dyn CredentialProvider> = Arc::new(StaticCredentials);
+        let config = RedisBroker::cluster(["127.0.0.1:7000"])
+            .credential_provider(provider)
+            .build_config()
+            .expect("config builds");
+        assert!(config.credential_provider.is_some());
     }
 }

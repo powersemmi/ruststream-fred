@@ -38,5 +38,16 @@ pub use pubsub::{
 pub use stream::{RedisStream, StreamStart};
 pub use subscriber::RedisSubscriber;
 
+// fred auth/TLS types re-exported for the `RedisBroker::tls` / `::credential_provider` builders, so
+// callers need not depend on `fred` directly to name them.
+#[cfg(feature = "credential-provider")]
+pub use fred::types::config::CredentialProvider;
+#[cfg(any(
+    feature = "tls-rustls",
+    feature = "tls-rustls-ring",
+    feature = "tls-native-tls"
+))]
+pub use fred::types::config::{TlsConfig, TlsConnector};
+
 #[cfg(feature = "testing")]
 pub mod testing;

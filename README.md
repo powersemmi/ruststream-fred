@@ -27,6 +27,10 @@
   Payload and headers round-trip as stream entry fields.
 - **Standalone, cluster, and sentinel.** One crate, named constructors pick the topology:
   `RedisBroker::standalone`, `::cluster`, `::sentinel`.
+- **Authentication and TLS on every topology.** `.credentials` / `.password` set the auth fields
+  beyond what a standalone URL can express; optional features add TLS (`tls-rustls`,
+  `tls-rustls-ring`, `tls-native-tls`), sentinel-specific auth (`sentinel-auth`), and a dynamic
+  `credential-provider` for IAM-style rotation.
 - **Lazy startup contract.** `RedisBroker::standalone(url)` is synchronous and does no I/O; the
   runtime connects once at startup, so the broker composes with `#[ruststream::app]`. An existing
   `fred` pool plugs in via `RedisBroker::from_pool`.

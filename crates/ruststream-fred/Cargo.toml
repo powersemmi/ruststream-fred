@@ -18,12 +18,30 @@ workspace = true
 default = []
 testing = ["ruststream/conformance"]
 
+# TLS, mapped onto fred's TLS backends. The rustls and native-tls backends are additive in fred
+# (not mutually exclusive); `tls-rustls` uses the aws-lc-rs crypto provider, `tls-rustls-ring` the
+# ring provider. The TLS surface is gated on any of these being on.
+tls-rustls = ["fred/enable-rustls"]
+tls-rustls-ring = ["fred/enable-rustls-ring"]
+tls-native-tls = ["fred/enable-native-tls"]
+
+# Distinct credentials for authenticating to the sentinels (vs the data nodes).
+sentinel-auth = ["fred/sentinel-auth"]
+
+# Dynamic/rotating credentials (IAM-style auth) via a CredentialProvider callback.
+credential-provider = ["fred/credential-provider"]
+
+[package.metadata.docs.rs]
+all-features = true
+
 [dev-dependencies]
 # The conformance harness drives the testing-feature broker; macros + json power the runnable
 # fred_* examples (the docs site embeds their snippets), and serde decodes their message types.
 ruststream = { workspace = true, features = ["conformance", "macros", "json"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+# Only the credential-provider unit test implements fred's async CredentialProvider trait.
+async-trait = "0.1"
 
 [dependencies]
 ruststream = { workspace = true, default-features = false }
@@ -50,6 +68,12 @@ name = "fred_pubsub"
 
 [[example]]
 name = "fred_list"
+
+[[example]]
+name = "fred_auth"
+
+[[example]]
+name = "fred_tls"
 
 [[example]]
 name = "fred_transaction"

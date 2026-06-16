@@ -4,13 +4,15 @@
 //! ```bash
 //! just brokers-up
 //! REDIS_TEST_URL=redis://127.0.0.1:6379 \
+//! REDIS_AUTH_TEST_URL=redis://127.0.0.1:6385 \
 //! REDIS_CLUSTER_TEST_URL=127.0.0.1:7000 \
 //! REDIS_SENTINEL_TEST_URL=127.0.0.1:26379 \
 //!     cargo test -p ruststream-fred --test integration_fred -- --test-threads=1
 //! ```
 //!
 //! These cover what the handler-stub broker cannot: real consumer groups, `XACK`, the
-//! republish-on-nack path, `XAUTOCLAIM` reclaim, and the cluster / sentinel topologies.
+//! republish-on-nack path, `XAUTOCLAIM` reclaim, builder-set auth, and the cluster / sentinel
+//! topologies.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -86,6 +88,41 @@ async fn standalone_round_trip_with_ack() {
     connect(&broker).await;
     round_trip(&broker, &unique_key("round_trip")).await;
     broker.shutdown().await.expect("shutdown");
+}
+
+// ACL user + password set via the builder (not the URL) must authenticate and round-trip.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standalone_auth_round_trip_with_credentials() {
+    let Some(url) = env("REDIS_AUTH_TEST_URL") else {
+        return;
+    };
+    let broker = RedisBroker::standalone(url).credentials("worker", "workerpass");
+    connect(&broker).await;
+    round_trip(&broker, &unique_key("auth_creds")).await;
+    broker.shutdown().await.expect("shutdown");
+}
+
+// Password-only AUTH (the default user's requirepass), again set via the builder.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standalone_auth_round_trip_with_password() {
+    let Some(url) = env("REDIS_AUTH_TEST_URL") else {
+        return;
+    };
+    let broker = RedisBroker::standalone(url).password("s3cr3t");
+    connect(&broker).await;
+    round_trip(&broker, &unique_key("auth_pass")).await;
+    broker.shutdown().await.expect("shutdown");
+}
+
+// Connecting to an auth-required server without credentials must fail, not hang or pass.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standalone_auth_without_credentials_fails() {
+    let Some(url) = env("REDIS_AUTH_TEST_URL") else {
+        return;
+    };
+    let broker = RedisBroker::standalone(url);
+    let err = Broker::connect(&broker).await;
+    assert!(err.is_err(), "connecting without credentials must fail");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
