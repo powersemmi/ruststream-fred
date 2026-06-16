@@ -264,6 +264,22 @@ impl SubscriptionSource<RedisBroker> for RedisList {
     }
 }
 
+#[cfg(feature = "testing")]
+impl SubscriptionSource<crate::testing::RedisTestBroker> for RedisList {
+    type Subscriber = crate::testing::RedisTestSubscriber;
+
+    fn name(&self) -> &str {
+        self.key()
+    }
+
+    async fn subscribe(
+        self,
+        broker: &crate::testing::RedisTestBroker,
+    ) -> Result<Self::Subscriber, RedisError> {
+        broker.subscribe(self.key()).await
+    }
+}
+
 /// A list-backed work-queue subscription.
 pub struct RedisListSubscriber {
     pool: Pool,

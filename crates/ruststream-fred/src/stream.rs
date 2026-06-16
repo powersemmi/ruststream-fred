@@ -257,6 +257,22 @@ impl SubscriptionSource<RedisBroker> for RedisStream {
     }
 }
 
+#[cfg(feature = "testing")]
+impl SubscriptionSource<crate::testing::RedisTestBroker> for RedisStream {
+    type Subscriber = crate::testing::RedisTestSubscriber;
+
+    fn name(&self) -> &str {
+        self.key()
+    }
+
+    async fn subscribe(
+        self,
+        broker: &crate::testing::RedisTestBroker,
+    ) -> Result<Self::Subscriber, RedisError> {
+        broker.subscribe(self.key()).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

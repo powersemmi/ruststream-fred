@@ -75,6 +75,12 @@ extra:
 nav:
   - Home: index.md
   - Guide:
-      - redis.md
+      - streams.md
+      - lists.md
+      - pubsub.md
+      - dead-letter.md
+      - auth-tls.md
+      - transactions.md
+      - testing.md
   - RustStream docs: https://powersemmi.github.io/ruststream/
   - API reference: https://docs.rs/ruststream-fred

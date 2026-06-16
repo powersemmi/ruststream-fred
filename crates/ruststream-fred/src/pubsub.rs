@@ -146,6 +146,22 @@ impl SubscriptionSource<RedisBroker> for RedisPubSub {
     }
 }
 
+#[cfg(feature = "testing")]
+impl SubscriptionSource<crate::testing::RedisTestBroker> for RedisPubSub {
+    type Subscriber = crate::testing::RedisTestSubscriber;
+
+    fn name(&self) -> &str {
+        self.channel()
+    }
+
+    async fn subscribe(
+        self,
+        broker: &crate::testing::RedisTestBroker,
+    ) -> Result<Self::Subscriber, RedisError> {
+        broker.subscribe(self.channel()).await
+    }
+}
+
 /// A Pub/Sub subscription backed by a dedicated `fred` client, so its message stream and channel
 /// state are isolated from other subscribers and from the publishing pool.
 pub struct RedisPubSubSubscriber {
