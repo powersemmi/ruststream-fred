@@ -15,6 +15,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use fred::interfaces::KeysInterface;
 use futures::StreamExt;
 use ruststream::codec::JsonCodec;
 use ruststream::runtime::RETRY_COUNT_HEADER;
@@ -591,6 +592,29 @@ async fn list_simple_round_trip() {
     assert!(msg.ack().await.is_err());
 
     drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_publisher_ttl_sets_key_expiry() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = RedisBroker::standalone(url);
+    connect(&broker).await;
+    let key = unique_key("list_ttl");
+
+    broker
+        .list_publisher()
+        .ttl(Duration::from_secs(60))
+        .publish(OutgoingMessage::new(key.as_str(), b"job"))
+        .await
+        .expect("lpush with ttl");
+
+    // PTTL returns the remaining lifetime in ms: positive means the key got an expiry.
+    let pttl: i64 = broker.pool_handle().pttl(key.as_str()).await.expect("pttl");
+    assert!(pttl > 0, "expected a positive key TTL, got {pttl}");
+
     broker.shutdown().await.expect("shutdown");
 }
 
