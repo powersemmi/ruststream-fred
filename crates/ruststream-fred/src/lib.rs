@@ -27,6 +27,9 @@ mod recovery;
 mod stream;
 mod subscriber;
 
+/// Optional typed per-delivery context exposing native Redis metadata by compile-time key.
+pub mod context;
+
 pub use broker::RedisBroker;
 pub use deadletter::{DEAD_LETTER_REASON_HEADER, DELIVERY_COUNT_HEADER, IDLE_MS_HEADER};
 pub use delay::DelayedRetry;

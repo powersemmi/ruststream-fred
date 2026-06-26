@@ -19,7 +19,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use fred::clients::Client;
 use fred::interfaces::{ClientLike, PubsubInterface};
-use fred::types::Message;
+use fred::types::{Message, MessageKind};
 use futures::Stream;
 use futures::stream::unfold;
 use ruststream::codec::Codec;
@@ -203,6 +203,9 @@ fn to_message(msg: &Message, codec: Option<&SharedEnvelope>) -> RedisPubSubMessa
     let (payload, headers) = unframe(codec, raw);
     RedisPubSubMessage {
         channel: msg.channel.to_string(),
+        // `PMessage` is the delivery kind for a `PSUBSCRIBE` match; the message's own channel is the
+        // concrete one matched, which differs from the subscription's glob pattern.
+        pattern: matches!(msg.kind, MessageKind::PMessage),
         payload,
         headers,
     }
@@ -240,6 +243,8 @@ impl ruststream::Subscriber for RedisPubSubSubscriber {
 /// A Pub/Sub delivery. `ack` / `nack` are unsupported (Pub/Sub has no acknowledgement).
 pub struct RedisPubSubMessage {
     channel: String,
+    /// Whether this delivery arrived through a `PSUBSCRIBE` pattern match (vs an exact subscribe).
+    pattern: bool,
     payload: Bytes,
     headers: Headers,
 }
@@ -248,6 +253,7 @@ impl Debug for RedisPubSubMessage {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RedisPubSubMessage")
             .field("channel", &self.channel)
+            .field("pattern", &self.pattern)
             .field("payload_len", &self.payload.len())
             .finish_non_exhaustive()
     }
@@ -255,9 +261,19 @@ impl Debug for RedisPubSubMessage {
 
 impl RedisPubSubMessage {
     /// The channel this message arrived on.
+    ///
+    /// For a pattern ([`RedisPubSub::pattern`]) subscription this is the concrete channel the
+    /// message was published to, which differs from the glob the subscription registered.
     #[must_use]
     pub fn channel(&self) -> &str {
         &self.channel
+    }
+
+    /// Whether this delivery arrived through a `PSUBSCRIBE` pattern match rather than an exact
+    /// channel subscribe.
+    #[must_use]
+    pub fn from_pattern(&self) -> bool {
+        self.pattern
     }
 }
 
@@ -353,6 +369,29 @@ impl Publisher for RedisPubSubPublisher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::PubSubContext;
+    use ruststream::BuildContext;
+
+    #[test]
+    fn build_context_reads_channel_and_pattern_flag() {
+        let exact = RedisPubSubMessage {
+            channel: "events".to_owned(),
+            pattern: false,
+            payload: Bytes::from_static(b"{}"),
+            headers: Headers::new(),
+        };
+        let cx = PubSubContext::build(&exact);
+        assert_eq!(cx.channel(), "events");
+        assert!(!cx.from_pattern());
+
+        let matched = RedisPubSubMessage {
+            channel: "events.user".to_owned(),
+            pattern: true,
+            payload: Bytes::from_static(b"{}"),
+            headers: Headers::new(),
+        };
+        assert!(PubSubContext::build(&matched).from_pattern());
+    }
 
     #[test]
     fn pattern_with_sharded_is_rejected() {
