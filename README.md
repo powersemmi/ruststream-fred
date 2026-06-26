@@ -50,6 +50,20 @@ ruststream-fred = "0.4"
 serde = { version = "1", features = ["derive"] }
 ```
 
+## Scaffold a service
+
+Generate a runnable starter with [`cargo generate`](https://github.com/cargo-generate/cargo-generate),
+one template per Redis transport:
+
+```bash
+# consumer-group streams (durable, acknowledged)
+cargo generate --git https://github.com/powersemmi/ruststream-fred templates/redis-stream
+# pub/sub fan-out (fire-and-forget)
+cargo generate --git https://github.com/powersemmi/ruststream-fred templates/redis-pubsub
+# list work queue (competing consumers)
+cargo generate --git https://github.com/powersemmi/ruststream-fred templates/redis-list
+```
+
 ## License
 
 Apache-2.0.

@@ -130,6 +130,57 @@ jobs:
         working-directory: ruststream-fred
         run: docker compose -f docker-compose.test.yml down -v
 
+  templates:
+    name: Templates (render + compile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: ruststream-fred
+
+      # The rendered scaffolds pin `ruststream` (and depend on this crate), so the cross-repo
+      # sibling checkout must be present to patch them at the local checkouts. Mirror the rust job.
+      - uses: actions/checkout@v4
+        with:
+          repository: powersemmi/ruststream
+          persist-credentials: false
+          path: ruststream
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ruststream-fred
+
+      - name: Install cargo-generate
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-generate
+
+      # The template-contract drift check: render each Redis scaffold and compile it, so an API
+      # change that breaks a template fails here, not a user's first `cargo build`. Compile-only,
+      # with no live Redis. The rendered projects pin `ruststream` / `ruststream-fred` by version;
+      # until the 0.5 line is published, patch both at the sibling checkouts so the scaffolds build
+      # against the local crates (the same layout the rust job uses).
+      - name: Render and check the Redis templates
+        run: |
+          for tpl in redis-stream redis-pubsub redis-list; do
+            dest="$RUNNER_TEMP/$tpl"
+            mkdir -p "$dest"
+            cargo generate --path "ruststream-fred/templates/$tpl" \
+              --name smoke --destination "$dest" --vcs none
+            {
+              echo ""
+              echo "[patch.crates-io]"
+              echo "ruststream = { path = \"$GITHUB_WORKSPACE/ruststream\" }"
+              echo "ruststream-fred = { path = \"$GITHUB_WORKSPACE/ruststream-fred/crates/ruststream-fred\" }"
+            } >> "$dest/smoke/Cargo.toml"
+            cargo check --manifest-path "$dest/smoke/Cargo.toml"
+          done
+
   security:
     name: Security scans
     runs-on: ubuntu-latest

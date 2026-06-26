@@ -1,0 +1,8 @@
+# cargo-generate manifest for the Redis Pub/Sub RustStream starter.
+#
+# Render it with:
+#   cargo generate --git https://github.com/powersemmi/ruststream-fred templates/redis-pubsub --name my-service
+#
+# `{{project-name}}` (the --name value) is a cargo-generate built-in; no placeholders need declaring.
+[template]
+description = "A Redis Pub/Sub (fan-out) RustStream starter service"
