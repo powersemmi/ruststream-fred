@@ -538,6 +538,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "inventory"
+version = "0.3.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4f0c30c76f2f4ccee3fe55a2435f691ca00c0e4bd87abe4f4a851b1d4dac39b"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -931,12 +940,13 @@ dependencies = [
 
 [[package]]
 name = "ruststream"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e5454ffee25c0d0f00fe021f9fbc2926264215c77276ed1a3b6f5bf67762d27"
+checksum = "98ad395fabb86d39828bfee6f40488d430dd39c88095b490a7004532d465b0a3"
 dependencies = [
  "bytes",
  "futures",
+ "inventory",
  "ruststream-macros",
  "serde",
  "serde_json",
@@ -963,9 +973,9 @@ dependencies = [
 
 [[package]]
 name = "ruststream-macros"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b93e7ccba4b8de5659cdfe4e55634a712c30fd26cb3cd1a2f70107d9a9fd713a"
+checksum = "fec6742b728762204d14237330d7501f4b20b138384b27771435022fc862f6db"
 dependencies = [
  "proc-macro2",
  "quote",
