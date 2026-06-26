@@ -16,7 +16,7 @@ workspace = true
 
 [features]
 default = []
-testing = ["ruststream/conformance"]
+testing = ["ruststream/conformance", "ruststream/testing"]
 
 # TLS, mapped onto fred's TLS backends. The rustls and native-tls backends are additive in fred
 # (not mutually exclusive); `tls-rustls` uses the aws-lc-rs crypto provider, `tls-rustls-ring` the
@@ -37,7 +37,7 @@ all-features = true
 [dev-dependencies]
 # The conformance harness drives the testing-feature broker; macros + json power the runnable
 # fred_* examples (the docs site embeds their snippets), and serde decodes their message types.
-ruststream = { workspace = true, features = ["conformance", "macros", "json"] }
+ruststream = { workspace = true, features = ["conformance", "testing", "macros", "json"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 # Only the credential-provider unit test implements fred's async CredentialProvider trait.

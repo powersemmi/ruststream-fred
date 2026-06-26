@@ -37,8 +37,9 @@
 - **Acknowledgement via the republish-retry model.** `ack` is `XACK`; `nack(requeue = true)`
   re-appends a copy to the stream then acks the original (at-least-once); `nack(requeue = false)`
   acks to drop.
-- **In-process test broker.** The `testing` feature ships `RedisTestBroker` / `RedisTestClient`, a
-  handler-stub transport that passes the framework's conformance suite without a server.
+- **In-process test broker.** The `testing` feature ships `RedisTestBroker`, an in-process transport
+  that implements `ruststream::testing::TestableBroker`, so it drives the `TestApp` harness and
+  passes the framework's conformance suite without a server.
 
 ## Install
 

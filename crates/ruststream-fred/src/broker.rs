@@ -737,7 +737,7 @@ mod tests {
         let broker = RedisBroker::standalone("redis://localhost:6379");
         let spec = broker.describe_server();
         assert_eq!(spec.protocol, "redis");
-        assert_eq!(spec.host, "localhost:6379");
+        assert_eq!(spec.host.as_deref(), Some("localhost:6379"));
     }
 
     // Credentials must reach the fred config on every topology, not just the standalone URL.

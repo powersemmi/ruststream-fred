@@ -1,5 +1,5 @@
-//! Conformance suites for the Redis broker. `run_suite` proves routing against the handler-stub
-//! `RedisTestClient` (no server, runs everywhere); `lifecycle` and the batch capability prove the
+//! Conformance suites for the Redis broker. `run_suite` proves routing against the in-process
+//! `RedisTestBroker` (no server, runs everywhere); `lifecycle` and the batch capability prove the
 //! lazy-startup contract and `BatchSubscriber` against the real `RedisBroker` and are gated behind
 //! `REDIS_TEST_URL`.
 //!
@@ -15,13 +15,12 @@
 #![cfg(feature = "testing")]
 
 use ruststream::conformance::{capabilities, harness};
-use ruststream::testing::TestClient;
-use ruststream_fred::testing::RedisTestClient;
+use ruststream_fred::testing::RedisTestBroker;
 use ruststream_fred::{RedisBroker, RedisStream};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn redis_test_client_passes_conformance_suite() {
-    harness::run_suite(RedisTestClient::start).await;
+async fn redis_test_broker_passes_conformance_suite() {
+    harness::run_suite(RedisTestBroker::new).await;
 }
 
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
