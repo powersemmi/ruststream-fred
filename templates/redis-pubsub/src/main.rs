@@ -14,12 +14,12 @@
 mod orders;
 mod routes;
 
-use ruststream::runtime::{AppInfo, RustStream};
+use ruststream::runtime::{App, AppInfo, RustStream};
 use ruststream_fred::RedisBroker;
 
 /// Builds the service: one Redis broker with the events router mounted.
 #[ruststream::app]
-fn app() -> RustStream {
+fn app() -> impl App {
     RustStream::new(AppInfo::new("{{project-name}}", "0.1.0")).with_broker(
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
