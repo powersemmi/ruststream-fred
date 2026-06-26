@@ -1,8 +1,15 @@
-//! [`RedisTestBroker`]: `Broker` implementation backed by the in-process handler-stub dispatcher.
+//! [`RedisTestBroker`]: a full `Broker` + `Subscribe` + `DescribeServer` backed by the in-process
+//! key router, which also implements [`TestableBroker`](ruststream::testing::TestableBroker) so the
+//! same type drives both the [`TestApp`](ruststream::testing::TestApp) harness and the conformance
+//! suite.
 
-use std::{sync::Arc, time::Duration};
+use std::sync::{Arc, OnceLock};
 
-use ruststream::{Broker, DescribeServer, RawMessage, ServerSpec, Subscribe};
+use bytes::Bytes;
+use ruststream::{
+    Broker, DescribeServer, OutgoingMessage, RawMessage, ServerSpec, Subscribe,
+    testing::{Coordinator, TestableBroker},
+};
 
 use crate::{
     error::RedisError,
@@ -17,13 +24,31 @@ use crate::{
 #[derive(Default)]
 pub(crate) struct TestBrokerState {
     pub(crate) router: KeyRouter,
+    /// The harness's quiescence-and-recording coordinator, installed by a
+    /// [`TestApp`](ruststream::testing::TestApp) run. Empty in production and under the conformance
+    /// suite, so fanout does no extra work.
+    coordinator: OnceLock<Coordinator>,
+}
+
+impl TestBrokerState {
+    /// Installs the harness coordinator for a [`TestApp`](ruststream::testing::TestApp) run.
+    /// Idempotent: a second install on the same broker is ignored.
+    pub(crate) fn install_coordinator(&self, coordinator: Coordinator) {
+        let _ = self.coordinator.set(coordinator);
+    }
+
+    /// A clone of the installed coordinator, threaded into each subscriber, delivery, and publish so
+    /// a requeue can re-count and a consumed delivery can decrement. `None` outside a harness run.
+    pub(crate) fn coordinator(&self) -> Option<Coordinator> {
+        self.coordinator.get().cloned()
+    }
 }
 
 impl std::fmt::Debug for TestBrokerState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TestBrokerState")
             .field("router", &self.router)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -46,10 +71,6 @@ impl RedisTestBroker {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
-    }
-
-    pub(crate) fn state(&self) -> &Arc<TestBrokerState> {
-        &self.state
     }
 
     /// Opens a subscription on the stream `key`. Mirrors the public surface of
@@ -83,21 +104,6 @@ impl RedisTestBroker {
     pub fn publisher(&self) -> RedisTestPublisher {
         RedisTestPublisher::new(Arc::clone(&self.state))
     }
-
-    /// Awaits until `count` messages have landed on `key` (or the timeout elapses) and returns the
-    /// recorded prefix of the published log. Returns whatever is recorded on timeout, never
-    /// blocking past it.
-    pub async fn expect_published(
-        &self,
-        key: &str,
-        count: usize,
-        timeout_dur: Duration,
-    ) -> Vec<RawMessage> {
-        self.state
-            .router
-            .expect_published(key, count, timeout_dur)
-            .await
-    }
 }
 
 impl Broker for RedisTestBroker {
@@ -122,6 +128,32 @@ impl Subscribe for RedisTestBroker {
     }
 }
 
+// --8<-- [start:testable]
+impl TestableBroker for RedisTestBroker {
+    fn install_coordinator(&self, coordinator: Coordinator) {
+        self.state.install_coordinator(coordinator);
+    }
+
+    fn inject(&self, message: OutgoingMessage<'_>) {
+        // Route synchronously through the broker's own fanout, bypassing subject validation: the
+        // harness injects as an external producer would, and the publish is recorded and counted
+        // like any other.
+        self.state.router.publish(
+            message.name().to_owned(),
+            Bytes::copy_from_slice(message.payload()),
+            message.headers().clone(),
+            self.state.coordinator().as_ref(),
+        );
+    }
+
+    fn published(&self, name: &str) -> Vec<RawMessage> {
+        self.state.router.published(name)
+    }
+}
+
+ruststream::register_testable_broker!(RedisTestBroker);
+// --8<-- [end:testable]
+
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Validates that `key` is a usable stream key (non-empty).
@@ -139,7 +171,7 @@ pub(crate) fn validate_publish_key(key: &str) -> Result<(), RedisError> {
 
 impl DescribeServer for RedisTestBroker {
     fn describe_server(&self) -> ServerSpec {
-        // The in-process broker has no real server; report a well-known in-memory address.
-        ServerSpec::new("in-process", "redis")
+        // The in-process broker has no real server; report itself as in-process over `redis`.
+        ServerSpec::in_process("redis")
     }
 }

@@ -1,22 +1,30 @@
-//! Integration tests for the handler-stub Redis test broker.
+//! Integration tests for the in-process Redis test broker.
 //!
-//! Drives the public surface (`RedisTestBroker`, `RedisTestPublisher`, `RedisTestSubscriber`,
-//! `RedisTestClient`) without going through any harness, to keep failures localised. Real
-//! consumer-group semantics live in `tests/integration_fred.rs` against a live Redis server.
+//! Most cases drive the public surface (`RedisTestBroker`, `RedisTestPublisher`,
+//! `RedisTestSubscriber`) directly, to keep failures localised; the `TestApp`-driven cases at the
+//! end exercise the `TestableBroker` quiescence wiring (coordinator install, `enqueued`/`consumed`)
+//! through the harness. Real consumer-group semantics live in `tests/integration_fred.rs` against a
+//! live Redis server.
 
 #![cfg(feature = "testing")]
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
+use ruststream::runtime::{AppInfo, HandlerResult, RustStream};
+use ruststream::subscriber;
+use ruststream::testing::TestApp;
 use ruststream::{
     BatchSubscriber, Broker, DescribeServer, Headers, IncomingMessage, OutgoingMessage,
-    Partitioned, Publisher, Subscriber, TransactionalPublisher, testing::TestClient,
+    Partitioned, Publisher, Subscriber, TransactionalPublisher, testing::expect_published,
 };
 use ruststream_fred::{
-    PARTITION_KEY_HEADER, RedisError,
-    testing::{RedisTestBroker, RedisTestClient, RedisTestMessage},
+    PARTITION_KEY_HEADER, RedisError, RedisStream,
+    testing::{RedisTestBroker, RedisTestMessage},
 };
+use serde::{Deserialize, Serialize};
 
 const WAIT: Duration = Duration::from_secs(1);
 
@@ -141,22 +149,22 @@ async fn headers_are_propagated_to_subscribers() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_client_drives_expect_published() {
-    let client = RedisTestClient::start().await.expect("start");
-    TestClient::publish(&client, "events", b"first")
+async fn expect_published_observes_publishes() {
+    let broker = RedisTestBroker::new();
+    let publisher = broker.publisher();
+    publisher
+        .publish(OutgoingMessage::new("events", b"first"))
         .await
         .expect("publish first");
-    TestClient::publish(&client, "events", b"second")
+    publisher
+        .publish(OutgoingMessage::new("events", b"second"))
         .await
         .expect("publish second");
-    let observed = client
-        .expect_published("events", 2, Duration::from_secs(1))
-        .await
-        .expect("expect_published");
+    let observed = expect_published(&broker, "events", 2, Duration::from_secs(1)).await;
     assert_eq!(observed.len(), 2);
     assert_eq!(observed[0].payload(), b"first");
     assert_eq!(observed[1].payload(), b"second");
-    client.shutdown().await.expect("shutdown");
+    broker.shutdown().await.expect("shutdown");
 }
 
 // The Subscriber contract (and the conformance helpers) re-enter `stream()` per call.
@@ -192,16 +200,14 @@ async fn describe_server_returns_redis_protocol() {
 
 #[tokio::test]
 async fn partition_key_header_is_surfaced() {
-    let client = RedisTestClient::start().await.expect("start");
-    let mut sub = client.subscribe("events").await.expect("subscribe");
+    let broker = RedisTestBroker::new();
+    let mut sub = broker.subscribe("events").await.expect("subscribe");
 
     let mut headers = Headers::new();
     headers.insert(PARTITION_KEY_HEADER, "tenant-a");
 
-    client
+    broker
         .publisher()
-        .await
-        .expect("publisher")
         .publish(OutgoingMessage::new("events", b"payload").with_headers(headers))
         .await
         .expect("publish");
@@ -218,18 +224,16 @@ async fn partition_key_header_is_surfaced() {
         Some(b"tenant-a".as_slice())
     );
     msg.ack().await.ok();
-    client.shutdown().await.expect("shutdown");
+    broker.shutdown().await.expect("shutdown");
 }
 
 #[tokio::test]
 async fn partition_key_absent_yields_none() {
-    let client = RedisTestClient::start().await.expect("start");
-    let mut sub = client.subscribe("events.bare").await.expect("subscribe");
+    let broker = RedisTestBroker::new();
+    let mut sub = broker.subscribe("events.bare").await.expect("subscribe");
 
-    client
+    broker
         .publisher()
-        .await
-        .expect("publisher")
         .publish(OutgoingMessage::new("events.bare", b"payload"))
         .await
         .expect("publish");
@@ -243,14 +247,14 @@ async fn partition_key_absent_yields_none() {
 
     assert_eq!(Partitioned::partition_key(&msg), None);
     msg.ack().await.ok();
-    client.shutdown().await.expect("shutdown");
+    broker.shutdown().await.expect("shutdown");
 }
 
 #[tokio::test]
 async fn batch_drains_in_publish_order() {
-    let client = RedisTestClient::start().await.expect("start");
-    let publisher = client.publisher().await.expect("publisher");
-    let mut sub = client.subscribe("batch.order").await.expect("subscribe");
+    let broker = RedisTestBroker::new();
+    let publisher = broker.publisher();
+    let mut sub = broker.subscribe("batch.order").await.expect("subscribe");
 
     let count = 5u8;
     for i in 0..count {
@@ -273,16 +277,16 @@ async fn batch_drains_in_publish_order() {
         assert_eq!(msg.payload(), &[u8::try_from(i).expect("count fits u8")]);
         msg.ack().await.ok();
     }
-    client.shutdown().await.expect("shutdown");
+    broker.shutdown().await.expect("shutdown");
 }
 
 // Same re-entry contract as `stream()`: dropping the batch stream and calling `batches()` again
 // must keep working.
 #[tokio::test]
 async fn batches_can_be_reentered() {
-    let client = RedisTestClient::start().await.expect("start");
-    let publisher = client.publisher().await.expect("publisher");
-    let mut sub = client.subscribe("batch.reenter").await.expect("subscribe");
+    let broker = RedisTestBroker::new();
+    let publisher = broker.publisher();
+    let mut sub = broker.subscribe("batch.reenter").await.expect("subscribe");
 
     publisher
         .publish(OutgoingMessage::new("batch.reenter", b"one"))
@@ -321,7 +325,7 @@ async fn batches_can_be_reentered() {
     for msg in batch {
         msg.ack().await.ok();
     }
-    client.shutdown().await.expect("shutdown");
+    broker.shutdown().await.expect("shutdown");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -341,9 +345,7 @@ async fn transaction_buffers_until_commit() {
         .expect("publish second");
 
     // Nothing is visible before commit.
-    let observed = broker
-        .expect_published("tx", 1, Duration::from_millis(50))
-        .await;
+    let observed = expect_published(&broker, "tx", 1, Duration::from_millis(50)).await;
     assert!(observed.is_empty(), "buffered messages must not be visible");
 
     publisher.commit().await.expect("commit");
@@ -365,8 +367,81 @@ async fn transaction_abort_discards_buffer() {
         .expect("publish");
     publisher.abort().await.expect("abort");
 
-    let observed = broker
-        .expect_published("tx", 1, Duration::from_millis(50))
-        .await;
+    let observed = expect_published(&broker, "tx", 1, Duration::from_millis(50)).await;
     assert!(observed.is_empty(), "aborted messages must be discarded");
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
+struct Order {
+    id: u64,
+}
+
+#[subscriber(RedisStream::new("orders").group("workers"))]
+async fn ack_order(order: &Order) -> HandlerResult {
+    let _ = order;
+    HandlerResult::Ack
+}
+
+/// Counts how many times the retry handler ran, so the test can wire it as typed app state.
+#[derive(Clone, Default)]
+struct Attempts(Arc<AtomicUsize>);
+
+#[subscriber(RedisStream::new("retry").group("workers"))]
+async fn retry_then_ack(order: &Order, ctx: &mut Context<'_, (), Attempts>) -> HandlerResult {
+    let _ = order;
+    // Requeue once, then acknowledge: exercises the `nack(requeue = true)` -> `enqueued` re-count
+    // balanced against the delivery's `Drop` -> `consumed` decrement.
+    if ctx.state().0.fetch_add(1, Ordering::SeqCst) == 0 {
+        HandlerResult::retry()
+    } else {
+        HandlerResult::Ack
+    }
+}
+
+// The harness installs its coordinator into `RedisTestBroker`, so `publish` must drive the
+// in-process reaction to quiescence (every `enqueued` balanced by a `consumed`) before returning.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_app_drives_redis_test_broker_to_quiescence() {
+    let app =
+        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
+            b.include(ack_order);
+        });
+    let tb = TestApp::start(app).await.expect("start");
+
+    tb.broker::<RedisTestBroker>()
+        .publish("orders", &Order { id: 1 })
+        .await
+        .expect("publish must drive the reaction to quiescence");
+
+    tb.broker::<RedisTestBroker>()
+        .subscriber("orders")
+        .assert_called_once()
+        .with(&Order { id: 1 })
+        .settled(HandlerResult::Ack);
+
+    tb.shutdown().await.expect("shutdown");
+}
+
+// A requeue re-enqueues a fresh delivery, so the harness must still reach quiescence: the second
+// delivery's ack balances the count. The handler is called exactly twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_app_requeue_stays_balanced() {
+    let app = RustStream::new(AppInfo::new("svc", "0.1.0"))
+        .on_startup(|()| async { Ok::<_, std::convert::Infallible>(Attempts::default()) })
+        .with_broker(RedisTestBroker::new(), |b| {
+            b.include(retry_then_ack);
+        });
+    let tb = TestApp::start(app).await.expect("start");
+
+    tb.broker::<RedisTestBroker>()
+        .publish("retry", &Order { id: 7 })
+        .await
+        .expect("publish must drive the requeue reaction to quiescence");
+
+    tb.broker::<RedisTestBroker>()
+        .subscriber("retry")
+        .assert_called(2)
+        .settled(HandlerResult::Ack);
+
+    tb.shutdown().await.expect("shutdown");
 }

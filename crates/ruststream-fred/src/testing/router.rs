@@ -3,7 +3,7 @@
 //! [`KeyRouter`] keeps the set of live subscriptions keyed by [`SubscriptionId`]. Every
 //! [`KeyRouter::publish`] copies the delivery to every subscription whose stream key matches
 //! exactly (Redis Streams have no wildcard subjects) and appends a snapshot to a per-key log so
-//! test code can assert on observed traffic via [`KeyRouter::expect_published`].
+//! test code can assert on observed traffic via [`KeyRouter::published`].
 //!
 //! Subscriptions are removed explicitly through [`KeyRouter::unsubscribe`]; the test subscriber
 //! wrapper calls this from its `Drop` impl so dropping a subscriber stops fanout.
@@ -14,15 +14,11 @@ use std::{
         Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
 };
 
 use bytes::Bytes;
-use ruststream::{Headers, RawMessage};
-use tokio::{
-    sync::{Notify, mpsc},
-    time::timeout,
-};
+use ruststream::{Headers, RawMessage, testing::Coordinator};
+use tokio::sync::mpsc;
 
 /// Opaque handle identifying one subscription inside a [`KeyRouter`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -54,7 +50,6 @@ struct RouterState {
 #[derive(Default)]
 pub(crate) struct KeyRouter {
     state: Mutex<RouterState>,
-    notify: Notify,
     next_id: AtomicU64,
 }
 
@@ -94,7 +89,18 @@ impl KeyRouter {
     }
 
     /// Fans out `delivery` to every matching subscription and records it in the published log.
-    pub(crate) fn publish(&self, subject: String, payload: Bytes, headers: Headers) {
+    ///
+    /// When a harness [`Coordinator`] is installed, every live enqueue into a subscriber channel is
+    /// counted with [`Coordinator::enqueued`], so the harness can drive the in-process reaction to
+    /// quiescence; the matching [`Coordinator::consumed`] fires when the delivery is settled (see the
+    /// `Drop` impl on [`RedisTestMessage`](super::RedisTestMessage)).
+    pub(crate) fn publish(
+        &self,
+        subject: String,
+        payload: Bytes,
+        headers: Headers,
+        coordinator: Option<&Coordinator>,
+    ) {
         let snapshot =
             RawMessage::new(subject.clone(), payload.clone()).with_headers(headers.clone());
         let mut to_notify: Vec<DeliverySender> = Vec::new();
@@ -108,7 +114,6 @@ impl KeyRouter {
             }
             drop(state);
         }
-        self.notify.notify_waiters();
 
         let delivery = Delivery {
             subject,
@@ -116,52 +121,27 @@ impl KeyRouter {
             headers,
         };
         for tx in to_notify {
-            let _ = tx.send(delivery.clone());
-        }
-    }
-
-    /// Waits until `count` deliveries have landed on `subject` (or the timeout elapses) and returns
-    /// the matching prefix of the log. Returns whatever is recorded on timeout, never blocking past
-    /// it.
-    pub(crate) async fn expect_published(
-        &self,
-        subject: &str,
-        count: usize,
-        timeout_dur: Duration,
-    ) -> Vec<RawMessage> {
-        let wait = async {
-            loop {
-                if let Some(messages) = self.snapshot(subject, count) {
-                    return messages;
-                }
-                self.notify.notified().await;
+            // Count every live enqueue so the harness can drive to quiescence; the redelivered copy
+            // is consumed (and decremented) in turn.
+            if tx.send(delivery.clone()).is_ok()
+                && let Some(coordinator) = coordinator
+            {
+                coordinator.enqueued();
             }
-        };
-        timeout(timeout_dur, wait)
-            .await
-            .unwrap_or_else(|_| self.partial_snapshot(subject, count))
-    }
-
-    fn snapshot(&self, subject: &str, count: usize) -> Option<Vec<RawMessage>> {
-        let state = self.state.lock().expect("redis test router mutex poisoned");
-        let entries = state.log.get(subject)?;
-        if entries.len() < count {
-            return None;
         }
-        let messages: Vec<RawMessage> = entries.iter().take(count).cloned().collect();
-        drop(state);
-        Some(messages)
     }
 
-    fn partial_snapshot(&self, subject: &str, count: usize) -> Vec<RawMessage> {
-        let state = self.state.lock().expect("redis test router mutex poisoned");
-        let messages = state
+    /// Returns every message published to `subject`, in publish order. Backs the
+    /// [`TestableBroker::published`](ruststream::testing::TestableBroker::published) view and, through
+    /// it, the free [`expect_published`](ruststream::testing::expect_published) helper.
+    pub(crate) fn published(&self, subject: &str) -> Vec<RawMessage> {
+        self.state
+            .lock()
+            .expect("redis test router mutex poisoned")
             .log
             .get(subject)
-            .map(|entries| entries.iter().take(count).cloned().collect())
-            .unwrap_or_default();
-        drop(state);
-        messages
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Drops every subscription and clears the published log. Used by broker shutdown.
@@ -196,7 +176,12 @@ mod tests {
         let (_id_a, _tx_a, mut rx_a) = router.subscribe("orders".to_owned());
         let (_id_b, _tx_b, mut rx_b) = router.subscribe("events".to_owned());
 
-        router.publish("orders".into(), Bytes::from_static(b"o1"), no_headers());
+        router.publish(
+            "orders".into(),
+            Bytes::from_static(b"o1"),
+            no_headers(),
+            None,
+        );
 
         let got = rx_a.recv().await.expect("delivered");
         assert_eq!(got.payload.as_ref(), b"o1");
@@ -212,18 +197,35 @@ mod tests {
         let (id, _tx, mut rx) = router.subscribe("orders".to_owned());
         router.unsubscribe(id);
 
-        router.publish("orders".into(), Bytes::from_static(b"x"), no_headers());
+        router.publish(
+            "orders".into(),
+            Bytes::from_static(b"x"),
+            no_headers(),
+            None,
+        );
 
         assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]
-    async fn expect_published_returns_what_is_available_on_timeout() {
+    async fn published_log_records_in_publish_order() {
         let router = KeyRouter::default();
-        router.publish("events".into(), Bytes::from_static(b"a"), no_headers());
-        let messages = router
-            .expect_published("events", 5, Duration::from_millis(20))
-            .await;
-        assert_eq!(messages.len(), 1);
+        router.publish(
+            "events".into(),
+            Bytes::from_static(b"a"),
+            no_headers(),
+            None,
+        );
+        router.publish(
+            "events".into(),
+            Bytes::from_static(b"b"),
+            no_headers(),
+            None,
+        );
+        let messages = router.published("events");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].payload(), b"a");
+        assert_eq!(messages[1].payload(), b"b");
+        assert!(router.published("absent").is_empty());
     }
 }

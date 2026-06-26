@@ -1,7 +1,8 @@
 # Testing
 
-The `testing` feature ships `RedisTestBroker` / `RedisTestClient`, a handler-stub dispatcher that
-routes by exact stream key with no server. It reproduces routing, ack/nack, and headers, and passes
+The `testing` feature ships `RedisTestBroker`, an in-process transport that routes by exact stream
+key with no server and implements `ruststream::testing::TestableBroker`, so the same type drives the
+`TestApp` harness and the conformance suite. It reproduces routing, ack/nack, and headers, and passes
 the framework's conformance suite. It does not simulate consumer-group cursors, `XAUTOCLAIM`
 redelivery, trimming, or dead-letter routing - exercise those against a real Redis server (see the
 crate's `integration_fred` tests and `docker-compose.test.yml`).
@@ -14,8 +15,8 @@ ruststream-fred = { version = "0.4", features = ["testing"] }
 ## Unit-testing a handler
 
 Because a `#[subscriber]` handler is wired through a `RustStream` app, the most realistic in-process
-test builds the same app around a `RedisTestBroker` and drives publishes through the test client.
-The service runs until the test signals shutdown.
+test builds the same app around a `RedisTestBroker` and drives publishes by injecting messages onto
+the broker's bus. The service runs until the test signals shutdown.
 
 ### Business-logic test
 

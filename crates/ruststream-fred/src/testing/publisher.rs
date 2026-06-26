@@ -66,7 +66,9 @@ impl Publisher for RedisTestPublisher {
             return Ok(());
         }
         let (key, payload, headers) = entry;
-        self.state.router.publish(key, payload, headers);
+        self.state
+            .router
+            .publish(key, payload, headers, self.state.coordinator().as_ref());
         Ok(())
     }
 }
@@ -91,7 +93,9 @@ impl TransactionalPublisher for RedisTestPublisher {
             .expect("redis test publisher mutex poisoned")
             .take();
         for (key, payload, headers) in buffered.into_iter().flatten() {
-            self.state.router.publish(key, payload, headers);
+            self.state
+                .router
+                .publish(key, payload, headers, self.state.coordinator().as_ref());
         }
         Ok(())
     }

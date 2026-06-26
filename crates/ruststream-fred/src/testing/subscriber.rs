@@ -8,7 +8,10 @@ use std::sync::{Arc, OnceLock};
 use std::task::Poll;
 
 use futures::Stream;
-use ruststream::{AckError, BatchSubscriber, Headers, IncomingMessage, Partitioned, Subscriber};
+use ruststream::{
+    AckError, BatchSubscriber, Headers, IncomingMessage, Partitioned, Subscriber,
+    testing::Coordinator,
+};
 
 use crate::{
     error::RedisError,
@@ -24,6 +27,9 @@ pub struct RedisTestSubscriber {
     id: SubscriptionId,
     rx: DeliveryReceiver,
     requeue: DeliverySender,
+    /// A clone of the broker's harness coordinator, threaded into each yielded message so a requeue
+    /// re-counts and a consumed delivery decrements. `None` outside a harness run.
+    coordinator: Option<Coordinator>,
 }
 
 impl std::fmt::Debug for RedisTestSubscriber {
@@ -40,11 +46,15 @@ impl RedisTestSubscriber {
         rx: DeliveryReceiver,
         requeue: DeliverySender,
     ) -> Self {
+        // The harness installs its coordinator before any subscription opens, so reading it here
+        // captures the live coordinator for the whole subscription.
+        let coordinator = state.coordinator();
         Self {
             state,
             id,
             rx,
             requeue,
+            coordinator,
         }
     }
 }
@@ -61,16 +71,18 @@ impl Subscriber for RedisTestSubscriber {
 
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
         let requeue = self.requeue.clone();
+        let coordinator = self.coordinator.clone();
         // Poll the receiver in place rather than wrapping it in an owning stream, so `stream` can
         // be called again after the returned stream is dropped (the runtime and the conformance
         // helpers re-enter it per call).
         futures::stream::poll_fn(move |cx| {
             self.rx.poll_recv(cx).map(|next| {
                 next.map(|delivery| {
-                    Ok(RedisTestMessage {
-                        delivery: Some(delivery),
-                        requeue: requeue.clone(),
-                    })
+                    Ok(RedisTestMessage::from_delivery(
+                        delivery,
+                        requeue.clone(),
+                        coordinator.clone(),
+                    ))
                 })
             })
         })
@@ -85,6 +97,21 @@ impl Subscriber for RedisTestSubscriber {
 pub struct RedisTestMessage {
     delivery: Option<Delivery>,
     requeue: DeliverySender,
+    /// A clone of the broker's harness coordinator. When set, this delivery is counted in flight and
+    /// decremented exactly once when the message is consumed or dropped (see the `Drop` impl). `None`
+    /// outside a harness run.
+    coordinator: Option<Coordinator>,
+}
+
+impl Drop for RedisTestMessage {
+    /// Counts this delivery consumed exactly once: on ack, nack, or an unsettled drop (a fail-fast
+    /// panic). A requeue (`nack(true)`) re-enqueues a fresh delivery first, so the in-flight count
+    /// stays balanced across redelivery. `Drop` runs once per value, so the decrement is idempotent.
+    fn drop(&mut self) {
+        if let Some(coordinator) = &self.coordinator {
+            coordinator.consumed();
+        }
+    }
 }
 
 impl std::fmt::Debug for RedisTestMessage {
@@ -99,10 +126,15 @@ impl std::fmt::Debug for RedisTestMessage {
 }
 
 impl RedisTestMessage {
-    pub(crate) fn from_delivery(delivery: Delivery, requeue: DeliverySender) -> Self {
+    pub(crate) fn from_delivery(
+        delivery: Delivery,
+        requeue: DeliverySender,
+        coordinator: Option<Coordinator>,
+    ) -> Self {
         Self {
             delivery: Some(delivery),
             requeue,
+            coordinator,
         }
     }
 
@@ -148,7 +180,14 @@ impl IncomingMessage for RedisTestMessage {
             .take()
             .expect("RedisTestMessage ack/nack invoked twice");
         if requeue {
-            let _ = self.requeue.send(delivery);
+            // The requeue bypasses `KeyRouter::publish`, so count the re-enqueue here to balance
+            // this message's `Drop` decrement. The redelivered copy is consumed (and decremented) in
+            // turn.
+            if self.requeue.send(delivery).is_ok()
+                && let Some(coordinator) = &self.coordinator
+            {
+                coordinator.enqueued();
+            }
         }
         Ok(())
     }
@@ -165,17 +204,24 @@ impl BatchSubscriber for RedisTestSubscriber {
     /// [`TEST_BATCH_LIMIT`] messages). Blocks until the first message arrives.
     fn batches(&mut self) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
         let requeue = self.requeue.clone();
+        let coordinator = self.coordinator.clone();
         futures::stream::poll_fn(move |cx| {
             let first = match self.rx.poll_recv(cx) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(None) => return Poll::Ready(None),
-                Poll::Ready(Some(d)) => RedisTestMessage::from_delivery(d, requeue.clone()),
+                Poll::Ready(Some(d)) => {
+                    RedisTestMessage::from_delivery(d, requeue.clone(), coordinator.clone())
+                }
             };
             let mut batch = vec![first];
             while batch.len() < TEST_BATCH_LIMIT {
                 match self.rx.poll_recv(cx) {
                     Poll::Ready(Some(d)) => {
-                        batch.push(RedisTestMessage::from_delivery(d, requeue.clone()));
+                        batch.push(RedisTestMessage::from_delivery(
+                            d,
+                            requeue.clone(),
+                            coordinator.clone(),
+                        ));
                     }
                     Poll::Ready(None) | Poll::Pending => break,
                 }

@@ -15,6 +15,17 @@ serde = { version = "1", features = ["derive"] }
 same `#[ruststream::app]` macro as any other broker. The runtime connects the broker once at startup,
 before opening subscriptions.
 
+## Scaffold a service
+
+Generate a runnable starter with [`cargo generate`](https://github.com/cargo-generate/cargo-generate),
+one template per transport:
+
+```bash
+cargo generate --git https://github.com/powersemmi/ruststream-fred templates/redis-stream
+cargo generate --git https://github.com/powersemmi/ruststream-fred templates/redis-pubsub
+cargo generate --git https://github.com/powersemmi/ruststream-fred templates/redis-list
+```
+
 ## Topologies
 
 One crate, three named constructors. Each is synchronous and connects lazily:

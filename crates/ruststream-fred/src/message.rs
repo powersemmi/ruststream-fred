@@ -89,6 +89,12 @@ impl RedisMessage {
     pub fn id(&self) -> Option<&str> {
         self.ack.as_ref().map(|a| a.id.as_str())
     }
+
+    /// The consumer group this delivery was read through, or `None` once the message has settled.
+    #[must_use]
+    pub fn group(&self) -> Option<&str> {
+        self.ack.as_ref().map(|a| a.group.as_str())
+    }
 }
 
 impl Partitioned for RedisMessage {
@@ -223,4 +229,35 @@ async fn xack(handle: &AckHandle) -> Result<(), AckError> {
         .await
         .map_err(broker_err)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::StreamContext;
+    use fred::clients::Pool;
+    use fred::types::config::Config;
+    use ruststream::BuildContext;
+
+    /// An unconnected pool (just client structs); `Pool::new` opens no sockets.
+    fn offline_pool() -> Pool {
+        Pool::new(Config::default(), None, None, None, 1).expect("offline pool")
+    }
+
+    #[test]
+    fn build_context_reads_entry_id_and_group() {
+        let msg = RedisMessage::new(
+            offline_pool(),
+            "orders".to_owned(),
+            "workers".to_owned(),
+            "1700000000000-0".to_owned(),
+            Bytes::from_static(b"{}"),
+            Headers::new(),
+            PoisonPolicy::default(),
+            None,
+        );
+        let cx = StreamContext::build(&msg);
+        assert_eq!(cx.entry_id(), Some("1700000000000-0"));
+        assert_eq!(cx.consumer_group(), Some("workers"));
+    }
 }

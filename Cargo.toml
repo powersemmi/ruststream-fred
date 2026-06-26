@@ -1,9 +1,13 @@
 [workspace]
 resolver = "3"
 members = ["crates/ruststream-fred"]
+# `templates/` holds cargo-generate scaffolds (rendered by `cargo generate`, not built here): their
+# sources carry `{{project-name}}` placeholders that are not valid Rust/TOML until rendered, so they
+# must stay out of the workspace.
+exclude = ["templates"]
 
 [workspace.package]
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -13,7 +17,7 @@ authors = ["RustStream contributors"]
 [workspace.dependencies]
 ruststream-fred = { path = "crates/ruststream-fred" }
 
-ruststream = { version = ">=0.4.0, <0.5.0", default-features = false }
+ruststream = { version = ">=0.5.0, <0.6.0", default-features = false }
 
 fred = "10"
 bytes = "1"
