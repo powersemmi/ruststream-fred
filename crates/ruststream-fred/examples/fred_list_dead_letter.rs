@@ -11,7 +11,7 @@
 //! redis-cli LPUSH jobs.dlq '{"id":0}'
 //! ```
 
-use ruststream::runtime::{AppInfo, HandlerResult, RustStream};
+use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
 use ruststream::subscriber;
 use ruststream_fred::{RedisBroker, RedisList};
 use serde::Deserialize;
@@ -42,7 +42,7 @@ async fn handle_job(job: &Job) -> HandlerResult {
 
 // --8<-- [start:app]
 #[ruststream::app]
-fn app() -> RustStream {
+fn app() -> impl App {
     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {

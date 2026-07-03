@@ -9,7 +9,7 @@ crate's `integration_fred` tests and `docker-compose.test.yml`).
 
 ```toml
 [dev-dependencies]
-ruststream-fred = { version = "0.4", features = ["testing"] }
+ruststream-fred = { version = "0.5", features = ["testing"] }
 ```
 
 ## Unit-testing a handler

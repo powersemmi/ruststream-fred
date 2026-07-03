@@ -12,5 +12,6 @@ topologies.
 ruststream-fred = { version = "*", features = ["testing"] }
 ```
 
-`features = ["testing"]` exposes an in-memory test client (a handler-stub dispatcher with exact
-stream-key routing). Never enable this feature in production builds.
+`features = ["testing"]` exposes `RedisTestBroker`, an in-process test broker implementing
+`ruststream::testing::TestableBroker` (exact stream-key routing, no server). Never enable this
+feature in production builds.
