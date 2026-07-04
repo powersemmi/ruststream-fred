@@ -15,7 +15,7 @@
 //! redis-cli PUBLISH events '{"kind":"login"}'
 //! ```
 
-use ruststream::runtime::{AppInfo, HandlerResult, RustStream, TypedPublisher};
+use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream, TypedPublisher};
 use ruststream::subscriber;
 use ruststream_fred::{PubSubMode, RedisBroker, RedisPubSub};
 use serde::{Deserialize, Serialize};
@@ -52,7 +52,7 @@ async fn on_event_sharded(event: &Event) -> HandlerResult {
 // cluster. RustStream wires each handler onto its own broker.
 // --8<-- [start:app]
 #[ruststream::app]
-fn app() -> RustStream {
+fn app() -> impl App {
     RustStream::new(AppInfo::new("events", "0.1.0"))
         .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
             // `publish("audit")` sends through this Pub/Sub publisher (PUBLISH), not the default

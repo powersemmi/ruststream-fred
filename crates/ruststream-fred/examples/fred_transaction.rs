@@ -10,7 +10,7 @@
 //! cargo run --example fred_transaction --features macros,json -- run
 //! ```
 
-use ruststream::runtime::{AppInfo, HandlerResult, RustStream, TypedPublisher};
+use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream, TypedPublisher};
 use ruststream::subscriber;
 use ruststream_fred::RedisBroker;
 use serde::{Deserialize, Serialize};
@@ -33,7 +33,7 @@ async fn process(orders: &[Order]) -> Result<Vec<Order>, HandlerResult> {
 // --8<-- [end:batch]
 
 #[ruststream::app]
-fn app() -> RustStream {
+fn app() -> impl App {
     let broker = RedisBroker::standalone("redis://localhost:6379").default_group("workers");
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         // --8<-- [start:mount]

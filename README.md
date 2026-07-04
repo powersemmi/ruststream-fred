@@ -45,8 +45,8 @@
 
 ```toml
 [dependencies]
-ruststream = { version = "0.4", features = ["macros", "json"] }
-ruststream-fred = "0.4"
+ruststream = { version = "0.5", features = ["macros", "json"] }
+ruststream-fred = "0.5"
 serde = { version = "1", features = ["derive"] }
 ```
 
