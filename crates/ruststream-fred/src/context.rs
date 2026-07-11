@@ -131,6 +131,8 @@ impl BuildContext<RedisPubSubMessage> for PubSubContext {
 /// Each key is a zero-sized selector implementing [`Field`] only for the context type that carries
 /// its field, so applying a key to the wrong transport's context is a compile error.
 pub mod keys {
+    use ruststream::ContextField;
+
     use super::{Field, PubSubContext, StreamContext};
 
     /// Reads the stream entry id off a [`StreamContext`].
@@ -141,6 +143,14 @@ pub mod keys {
         type Value<'a> = Option<&'a str>;
         fn get(self, src: &StreamContext) -> Option<&str> {
             src.entry_id()
+        }
+    }
+
+    impl ContextField for EntryId {
+        type Context = StreamContext;
+        type Value = Option<String>;
+        fn read(self, src: &StreamContext) -> Option<String> {
+            src.entry_id().map(str::to_owned)
         }
     }
 
@@ -155,6 +165,14 @@ pub mod keys {
         }
     }
 
+    impl ContextField for ConsumerGroup {
+        type Context = StreamContext;
+        type Value = Option<String>;
+        fn read(self, src: &StreamContext) -> Option<String> {
+            src.consumer_group().map(str::to_owned)
+        }
+    }
+
     /// Reads the concrete channel off a [`PubSubContext`].
     #[derive(Debug, Clone, Copy, Default)]
     pub struct Channel;
@@ -163,6 +181,14 @@ pub mod keys {
         type Value<'a> = &'a str;
         fn get(self, src: &PubSubContext) -> &str {
             src.channel()
+        }
+    }
+
+    impl ContextField for Channel {
+        type Context = PubSubContext;
+        type Value = String;
+        fn read(self, src: &PubSubContext) -> String {
+            src.channel().to_owned()
         }
     }
 
@@ -176,13 +202,21 @@ pub mod keys {
             src.from_pattern()
         }
     }
+
+    impl ContextField for FromPattern {
+        type Context = PubSubContext;
+        type Value = bool;
+        fn read(self, src: &PubSubContext) -> bool {
+            src.from_pattern()
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::keys::{Channel, ConsumerGroup, EntryId, FromPattern};
     use super::{PubSubContext, StreamContext};
-    use ruststream::Field;
+    use ruststream::{ContextField, Field};
 
     #[test]
     fn stream_keys_read_native_fields() {
@@ -210,5 +244,28 @@ mod tests {
         let matched = PubSubContext::new("events.user", true);
         assert_eq!(Channel.get(&matched), "events.user");
         assert!(FromPattern.get(&matched));
+    }
+
+    #[test]
+    fn context_field_keys_yield_owned_values() {
+        let stream = StreamContext::new(
+            Some("1700000000000-0".to_owned()),
+            Some("workers".to_owned()),
+        );
+        assert_eq!(
+            <EntryId as ContextField>::read(EntryId, &stream),
+            Some("1700000000000-0".to_owned())
+        );
+        assert_eq!(
+            <ConsumerGroup as ContextField>::read(ConsumerGroup, &stream),
+            Some("workers".to_owned())
+        );
+
+        let pubsub = PubSubContext::new("orders.eu", true);
+        assert_eq!(
+            <Channel as ContextField>::read(Channel, &pubsub),
+            "orders.eu".to_owned()
+        );
+        assert!(<FromPattern as ContextField>::read(FromPattern, &pubsub));
     }
 }
