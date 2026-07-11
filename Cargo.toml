@@ -7,7 +7,7 @@ members = ["crates/ruststream-fred"]
 exclude = ["templates"]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -17,7 +17,7 @@ authors = ["RustStream contributors"]
 [workspace.dependencies]
 ruststream-fred = { path = "crates/ruststream-fred" }
 
-ruststream = { version = ">=0.5.0, <0.6.0", default-features = false }
+ruststream = { version = ">=0.5.2, <0.6.0", default-features = false }
 
 fred = "10"
 bytes = "1"
