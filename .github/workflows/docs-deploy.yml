@@ -9,7 +9,7 @@ on:
     # manually via workflow_dispatch.
     paths:
       - docs/**
-      - mkdocs.yml
+      - properdocs.yml
       - overrides/**
   workflow_dispatch:
 
