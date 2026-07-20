@@ -7,6 +7,7 @@
 <p align="center">
   <a href="https://github.com/powersemmi/ruststream-fred/actions/workflows/ci.yml"><img src="https://github.com/powersemmi/ruststream-fred/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://crates.io/crates/ruststream-fred"><img src="https://img.shields.io/crates/v/ruststream-fred.svg" alt="crates.io"></a>
+  <a href="https://crates.io/crates/ruststream-fred"><img src="https://img.shields.io/crates/dr/ruststream-fred" alt="Recent downloads"></a>
   <a href="https://docs.rs/ruststream-fred"><img src="https://img.shields.io/docsrs/ruststream-fred" alt="docs.rs"></a>
   <img src="https://img.shields.io/badge/MSRV-1.88-blue.svg" alt="MSRV 1.88">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
