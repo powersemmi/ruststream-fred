@@ -80,6 +80,7 @@ name = "fred_auth"
 
 [[example]]
 name = "fred_tls"
+required-features = ["tls-rustls"]
 
 [[example]]
 name = "fred_transaction"
