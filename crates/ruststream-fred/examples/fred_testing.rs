@@ -147,12 +147,15 @@ async fn test_payment_processing() -> Result<(), Box<dyn std::error::Error>> {
         br#"{"id":2,"user_id":42,"amount":0}"#,
     ));
 
-    // Wait until the valid payment is persisted.
-    let deadline = Duration::from_secs(2);
-    let start = std::time::Instant::now();
-    while !repository.contains(1).await && start.elapsed() < deadline {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    // Wait until the valid payment is persisted: the handler runs on another task, so
+    // yielding between checks is enough to let it progress.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !repository.contains(1).await {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("valid payment was not saved in time");
 
     assert!(repository.contains(1).await, "valid payment was not saved");
     assert!(
@@ -279,11 +282,13 @@ mod tests {
             br#"{"id":2,"user_id":42,"amount":0}"#,
         ));
 
-        let deadline = Duration::from_secs(2);
-        let start = std::time::Instant::now();
-        while !repository.contains(1).await && start.elapsed() < deadline {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !repository.contains(1).await {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("valid payment was not saved in time");
 
         assert!(repository.contains(1).await);
         assert!(!repository.contains(2).await);
