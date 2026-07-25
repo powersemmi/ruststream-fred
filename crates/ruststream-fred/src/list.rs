@@ -21,6 +21,7 @@
 //! [`RedisList::codec`] / [`RedisListPublisher::codec`].
 
 use std::fmt::{Debug, Formatter};
+use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -158,10 +159,12 @@ impl RedisList {
     /// In reliable mode, caps how many times an entry may be `nack(requeue = true)`-ed before it is
     /// treated as poison (dead-lettered or, with no dead-letter list, discarded). Off by default.
     ///
-    /// Lists have no native delivery counter, so this tracks the framework retry-count header carried
-    /// in the entry's envelope.
-    pub const fn max_deliveries(mut self, max: u64) -> Self {
-        self.max_deliveries = Some(max);
+    /// The original delivery counts as one: `max_deliveries(1)` delivers once and never
+    /// retries. Lists have no native delivery counter, so this tracks the framework
+    /// retry-count header carried in the entry's envelope. [`NonZeroU64`]: a cap of zero would
+    /// poison an entry that was already delivered, which is unsatisfiable.
+    pub const fn max_deliveries(mut self, max: NonZeroU64) -> Self {
+        self.max_deliveries = Some(max.get());
         self
     }
 

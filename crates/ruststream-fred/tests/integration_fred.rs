@@ -14,6 +14,7 @@
 //! republish-on-nack path, `XAUTOCLAIM` reclaim, builder-set auth, and the cluster / sentinel
 //! topologies.
 
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -271,7 +272,7 @@ async fn stream_max_deliveries_dead_letters_after_cap() {
             RedisStream::new(&key)
                 .group("workers")
                 .dead_letter(&dlq)
-                .max_deliveries(2),
+                .max_deliveries(NonZeroU64::new(2).unwrap()),
         )
         .await
         .expect("subscribe");
@@ -333,7 +334,7 @@ async fn stream_reclaim_exposes_delivery_count_and_idle() {
             RedisStream::reclaim(&key, Duration::from_millis(1))
                 .group("workers")
                 .consumer("rec")
-                .max_deliveries(10)
+                .max_deliveries(NonZeroU64::new(10).unwrap())
                 .block(Duration::from_millis(50)),
         )
         .await
@@ -385,7 +386,7 @@ async fn stream_reclaim_caps_to_dead_letter() {
                 .group("workers")
                 .consumer("rec")
                 .dead_letter(&dlq)
-                .max_deliveries(1)
+                .max_deliveries(NonZeroU64::new(1).unwrap())
                 .block(Duration::from_millis(50)),
         )
         .await
@@ -473,7 +474,7 @@ async fn reliable_list_max_deliveries_dead_letters() {
             RedisList::new(&key)
                 .reliable()
                 .dead_letter(&dlq)
-                .max_deliveries(2)
+                .max_deliveries(NonZeroU64::new(2).unwrap())
                 .block(Duration::from_millis(50)),
         )
         .await

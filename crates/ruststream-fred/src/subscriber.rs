@@ -187,7 +187,11 @@ impl RedisSubscriber {
         let mut out = Vec::with_capacity(entries.len());
         for (id, mut fields) in entries {
             let (idle, count) = meta.get(&id).copied().unwrap_or((0, 0));
-            if self.policy.is_poison(count) {
+            // XPENDING reports the count INCLUDING the claim in progress, i.e. the number of
+            // the delivery about to happen; the cap is over completed deliveries, so this
+            // delivery may still run when it is exactly the cap-th one (mirroring the nack
+            // path, which delivers max_deliveries times before poisoning).
+            if self.policy.is_poison(count.saturating_sub(1)) {
                 self.dead_letter_reclaimed(&id, &fields).await?;
                 continue;
             }

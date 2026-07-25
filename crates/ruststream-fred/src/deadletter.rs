@@ -51,9 +51,13 @@ impl PoisonPolicy {
         self.dead_letter.is_some() || self.max_deliveries.is_some()
     }
 
-    /// Whether a delivery count has reached the cap (so the message is poison).
-    pub(crate) fn is_poison(&self, count: u64) -> bool {
-        self.max_deliveries.is_some_and(|max| count >= max)
+    /// Whether the number of COMPLETED deliveries has reached the cap (so the message is
+    /// poison and must not be delivered again). Both settlement paths pass completed
+    /// deliveries: the nack path passes the framework retry counter plus one (the original
+    /// delivery counts as one), the reclaim path passes the native count minus the claim in
+    /// progress.
+    pub(crate) fn is_poison(&self, completed: u64) -> bool {
+        self.max_deliveries.is_some_and(|max| completed >= max)
     }
 
     pub(crate) fn dead_letter_key(&self) -> Option<&str> {

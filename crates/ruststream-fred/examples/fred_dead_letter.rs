@@ -15,6 +15,7 @@ use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
 use ruststream::subscriber;
 use ruststream_fred::{RedisBroker, RedisStream};
 use serde::Deserialize;
+use std::num::NonZeroU64;
 
 #[derive(Debug, Deserialize)]
 struct Order {
@@ -28,7 +29,7 @@ struct Order {
     RedisStream::new("orders")
         .group("workers")
         .dead_letter("orders.dlq")
-        .max_deliveries(5)
+        .max_deliveries(NonZeroU64::new(5).unwrap())
 )]
 async fn handle_order(order: &Order) -> HandlerResult {
     if order.id == 0 {

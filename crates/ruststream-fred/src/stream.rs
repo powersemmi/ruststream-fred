@@ -11,6 +11,7 @@
 //! silently stop fresh delivery), so the mode is part of the constructor name. Recovery is a
 //! separate `reclaim` subscriber on the same group: "two handlers per group".
 
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -176,11 +177,13 @@ impl RedisStream {
     /// Caps how many times a message may be delivered before it is treated as poison (dead-lettered
     /// or, with no dead-letter stream, discarded). Off by default.
     ///
-    /// The cap is checked against both the framework retry-count header (the `nack`/republish loop)
-    /// and the native stream delivery count (the reclaim loop), so a message poisoning either way is
-    /// caught.
-    pub const fn max_deliveries(mut self, max: u64) -> Self {
-        self.max_deliveries = Some(max);
+    /// The original delivery counts as one: `max_deliveries(1)` delivers once and never
+    /// retries, `2` allows one retry, and so on. The cap is checked against both the framework
+    /// retry-count header (the `nack`/republish loop) and the native stream delivery count
+    /// (the reclaim loop), so a message poisoning either way is caught. [`NonZeroU64`]: a cap
+    /// of zero would poison a message that was already delivered, which is unsatisfiable.
+    pub const fn max_deliveries(mut self, max: NonZeroU64) -> Self {
+        self.max_deliveries = Some(max.get());
         self
     }
 

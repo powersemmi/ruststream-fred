@@ -15,6 +15,7 @@ use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
 use ruststream::subscriber;
 use ruststream_fred::{RedisBroker, RedisList};
 use serde::Deserialize;
+use std::num::NonZeroU64;
 
 #[derive(Debug, Deserialize)]
 struct Job {
@@ -28,7 +29,7 @@ struct Job {
     RedisList::new("jobs.dlq")
         .reliable()
         .dead_letter("jobs.failed")
-        .max_deliveries(5)
+        .max_deliveries(NonZeroU64::new(5).unwrap())
 )]
 async fn handle_job(job: &Job) -> HandlerResult {
     if job.id == 0 {

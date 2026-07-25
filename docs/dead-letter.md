@@ -20,9 +20,12 @@ before the original is acked, so a crash leaves a duplicate rather than a loss.
     --8<-- "crates/ruststream-fred/examples/fred_list_dead_letter.rs:handler"
     ```
 
-`max_deliveries(n)` caps the delivery count. It is checked against both the framework retry-count
-header (the `nack`/republish loop) and, on the Streams reclaim path, the native Redis Streams delivery
-count, so a message poisoning either way is caught. Reclaimed deliveries also carry
+`max_deliveries(n)` caps the delivery count; the original delivery counts as one, so
+`max_deliveries(1)` delivers once and never retries, `2` allows one retry, and so on (the count is
+a `NonZeroU64`: a cap of zero would poison a message that was already delivered). It is checked
+against both the framework retry-count header (the `nack`/republish loop) and, on the Streams
+reclaim path, the native Redis Streams delivery count - with the same boundary on both paths - so
+a message poisoning either way is caught. Reclaimed deliveries also carry
 `redis-delivery-count` and `redis-idle-ms` headers, so a handler can branch or dead-letter manually.
 
 Simple List and Pub/Sub cannot ack, so they have no dead-letter path.
