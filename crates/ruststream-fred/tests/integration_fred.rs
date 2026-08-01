@@ -23,13 +23,13 @@ use futures::StreamExt;
 use ruststream::codec::JsonCodec;
 use ruststream::runtime::{RETRY_COUNT_HEADER, TypedPublisher};
 use ruststream::{
-    Broker, ConnectedBroker, Headers, IncomingMessage, OutgoingMessage, Publisher, Subscribe,
-    Subscriber, TransactionalPublisher,
+    Broker, ConnectedBroker, Headers, IncomingMessage, OutgoingMessage, Positioned, Publisher,
+    Seekable, Seeker, Subscribe, Subscriber, TransactionalPublisher,
 };
 use ruststream_fred::{
     ConnectedRedisBroker, DEAD_LETTER_REASON_HEADER, DELIVERY_COUNT_HEADER, DelayedRetry,
-    IDLE_MS_HEADER, RedisBroker, RedisError, RedisList, RedisListPublish, RedisPubSub,
-    RedisPubSubPublish, RedisStream, StreamStart,
+    IDLE_MS_HEADER, RedisBroker, RedisError, RedisGroupPosition, RedisList, RedisListPublish,
+    RedisPubSub, RedisPubSubPublish, RedisStream, StreamStart,
 };
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -840,6 +840,237 @@ async fn typed_publisher_opens_owned_transactions() {
         "the publisher's codec encoded the value"
     );
     msg.ack().await.expect("ack");
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+// The core `capabilities::seeking` suite covers the capability contract (replay from a captured
+// position, skipping forward, live deliveries afterwards). What follows is Redis-specific: the
+// constructor positions, the group-wide reach of a seek, and what a seek deliberately leaves alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn seek_to_beginning_replays_retained_history() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("seek_beginning");
+
+    let mut sub = broker
+        .subscribe(
+            RedisStream::new(&key)
+                .group("workers")
+                .block(Duration::from_millis(50)),
+        )
+        .await
+        .expect("subscribe");
+    let seeker = sub.seeker();
+
+    let publisher = broker.publisher();
+    for payload in [b"h1".as_slice(), b"h2"] {
+        publisher
+            .publish(OutgoingMessage::new(key.as_str(), payload))
+            .await
+            .expect("publish");
+    }
+
+    let mut stream = Box::pin(sub.stream());
+    for expected in [b"h1".as_slice(), b"h2"] {
+        let msg = next(&mut stream).await.expect("initial delivery");
+        assert_eq!(msg.payload(), expected);
+        msg.ack().await.expect("ack");
+    }
+
+    // Everything the stream still retains, acked or not, is delivered again.
+    seeker
+        .seek(RedisGroupPosition::beginning())
+        .await
+        .expect("seek to the beginning");
+    for expected in [b"h1".as_slice(), b"h2"] {
+        let msg = next(&mut stream).await.expect("replayed delivery");
+        assert_eq!(msg.payload(), expected, "the whole history must replay");
+        msg.ack().await.expect("ack");
+    }
+
+    // `end()` parks the group at the tail: the same history is not replayed again.
+    seeker
+        .seek(RedisGroupPosition::end())
+        .await
+        .expect("seek to the end");
+    none_within(&mut stream, "after seeking to the end").await;
+    publisher
+        .publish(OutgoingMessage::new(key.as_str(), b"h3"))
+        .await
+        .expect("publish after the seek");
+    let live = next(&mut stream).await.expect("delivery after the seek");
+    assert_eq!(live.payload(), b"h3");
+    live.ack().await.expect("ack");
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+// The property that sets Redis apart: the cursor belongs to the consumer group, so a seek through
+// one subscription's seeker repositions every consumer of that group.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_seek_moves_the_whole_group() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("seek_group");
+
+    let worker = broker
+        .subscribe(
+            RedisStream::new(&key)
+                .group("workers")
+                .consumer("worker")
+                .block(Duration::from_millis(50)),
+        )
+        .await
+        .expect("subscribe worker");
+    // A second consumer of the same group, which never reads: it only mints the seeker.
+    let admin = broker
+        .subscribe(
+            RedisStream::new(&key)
+                .group("workers")
+                .consumer("admin")
+                .block(Duration::from_millis(50)),
+        )
+        .await
+        .expect("subscribe admin");
+    let admin_seeker = admin.seeker();
+
+    broker
+        .publisher()
+        .publish(OutgoingMessage::new(key.as_str(), b"g1"))
+        .await
+        .expect("publish");
+
+    let mut worker = worker;
+    let mut stream = Box::pin(worker.stream());
+    let first = next(&mut stream).await.expect("first delivery");
+    assert_eq!(first.payload(), b"g1");
+    first.ack().await.expect("ack");
+
+    // The admin's seek rewinds the group, so the worker - which never asked - reads the entry
+    // again.
+    admin_seeker
+        .seek(RedisGroupPosition::beginning())
+        .await
+        .expect("seek through the admin subscription");
+    let replayed = next(&mut stream).await.expect("replayed delivery");
+    assert_eq!(
+        replayed.payload(),
+        b"g1",
+        "a seek on one consumer must move the group's cursor for all of them"
+    );
+    replayed.ack().await.expect("ack");
+
+    drop(stream);
+    drop(admin);
+    broker.shutdown().await.expect("shutdown");
+}
+
+// Moving the cursor is not a way to discard work in flight: entries already delivered and not
+// acknowledged stay in the pending list and remain reachable through the reclaim path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_seek_leaves_the_pending_list_alone() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("seek_pending");
+
+    let mut worker = broker
+        .subscribe(
+            RedisStream::new(&key)
+                .group("workers")
+                .consumer("dead")
+                .block(Duration::from_millis(50)),
+        )
+        .await
+        .expect("subscribe worker");
+    let seeker = worker.seeker();
+
+    broker
+        .publisher()
+        .publish(OutgoingMessage::new(key.as_str(), b"in-flight"))
+        .await
+        .expect("publish");
+    {
+        // Read without acking, then abandon the consumer: the entry stays pending.
+        let mut stream = Box::pin(worker.stream());
+        let msg = next(&mut stream).await.expect("delivery");
+        assert_eq!(msg.payload(), b"in-flight");
+        drop(msg);
+    }
+    // Skipping the group to the tail must not make the unacked entry unreachable.
+    seeker
+        .seek(RedisGroupPosition::end())
+        .await
+        .expect("seek to the end");
+    drop(worker);
+
+    let mut recovery = broker
+        .subscribe(
+            RedisStream::reclaim(&key, Duration::from_millis(1))
+                .group("workers")
+                .consumer("recovery")
+                .block(Duration::from_millis(50)),
+        )
+        .await
+        .expect("subscribe recovery");
+    let mut stream = Box::pin(recovery.stream());
+    let reclaimed = next(&mut stream).await.expect("reclaimed delivery");
+    assert_eq!(
+        reclaimed.payload(),
+        b"in-flight",
+        "the pending entry must survive a cursor move"
+    );
+    reclaimed.ack().await.expect("ack");
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+// `XGROUP SETID` is a single-key command, so it works on a cluster too: the stream and its group
+// live on one slot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cluster_seek_replays_history() {
+    let Some(node) = env("REDIS_CLUSTER_TEST_URL") else {
+        return;
+    };
+    let broker = connect(RedisBroker::cluster([node])).await;
+    let key = unique_key("cluster_seek");
+
+    let mut sub = broker
+        .subscribe(
+            RedisStream::new(&key)
+                .group("workers")
+                .block(Duration::from_millis(50)),
+        )
+        .await
+        .expect("subscribe");
+    let seeker = sub.seeker();
+
+    broker
+        .publisher()
+        .publish(OutgoingMessage::new(key.as_str(), b"c1"))
+        .await
+        .expect("publish");
+
+    let mut stream = Box::pin(sub.stream());
+    let first = next(&mut stream).await.expect("first delivery");
+    let position = first.position();
+    assert_eq!(first.payload(), b"c1");
+    first.ack().await.expect("ack");
+
+    // Seeking to the captured position redelivers exactly that entry.
+    seeker.seek(position).await.expect("seek to the position");
+    let replayed = next(&mut stream).await.expect("replayed delivery");
+    assert_eq!(replayed.payload(), b"c1");
+    replayed.ack().await.expect("ack");
 
     drop(stream);
     broker.shutdown().await.expect("shutdown");

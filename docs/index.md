@@ -45,7 +45,8 @@ One crate, three named constructors. Each is synchronous and I/O-free; the conne
 
 ## Transport guides
 
-- [Redis Streams](streams.md) — consumer groups, fresh tail vs reclaim, delayed retry.
+- [Redis Streams](streams.md) — consumer groups, fresh tail vs reclaim, repositioning, delayed
+  retry.
 - [Redis Lists](lists.md) — competing-consumers work queue, reliable mode, orphan recovery.
 - [Pub/Sub](pubsub.md) — classic and sharded broadcast.
 - [Dead-letter and poison cap](dead-letter.md) — bound infinite redelivery.
