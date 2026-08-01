@@ -64,6 +64,22 @@ async fn passes_transactions() {
     .await;
 }
 
+// The owned transaction kind, next to the borrowed suite above. Both are gated on the standalone
+// topology: cluster cannot offer multi-key transactions, so its publishers reject either kind.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passes_owned_transactions() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    capabilities::owned_transactions(
+        || RedisBroker::standalone(url.clone()),
+        |key| RedisStream::new(key).group("conformance"),
+        |connected| connected.publisher(),
+    )
+    .await;
+}
+
 fn redis_url() -> Option<String> {
     std::env::var("REDIS_TEST_URL").ok()
 }
