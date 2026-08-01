@@ -11,7 +11,7 @@
 //!
 //! Headers travel in a frame around the payload (see [`crate::envelope`]): a lossless binary frame
 //! by default, or a readable codec-serialized envelope when a codec is set with
-//! [`RedisPubSub::codec`] / [`RedisPubSubPublisher::codec`].
+//! [`RedisPubSub::codec`] / [`RedisPubSubPublish::codec`].
 
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
@@ -24,13 +24,14 @@ use futures::Stream;
 use futures::stream::unfold;
 use ruststream::codec::Codec;
 use ruststream::{
-    AckError, Headers, IncomingMessage, OutgoingMessage, Partitioned, Publisher, SubscriptionSource,
+    AckError, Headers, IncomingMessage, OutgoingMessage, PairError, Partitioned, PublishPolicy,
+    Publisher, SubscriptionSource,
 };
-use tokio::sync::OnceCell;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 
+use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::envelope::{SharedEnvelope, frame, unframe};
-use crate::{RedisBroker, error::RedisError, message::PARTITION_KEY_HEADER};
+use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
 
 /// Pub/Sub delivery mode. Defaults to [`Classic`](Self::Classic).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -42,7 +43,7 @@ pub enum PubSubMode {
     Sharded,
 }
 
-/// Describes one Pub/Sub subscription against [`crate::RedisBroker`].
+/// Describes one Pub/Sub subscription against a [`ConnectedRedisBroker`].
 ///
 /// # Examples
 ///
@@ -134,20 +135,23 @@ impl RedisPubSub {
     }
 }
 
-impl SubscriptionSource<RedisBroker> for RedisPubSub {
+impl SubscriptionSource<ConnectedRedisBroker> for RedisPubSub {
     type Subscriber = RedisPubSubSubscriber;
 
     fn name(&self) -> &str {
         self.channel()
     }
 
-    async fn subscribe(self, broker: &RedisBroker) -> Result<Self::Subscriber, RedisError> {
-        broker.subscribe_pubsub(self).await
+    async fn subscribe(
+        self,
+        connected: &ConnectedRedisBroker,
+    ) -> Result<Self::Subscriber, RedisError> {
+        connected.subscribe_pubsub(self).await
     }
 }
 
 #[cfg(feature = "testing")]
-impl SubscriptionSource<crate::testing::RedisTestBroker> for RedisPubSub {
+impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisPubSub {
     type Subscriber = crate::testing::RedisTestSubscriber;
 
     fn name(&self) -> &str {
@@ -156,9 +160,9 @@ impl SubscriptionSource<crate::testing::RedisTestBroker> for RedisPubSub {
 
     async fn subscribe(
         self,
-        broker: &crate::testing::RedisTestBroker,
+        connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> Result<Self::Subscriber, RedisError> {
-        broker.subscribe(self.channel()).await
+        connected.subscribe(self.channel()).await
     }
 }
 
@@ -301,15 +305,75 @@ impl Partitioned for RedisPubSubMessage {
     }
 }
 
-/// Publishes Pub/Sub messages with `PUBLISH` (classic) or `SPUBLISH` (sharded).
+/// The declaration half of the Pub/Sub publisher: delivery mode and envelope codec, no connection.
 ///
-/// Obtain it from [`RedisBroker::pubsub_publisher`](crate::RedisBroker::pubsub_publisher). The
-/// publish mode must match how subscribers subscribed: a sharded publish only reaches sharded
-/// subscribers. Headers are framed around the payload; set a [`codec`](Self::codec) for a readable
-/// wire format (it must match the subscriber's).
+/// Constructible anywhere (in a router definition, in configuration), it pairs into a
+/// [`RedisPubSubPublisher`] against a [`ConnectedRedisBroker`]. The publish mode must match how
+/// subscribers subscribed: a sharded publish only reaches sharded subscribers.
+///
+/// # Examples
+///
+/// ```
+/// use ruststream_fred::{PubSubMode, RedisPubSubPublish};
+///
+/// let classic = RedisPubSubPublish::default();
+/// let sharded = RedisPubSubPublish::new().mode(PubSubMode::Sharded);
+/// # let _ = (classic, sharded);
+/// ```
+#[derive(Clone, Default)]
+#[must_use]
+pub struct RedisPubSubPublish {
+    mode: PubSubMode,
+    codec: Option<SharedEnvelope>,
+}
+
+impl Debug for RedisPubSubPublish {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RedisPubSubPublish")
+            .field("mode", &self.mode)
+            .field("codec", &self.codec.is_some())
+            .finish()
+    }
+}
+
+impl RedisPubSubPublish {
+    /// A classic-mode policy with the default binary framing. Equivalent to [`Self::default`].
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the publish mode. Defaults to [`PubSubMode::Classic`].
+    pub const fn mode(mut self, mode: PubSubMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Serializes the header/payload envelope with `codec` (must match the subscriber). Without it
+    /// the default lossless binary framing is used.
+    pub fn codec(mut self, codec: impl Codec + 'static) -> Self {
+        self.codec = Some(Arc::new(codec));
+        self
+    }
+}
+
+impl PublishPolicy<ConnectedRedisBroker> for RedisPubSubPublish {
+    type Live = RedisPubSubPublisher;
+
+    async fn pair(self, connected: &ConnectedRedisBroker) -> Result<Self::Live, PairError> {
+        Ok(connected.pubsub_publisher(self))
+    }
+}
+
+/// Publishes Pub/Sub messages with `PUBLISH` (classic) or `SPUBLISH` (sharded): a
+/// [`RedisPubSubPublish`] policy paired with a connection.
+///
+/// Obtain it from
+/// [`ConnectedRedisBroker::pubsub_publisher`](crate::ConnectedRedisBroker::pubsub_publisher), or
+/// by pairing the policy. Like every publisher here it may outlive the connection, so publishing
+/// after shutdown reports [`RedisError::ShutDown`].
 #[derive(Clone)]
 pub struct RedisPubSubPublisher {
-    pool: Arc<OnceCell<fred::clients::Pool>>,
+    core: Arc<RedisCore>,
     mode: PubSubMode,
     codec: Option<SharedEnvelope>,
 }
@@ -324,28 +388,12 @@ impl Debug for RedisPubSubPublisher {
 }
 
 impl RedisPubSubPublisher {
-    pub(crate) fn new(pool: Arc<OnceCell<fred::clients::Pool>>, mode: PubSubMode) -> Self {
+    pub(crate) fn new(core: Arc<RedisCore>, publish: RedisPubSubPublish) -> Self {
         Self {
-            pool,
-            mode,
-            codec: None,
+            core,
+            mode: publish.mode,
+            codec: publish.codec,
         }
-    }
-
-    /// Sets the publish mode. Defaults to whatever
-    /// [`RedisBroker::pubsub_publisher`](crate::RedisBroker::pubsub_publisher) selected.
-    #[must_use]
-    pub const fn mode(mut self, mode: PubSubMode) -> Self {
-        self.mode = mode;
-        self
-    }
-
-    /// Serializes the header/payload envelope with `codec` (must match the subscriber). Without it
-    /// the default lossless binary framing is used.
-    #[must_use]
-    pub fn codec(mut self, codec: impl Codec + 'static) -> Self {
-        self.codec = Some(Arc::new(codec));
-        self
     }
 }
 
@@ -353,7 +401,7 @@ impl Publisher for RedisPubSubPublisher {
     type Error = RedisError;
 
     async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
-        let pool = self.pool.get().cloned().ok_or(RedisError::NotConnected)?;
+        let pool = self.core.pool()?;
         let client = pool.next();
         let channel = msg.name().to_owned();
         let body = frame(self.codec.as_ref(), msg.payload(), msg.headers());

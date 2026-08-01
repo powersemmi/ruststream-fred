@@ -17,16 +17,23 @@ use ruststream::runtime::{AppInfo, HandlerResult, RustStream};
 use ruststream::subscriber;
 use ruststream::testing::TestApp;
 use ruststream::{
-    BatchSubscriber, Broker, DescribeServer, Headers, IncomingMessage, OutgoingMessage,
-    Partitioned, Publisher, Subscriber, TransactionalPublisher, testing::expect_published,
+    BatchSubscriber, Broker, ConnectedBroker, DescribeServer, Headers, IncomingMessage,
+    OutgoingMessage, Partitioned, Publisher, Subscriber, TransactionalPublisher,
+    testing::expect_published,
 };
 use ruststream_fred::{
     PARTITION_KEY_HEADER, RedisError, RedisStream,
-    testing::{RedisTestBroker, RedisTestMessage},
+    testing::{ConnectedRedisTestBroker, RedisTestBroker, RedisTestMessage},
 };
 use serde::{Deserialize, Serialize};
 
 const WAIT: Duration = Duration::from_secs(1);
+
+/// A freshly connected in-process broker: the form that carries the subscribe, publish, and
+/// `TestableBroker` surface.
+async fn connected() -> ConnectedRedisTestBroker {
+    RedisTestBroker::new().connect().await.expect("connect")
+}
 
 async fn next_payload<S>(stream: &mut S) -> Vec<u8>
 where
@@ -44,8 +51,7 @@ where
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pub_sub_round_trip_through_broker_traits() {
-    let broker = RedisTestBroker::new();
-    broker.connect().await.expect("connect");
+    let broker = connected().await;
 
     let mut subscriber = broker.subscribe("orders").await.expect("subscribe");
     let publisher = broker.publisher();
@@ -65,7 +71,7 @@ async fn pub_sub_round_trip_through_broker_traits() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn publisher_rejects_empty_key() {
-    let broker = RedisTestBroker::new();
+    let broker = connected().await;
     let publisher = broker.publisher();
     let err = publisher
         .publish(OutgoingMessage::new("", b"x"))
@@ -76,7 +82,7 @@ async fn publisher_rejects_empty_key() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn distinct_keys_are_isolated() {
-    let broker = RedisTestBroker::new();
+    let broker = connected().await;
     let mut orders = broker.subscribe("orders").await.expect("subscribe orders");
     let mut events = broker.subscribe("events").await.expect("subscribe events");
     let publisher = broker.publisher();
@@ -99,7 +105,7 @@ async fn distinct_keys_are_isolated() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn nack_requeue_redelivers_to_same_subscriber() {
-    let broker = RedisTestBroker::new();
+    let broker = connected().await;
     let mut subscriber = broker.subscribe("orders").await.expect("subscribe");
     let publisher = broker.publisher();
 
@@ -127,7 +133,7 @@ async fn nack_requeue_redelivers_to_same_subscriber() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn headers_are_propagated_to_subscribers() {
-    let broker = RedisTestBroker::new();
+    let broker = connected().await;
     let mut subscriber = broker.subscribe("orders").await.expect("subscribe");
     let publisher = broker.publisher();
 
@@ -150,7 +156,7 @@ async fn headers_are_propagated_to_subscribers() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn expect_published_observes_publishes() {
-    let broker = RedisTestBroker::new();
+    let broker = connected().await;
     let publisher = broker.publisher();
     publisher
         .publish(OutgoingMessage::new("events", b"first"))
@@ -170,7 +176,7 @@ async fn expect_published_observes_publishes() {
 // The Subscriber contract (and the conformance helpers) re-enter `stream()` per call.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stream_can_be_reentered() {
-    let broker = RedisTestBroker::new();
+    let broker = connected().await;
     let mut subscriber = broker.subscribe("orders").await.expect("subscribe");
     let publisher = broker.publisher();
 
@@ -193,14 +199,14 @@ async fn stream_can_be_reentered() {
 
 #[tokio::test]
 async fn describe_server_returns_redis_protocol() {
-    let broker = RedisTestBroker::new();
-    let spec = broker.describe_server();
+    // `DescribeServer` describes the configuration, so it sits on the unconnected form.
+    let spec = RedisTestBroker::new().describe_server();
     assert_eq!(spec.protocol, "redis");
 }
 
 #[tokio::test]
 async fn partition_key_header_is_surfaced() {
-    let broker = RedisTestBroker::new();
+    let broker = connected().await;
     let mut sub = broker.subscribe("events").await.expect("subscribe");
 
     let mut headers = Headers::new();
@@ -229,7 +235,7 @@ async fn partition_key_header_is_surfaced() {
 
 #[tokio::test]
 async fn partition_key_absent_yields_none() {
-    let broker = RedisTestBroker::new();
+    let broker = connected().await;
     let mut sub = broker.subscribe("events.bare").await.expect("subscribe");
 
     broker
@@ -252,7 +258,7 @@ async fn partition_key_absent_yields_none() {
 
 #[tokio::test]
 async fn batch_drains_in_publish_order() {
-    let broker = RedisTestBroker::new();
+    let broker = connected().await;
     let publisher = broker.publisher();
     let mut sub = broker.subscribe("batch.order").await.expect("subscribe");
 
@@ -284,7 +290,7 @@ async fn batch_drains_in_publish_order() {
 // must keep working.
 #[tokio::test]
 async fn batches_can_be_reentered() {
-    let broker = RedisTestBroker::new();
+    let broker = connected().await;
     let publisher = broker.publisher();
     let mut sub = broker.subscribe("batch.reenter").await.expect("subscribe");
 
@@ -330,7 +336,7 @@ async fn batches_can_be_reentered() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn transaction_buffers_until_commit() {
-    let broker = RedisTestBroker::new();
+    let broker = connected().await;
     let mut sub = broker.subscribe("tx").await.expect("subscribe");
     let publisher = broker.publisher();
 
@@ -357,7 +363,7 @@ async fn transaction_buffers_until_commit() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn transaction_abort_discards_buffer() {
-    let broker = RedisTestBroker::new();
+    let broker = connected().await;
     let publisher = broker.publisher();
 
     publisher.begin_transaction().await.expect("begin");
@@ -369,6 +375,38 @@ async fn transaction_abort_discards_buffer() {
 
     let observed = expect_published(&broker, "tx", 1, Duration::from_millis(50)).await;
     assert!(observed.is_empty(), "aborted messages must be discarded");
+}
+
+// The `TransactionalPublisher` contract requires misuse to surface as an error rather than a
+// silent no-op; the in-process publisher mirrors the real one here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transaction_misuse_errors() {
+    let broker = connected().await;
+    let publisher = broker.publisher();
+
+    assert!(matches!(
+        publisher.commit().await,
+        Err(RedisError::NoTransaction)
+    ));
+    assert!(matches!(
+        publisher.abort().await,
+        Err(RedisError::NoTransaction)
+    ));
+
+    publisher.begin_transaction().await.expect("begin");
+    assert!(matches!(
+        publisher.begin_transaction().await,
+        Err(RedisError::TransactionBusy)
+    ));
+    // The rejected second begin must leave the open transaction intact.
+    publisher
+        .publish(OutgoingMessage::new("tx.misuse", b"kept"))
+        .await
+        .expect("publish inside the open transaction");
+    publisher.commit().await.expect("commit");
+
+    let observed = expect_published(&broker, "tx.misuse", 1, Duration::from_millis(50)).await;
+    assert_eq!(observed.len(), 1);
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]

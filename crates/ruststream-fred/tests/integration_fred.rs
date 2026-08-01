@@ -11,8 +11,8 @@
 //! ```
 //!
 //! These cover what the handler-stub broker cannot: real consumer groups, `XACK`, the
-//! republish-on-nack path, `XAUTOCLAIM` reclaim, builder-set auth, and the cluster / sentinel
-//! topologies.
+//! republish-on-nack path, `XAUTOCLAIM` reclaim, builder-set auth, the cluster / sentinel
+//! topologies, and the post-shutdown behaviour of a publisher that outlives the connection.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -21,10 +21,14 @@ use fred::interfaces::KeysInterface;
 use futures::StreamExt;
 use ruststream::codec::JsonCodec;
 use ruststream::runtime::RETRY_COUNT_HEADER;
-use ruststream::{Broker, Headers, IncomingMessage, OutgoingMessage, Publisher, Subscriber};
+use ruststream::{
+    Broker, ConnectedBroker, Headers, IncomingMessage, OutgoingMessage, Publisher, Subscribe,
+    Subscriber,
+};
 use ruststream_fred::{
-    DEAD_LETTER_REASON_HEADER, DELIVERY_COUNT_HEADER, DelayedRetry, IDLE_MS_HEADER, RedisBroker,
-    RedisList, RedisPubSub, RedisStream, StreamStart,
+    ConnectedRedisBroker, DEAD_LETTER_REASON_HEADER, DELIVERY_COUNT_HEADER, DelayedRetry,
+    IDLE_MS_HEADER, RedisBroker, RedisError, RedisList, RedisListPublish, RedisPubSub,
+    RedisPubSubPublish, RedisStream, StreamStart,
 };
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -52,12 +56,16 @@ where
         .expect("stream has a next item")
 }
 
-async fn connect(broker: &RedisBroker) {
-    Broker::connect(broker).await.expect("connect to redis");
+async fn connect(broker: RedisBroker) -> ConnectedRedisBroker {
+    broker.connect().await.expect("connect to redis")
+}
+
+async fn standalone(url: String) -> ConnectedRedisBroker {
+    connect(RedisBroker::standalone(url)).await
 }
 
 /// Publish one message, read it off a fresh-tail group, and ack. Shared by every topology.
-async fn round_trip(broker: &RedisBroker, key: &str) {
+async fn round_trip(broker: &ConnectedRedisBroker, key: &str) {
     let mut sub = broker
         .subscribe(RedisStream::new(key).group("workers"))
         .await
@@ -84,9 +92,65 @@ async fn standalone_round_trip_with_ack() {
     let Some(url) = env("REDIS_TEST_URL") else {
         return;
     };
-    let broker = RedisBroker::standalone(url);
-    connect(&broker).await;
+    let broker = standalone(url).await;
     round_trip(&broker, &unique_key("round_trip")).await;
+    broker.shutdown().await.expect("shutdown");
+}
+
+// A publisher aliases the connection and may outlive it, so it must report the shutdown rather
+// than silently succeeding against a dead pool.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn publisher_errors_after_shutdown() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("post_shutdown");
+    let publisher = broker.publisher();
+    publisher
+        .publish(OutgoingMessage::new(key.as_str(), b"before"))
+        .await
+        .expect("publish before shutdown");
+
+    let closed = broker.shutdown().await.expect("shutdown");
+    assert!(closed.connections_closed() > 0);
+
+    let err = publisher
+        .publish(OutgoingMessage::new(key.as_str(), b"after"))
+        .await
+        .expect_err("publishing through a handle aliasing a closed connection must error");
+    assert!(matches!(err, RedisError::ShutDown), "got {err}");
+}
+
+// Redis Streams always read through a group, so the bare-string subscriber form needs the
+// broker-wide default group.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bare_string_subscription_needs_default_group() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = connect(RedisBroker::standalone(url.clone())).await;
+    let err = Subscribe::subscribe(&broker, &unique_key("bare"))
+        .await
+        .expect_err("a bare-string subscription without a default group must fail");
+    assert!(matches!(err, RedisError::InvalidOptions(msg) if msg.contains("default group")));
+    broker.shutdown().await.expect("shutdown");
+
+    let broker = connect(RedisBroker::standalone(url).default_group("workers")).await;
+    let key = unique_key("bare_ok");
+    let mut sub = Subscribe::subscribe(&broker, &key)
+        .await
+        .expect("subscribe with the default group");
+    broker
+        .publisher()
+        .publish(OutgoingMessage::new(key.as_str(), b"hello"))
+        .await
+        .expect("publish");
+    let mut stream = Box::pin(sub.stream());
+    let msg = next(&mut stream).await.expect("delivery ok");
+    assert_eq!(msg.payload(), b"hello");
+    msg.ack().await.expect("ack");
+    drop(stream);
     broker.shutdown().await.expect("shutdown");
 }
 
@@ -96,8 +160,7 @@ async fn standalone_auth_round_trip_with_credentials() {
     let Some(url) = env("REDIS_AUTH_TEST_URL") else {
         return;
     };
-    let broker = RedisBroker::standalone(url).credentials("worker", "workerpass");
-    connect(&broker).await;
+    let broker = connect(RedisBroker::standalone(url).credentials("worker", "workerpass")).await;
     round_trip(&broker, &unique_key("auth_creds")).await;
     broker.shutdown().await.expect("shutdown");
 }
@@ -108,8 +171,7 @@ async fn standalone_auth_round_trip_with_password() {
     let Some(url) = env("REDIS_AUTH_TEST_URL") else {
         return;
     };
-    let broker = RedisBroker::standalone(url).password("s3cr3t");
-    connect(&broker).await;
+    let broker = connect(RedisBroker::standalone(url).password("s3cr3t")).await;
     round_trip(&broker, &unique_key("auth_pass")).await;
     broker.shutdown().await.expect("shutdown");
 }
@@ -120,9 +182,8 @@ async fn standalone_auth_without_credentials_fails() {
     let Some(url) = env("REDIS_AUTH_TEST_URL") else {
         return;
     };
-    let broker = RedisBroker::standalone(url);
-    let err = Broker::connect(&broker).await;
-    assert!(err.is_err(), "connecting without credentials must fail");
+    let result = RedisBroker::standalone(url).connect().await;
+    assert!(result.is_err(), "connecting without credentials must fail");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -130,8 +191,7 @@ async fn standalone_nack_requeue_republishes_to_same_stream() {
     let Some(url) = env("REDIS_TEST_URL") else {
         return;
     };
-    let broker = RedisBroker::standalone(url);
-    connect(&broker).await;
+    let broker = standalone(url).await;
     let key = unique_key("requeue");
 
     let mut sub = broker
@@ -163,8 +223,7 @@ async fn standalone_reclaim_picks_up_pending_entries() {
     let Some(url) = env("REDIS_TEST_URL") else {
         return;
     };
-    let broker = RedisBroker::standalone(url);
-    connect(&broker).await;
+    let broker = standalone(url).await;
     let key = unique_key("reclaim");
 
     // A fresh-tail consumer reads the entry but never acks it (the handle is dropped), so it stays
@@ -208,7 +267,7 @@ async fn standalone_reclaim_picks_up_pending_entries() {
 }
 
 /// Reads and acks the single entry sitting in a dead-letter stream, from the beginning.
-async fn read_dead_letter_stream(broker: &RedisBroker, key: &str) -> Headers {
+async fn read_dead_letter_stream(broker: &ConnectedRedisBroker, key: &str) -> Headers {
     let mut sub = broker
         .subscribe(
             RedisStream::new(key)
@@ -231,8 +290,7 @@ async fn stream_drop_routes_to_dead_letter() {
     let Some(url) = env("REDIS_TEST_URL") else {
         return;
     };
-    let broker = RedisBroker::standalone(url);
-    connect(&broker).await;
+    let broker = standalone(url).await;
     let key = unique_key("dlq_drop");
     let dlq = format!("{key}.dlq");
 
@@ -261,8 +319,7 @@ async fn stream_max_deliveries_dead_letters_after_cap() {
     let Some(url) = env("REDIS_TEST_URL") else {
         return;
     };
-    let broker = RedisBroker::standalone(url);
-    connect(&broker).await;
+    let broker = standalone(url).await;
     let key = unique_key("dlq_cap");
     let dlq = format!("{key}.dlq");
 
@@ -308,8 +365,7 @@ async fn stream_reclaim_exposes_delivery_count_and_idle() {
     let Some(url) = env("REDIS_TEST_URL") else {
         return;
     };
-    let broker = RedisBroker::standalone(url);
-    connect(&broker).await;
+    let broker = standalone(url).await;
     let key = unique_key("dlq_meta");
 
     let mut worker = broker
@@ -357,8 +413,7 @@ async fn stream_reclaim_caps_to_dead_letter() {
     let Some(url) = env("REDIS_TEST_URL") else {
         return;
     };
-    let broker = RedisBroker::standalone(url);
-    connect(&broker).await;
+    let broker = standalone(url).await;
     let key = unique_key("dlq_reclaim");
     let dlq = format!("{key}.dlq");
 
@@ -408,13 +463,12 @@ async fn reliable_list_drop_routes_to_dead_letter() {
     let Some(url) = env("REDIS_TEST_URL") else {
         return;
     };
-    let broker = RedisBroker::standalone(url);
-    connect(&broker).await;
+    let broker = standalone(url).await;
     let key = unique_key("list_dlq_drop");
     let dlq = format!("{key}.dlq");
 
     broker
-        .list_publisher()
+        .list_publisher(RedisListPublish::new())
         .publish(OutgoingMessage::new(key.as_str(), b"poison"))
         .await
         .expect("lpush");
@@ -457,13 +511,12 @@ async fn reliable_list_max_deliveries_dead_letters() {
     let Some(url) = env("REDIS_TEST_URL") else {
         return;
     };
-    let broker = RedisBroker::standalone(url);
-    connect(&broker).await;
+    let broker = standalone(url).await;
     let key = unique_key("list_dlq_cap");
     let dlq = format!("{key}.dlq");
 
     broker
-        .list_publisher()
+        .list_publisher(RedisListPublish::new())
         .publish(OutgoingMessage::new(key.as_str(), b"poison"))
         .await
         .expect("lpush");
@@ -510,13 +563,12 @@ async fn reliable_list_recovery_returns_orphaned_entry() {
     let Some(url) = env("REDIS_TEST_URL") else {
         return;
     };
-    let broker = RedisBroker::standalone(url);
-    connect(&broker).await;
+    let broker = standalone(url).await;
     let key = unique_key("list_recovery");
     let zset = format!("{key}.inflight");
 
     broker
-        .list_publisher()
+        .list_publisher(RedisListPublish::new())
         .publish(OutgoingMessage::new(key.as_str(), b"job-x"))
         .await
         .expect("lpush");
@@ -555,8 +607,7 @@ async fn delayed_retry_zset_redelivers_after_delay_with_incremented_count() {
     let Some(url) = env("REDIS_TEST_URL") else {
         return;
     };
-    let broker = RedisBroker::standalone(url);
-    connect(&broker).await;
+    let broker = standalone(url).await;
     let key = unique_key("delayed");
     let zset = format!("{key}.delayed");
 
@@ -603,8 +654,7 @@ async fn cluster_round_trip() {
     let Some(node) = env("REDIS_CLUSTER_TEST_URL") else {
         return;
     };
-    let broker = RedisBroker::cluster([node]);
-    connect(&broker).await;
+    let broker = connect(RedisBroker::cluster([node])).await;
     round_trip(&broker, &unique_key("cluster")).await;
     broker.shutdown().await.expect("shutdown");
 }
@@ -614,8 +664,7 @@ async fn sentinel_round_trip() {
     let Some(node) = env("REDIS_SENTINEL_TEST_URL") else {
         return;
     };
-    let broker = RedisBroker::sentinel(SENTINEL_SERVICE, [node]);
-    connect(&broker).await;
+    let broker = connect(RedisBroker::sentinel(SENTINEL_SERVICE, [node])).await;
     round_trip(&broker, &unique_key("sentinel")).await;
     broker.shutdown().await.expect("shutdown");
 }
@@ -625,15 +674,14 @@ async fn pubsub_classic_round_trip() {
     let Some(url) = env("REDIS_TEST_URL") else {
         return;
     };
-    let broker = RedisBroker::standalone(url);
-    connect(&broker).await;
+    let broker = standalone(url).await;
     let channel = unique_key("pubsub");
 
     let mut sub = broker
         .subscribe_pubsub(RedisPubSub::new(&channel))
         .await
         .expect("subscribe pubsub");
-    let publisher = broker.pubsub_publisher();
+    let publisher = broker.pubsub_publisher(RedisPubSubPublish::new());
     let mut stream = Box::pin(sub.stream());
 
     // Pub/Sub has no buffering and SUBSCRIBE registers asynchronously, so publish on a retry loop
@@ -668,8 +716,7 @@ async fn list_codec_envelope_round_trips_headers() {
     let Some(url) = env("REDIS_TEST_URL") else {
         return;
     };
-    let broker = RedisBroker::standalone(url);
-    connect(&broker).await;
+    let broker = standalone(url).await;
     let key = unique_key("list_codec");
 
     let mut headers = Headers::new();
@@ -677,8 +724,7 @@ async fn list_codec_envelope_round_trips_headers() {
 
     // Codec on both ends: the wire value is a readable JSON envelope, headers and payload survive.
     broker
-        .list_publisher()
-        .codec(JsonCodec)
+        .list_publisher(RedisListPublish::new().codec(JsonCodec))
         .publish(OutgoingMessage::new(key.as_str(), br#"{"id":1}"#).with_headers(headers))
         .await
         .expect("lpush");
@@ -701,12 +747,11 @@ async fn list_simple_round_trip() {
     let Some(url) = env("REDIS_TEST_URL") else {
         return;
     };
-    let broker = RedisBroker::standalone(url);
-    connect(&broker).await;
+    let broker = standalone(url).await;
     let key = unique_key("list_simple");
 
     broker
-        .list_publisher()
+        .list_publisher(RedisListPublish::new())
         .publish(OutgoingMessage::new(key.as_str(), b"job-1"))
         .await
         .expect("lpush");
@@ -730,19 +775,22 @@ async fn list_publisher_ttl_sets_key_expiry() {
     let Some(url) = env("REDIS_TEST_URL") else {
         return;
     };
-    let broker = RedisBroker::standalone(url);
-    connect(&broker).await;
+    let broker = standalone(url).await;
     let key = unique_key("list_ttl");
 
     broker
-        .list_publisher()
-        .ttl(Duration::from_secs(60))
+        .list_publisher(RedisListPublish::new().ttl(Duration::from_secs(60)))
         .publish(OutgoingMessage::new(key.as_str(), b"job"))
         .await
         .expect("lpush with ttl");
 
     // PTTL returns the remaining lifetime in ms: positive means the key got an expiry.
-    let pttl: i64 = broker.pool_handle().pttl(key.as_str()).await.expect("pttl");
+    let pttl: i64 = broker
+        .pool_handle()
+        .expect("live pool")
+        .pttl(key.as_str())
+        .await
+        .expect("pttl");
     assert!(pttl > 0, "expected a positive key TTL, got {pttl}");
 
     broker.shutdown().await.expect("shutdown");
@@ -753,11 +801,10 @@ async fn list_reliable_round_trip_with_ack() {
     let Some(url) = env("REDIS_TEST_URL") else {
         return;
     };
-    let broker = RedisBroker::standalone(url);
-    connect(&broker).await;
+    let broker = standalone(url).await;
     let key = unique_key("list_reliable");
 
-    let publisher = broker.list_publisher();
+    let publisher = broker.list_publisher(RedisListPublish::new());
     publisher
         .publish(OutgoingMessage::new(key.as_str(), b"job-a"))
         .await

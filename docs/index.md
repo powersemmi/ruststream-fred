@@ -6,14 +6,17 @@ deliveries are durable and acknowledged. It also ships an in-memory test broker 
 feature.
 
 ```toml
-ruststream = { version = "0.5", features = ["macros"] }
-ruststream-fred = "0.5"
+ruststream = { version = "0.6", features = ["macros"] }
+ruststream-fred = "0.6"
 serde = { version = "1", features = ["derive"] }
 ```
 
 `RedisBroker::standalone` is synchronous and does no I/O, so a Redis service is assembled with the
-same `#[ruststream::app]` macro as any other broker. The runtime connects the broker once at startup,
-before opening subscriptions.
+same `#[ruststream::app]` macro as any other broker. The runtime drives the lifecycle ladder at
+startup: the consuming `connect` produces the `ConnectedRedisBroker` that subscriptions and
+publishers hang off, and the consuming `shutdown` closes it. Publishers are declared as a policy
+(`RedisPublish`, `RedisPubSubPublish`, `RedisListPublish`) that the runtime pairs with the connected
+broker, so publishing before connect cannot be expressed.
 
 ## Scaffold a service
 
@@ -28,7 +31,8 @@ cargo generate --git https://github.com/powersemmi/ruststream-fred templates/red
 
 ## Topologies
 
-One crate, three named constructors. Each is synchronous and connects lazily:
+One crate, three named constructors. Each is synchronous and I/O-free; the connection opens in
+`connect`:
 
 ```toml
 # standalone

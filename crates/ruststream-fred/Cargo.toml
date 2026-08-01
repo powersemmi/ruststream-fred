@@ -16,7 +16,9 @@ workspace = true
 
 [features]
 default = []
-testing = ["ruststream/conformance", "ruststream/testing"]
+# User-facing test support only: the conformance harness is broker-author tooling and stays a
+# dev-dependency of this crate.
+testing = ["ruststream/testing"]
 
 # TLS, mapped onto fred's TLS backends. The rustls and native-tls backends are additive in fred
 # (not mutually exclusive); `tls-rustls` uses the aws-lc-rs crypto provider, `tls-rustls-ring` the

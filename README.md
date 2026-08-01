@@ -32,22 +32,27 @@
   beyond what a standalone URL can express; optional features add TLS (`tls-rustls`,
   `tls-rustls-ring`, `tls-native-tls`), sentinel-specific auth (`sentinel-auth`), and a dynamic
   `credential-provider` for IAM-style rotation.
-- **Lazy startup contract.** `RedisBroker::standalone(url)` is synchronous and does no I/O; the
-  runtime connects once at startup, so the broker composes with `#[ruststream::app]`. An existing
-  `fred` pool plugs in via `RedisBroker::from_pool`.
+- **Typed lifecycle.** `RedisBroker::standalone(url)` is synchronous and does no I/O; the consuming
+  `connect` yields a `ConnectedRedisBroker` that every subscription and publisher hangs off, and its
+  consuming `shutdown` yields the terminal witness. The runtime drives the ladder at startup, so the
+  broker composes with `#[ruststream::app]`. An existing `fred` pool plugs in via
+  `RedisBroker::from_pool`.
+- **Publishers as policy plus connection.** `RedisPublish`, `RedisPubSubPublish`, and
+  `RedisListPublish` are pure declarations, constructible anywhere and paired with the connected
+  broker by the runtime, so publishing before connect is not representable.
 - **Acknowledgement via the republish-retry model.** `ack` is `XACK`; `nack(requeue = true)`
   re-appends a copy to the stream then acks the original (at-least-once); `nack(requeue = false)`
   acks to drop.
 - **In-process test broker.** The `testing` feature ships `RedisTestBroker`, an in-process transport
-  that implements `ruststream::testing::TestableBroker`, so it drives the `TestApp` harness and
-  passes the framework's conformance suite without a server.
+  whose connected form implements `ruststream::testing::TestableBroker`, so it drives the `TestApp`
+  harness and passes the framework's conformance suite without a server.
 
 ## Install
 
 ```toml
 [dependencies]
-ruststream = { version = "0.5", features = ["macros", "json"] }
-ruststream-fred = "0.5"
+ruststream = { version = "0.6", features = ["macros", "json"] }
+ruststream-fred = "0.6"
 serde = { version = "1", features = ["derive"] }
 ```
 

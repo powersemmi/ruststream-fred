@@ -12,7 +12,7 @@
 
 use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream, TypedPublisher};
 use ruststream::subscriber;
-use ruststream_fred::RedisBroker;
+use ruststream_fred::{RedisBroker, RedisPublish};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -37,10 +37,11 @@ fn app() -> impl App {
     let broker = RedisBroker::standalone("redis://localhost:6379").default_group("workers");
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         // --8<-- [start:mount]
-        // .transactional() uses RedisPublisher's TransactionalPublisher impl: the batch's replies
-        // are buffered and flushed as one pipeline on commit.
-        let processed = TypedPublisher::new(b.broker().publisher()).transactional();
-        b.include_batch_publishing(process, processed);
+        // .transactional() requires the policy's live form to be transactional, which
+        // RedisPublish's is on standalone and sentinel: the batch's replies are buffered and
+        // flushed as one pipeline on commit.
+        b.include_batch(process)
+            .publisher(TypedPublisher::new(RedisPublish).transactional());
         // --8<-- [end:mount]
     })
 }

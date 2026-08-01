@@ -13,5 +13,7 @@ publisher: every reply is committed atomically.
 --8<-- "crates/ruststream-fred/examples/fred_transaction.rs:mount"
 ```
 
-Cluster does not offer this (buffered keys may hash to different nodes), so the transaction returns
-an error there.
+Cluster does not offer this (buffered keys may hash to different nodes), so `begin_transaction`
+returns an error there. Misuse errors too, rather than passing silently: a second `begin_transaction`
+while one is open leaves the open one untouched and reports it, and a `commit` or `abort` with no
+open transaction is an error.

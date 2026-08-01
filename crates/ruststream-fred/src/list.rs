@@ -18,7 +18,7 @@
 //!
 //! Headers travel in a frame around the payload (see [`crate::envelope`]): a lossless binary frame
 //! by default, or a readable codec-serialized envelope when a codec is set with
-//! [`RedisList::codec`] / [`RedisListPublisher::codec`].
+//! [`RedisList::codec`] / [`RedisListPublish::codec`].
 
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
@@ -33,12 +33,15 @@ use futures::Stream;
 use futures::stream::unfold;
 use ruststream::codec::Codec;
 use ruststream::runtime::RETRY_COUNT_HEADER;
-use ruststream::{AckError, Headers, IncomingMessage, Partitioned, SubscriptionSource};
+use ruststream::{
+    AckError, Headers, IncomingMessage, PairError, Partitioned, PublishPolicy, SubscriptionSource,
+};
 
+use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::deadletter::{self, PoisonPolicy, REASON_DROPPED, REASON_MAX_DELIVERIES};
 use crate::envelope::{SharedEnvelope, frame, unframe};
 use crate::recovery::{self, RecoveryConfig};
-use crate::{RedisBroker, error::RedisError, message::PARTITION_KEY_HEADER};
+use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
 
 const DEFAULT_BLOCK: Duration = Duration::from_secs(5);
 /// Suffix appended to the list key to form the default per-consumer processing list (reliable mode).
@@ -61,7 +64,7 @@ fn empty_on_timeout<T>(
     }
 }
 
-/// Describes one list subscription against [`crate::RedisBroker`].
+/// Describes one list subscription against a [`ConnectedRedisBroker`].
 ///
 /// # Examples
 ///
@@ -252,20 +255,23 @@ impl RedisList {
     }
 }
 
-impl SubscriptionSource<RedisBroker> for RedisList {
+impl SubscriptionSource<ConnectedRedisBroker> for RedisList {
     type Subscriber = RedisListSubscriber;
 
     fn name(&self) -> &str {
         self.key()
     }
 
-    async fn subscribe(self, broker: &RedisBroker) -> Result<Self::Subscriber, RedisError> {
-        broker.subscribe_list(self).await
+    async fn subscribe(
+        self,
+        connected: &ConnectedRedisBroker,
+    ) -> Result<Self::Subscriber, RedisError> {
+        connected.subscribe_list(self).await
     }
 }
 
 #[cfg(feature = "testing")]
-impl SubscriptionSource<crate::testing::RedisTestBroker> for RedisList {
+impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisList {
     type Subscriber = crate::testing::RedisTestSubscriber;
 
     fn name(&self) -> &str {
@@ -274,9 +280,9 @@ impl SubscriptionSource<crate::testing::RedisTestBroker> for RedisList {
 
     async fn subscribe(
         self,
-        broker: &crate::testing::RedisTestBroker,
+        connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> Result<Self::Subscriber, RedisError> {
-        broker.subscribe(self.key()).await
+        connected.subscribe(self.key()).await
     }
 }
 
@@ -562,14 +568,83 @@ impl Partitioned for RedisListMessage {
     }
 }
 
-/// Publishes onto a list with `LPUSH`, so right-popping consumers see FIFO order.
+/// The declaration half of the list publisher: envelope codec and key TTL, no connection.
 ///
-/// Obtain it from [`RedisBroker::list_publisher`](crate::RedisBroker::list_publisher). Headers are
-/// framed around the payload; set a [`codec`](Self::codec) for a readable wire format (it must match
-/// the subscriber's).
+/// Constructible anywhere, it pairs into a [`RedisListPublisher`] against a
+/// [`ConnectedRedisBroker`].
+///
+/// # Examples
+///
+/// ```
+/// use std::time::Duration;
+/// use ruststream::codec::JsonCodec;
+/// use ruststream_fred::RedisListPublish;
+///
+/// let publish = RedisListPublish::new()
+///     .codec(JsonCodec)
+///     .ttl(Duration::from_secs(300));
+/// # let _ = publish;
+/// ```
+#[derive(Clone, Default)]
+#[must_use]
+pub struct RedisListPublish {
+    codec: Option<SharedEnvelope>,
+    ttl: Option<Duration>,
+}
+
+impl Debug for RedisListPublish {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RedisListPublish")
+            .field("codec", &self.codec.is_some())
+            .field("ttl", &self.ttl)
+            .finish()
+    }
+}
+
+impl RedisListPublish {
+    /// A policy with the default binary framing and no key TTL. Equivalent to [`Self::default`].
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Serializes the header/payload envelope with `codec` (must match the subscriber). Without it
+    /// the default lossless binary framing is used.
+    pub fn codec(mut self, codec: impl Codec + 'static) -> Self {
+        self.codec = Some(Arc::new(codec));
+        self
+    }
+
+    /// Sets a time-to-live on the list key, refreshed (`PEXPIRE`) on every publish, so an idle
+    /// queue auto-expires. Off by default: without it the list lives until drained or deleted.
+    ///
+    /// This is a per-key TTL on the whole list, not per-entry: Redis lists have no per-element
+    /// expiry, only the key can expire. Each publish pushes the entry and re-arms the key's TTL in
+    /// one pipeline, so an actively used queue never expires and only an idle one does. A sub-
+    /// millisecond `ttl` is clamped up to 1ms, since `PEXPIRE 0` would delete the key outright.
+    pub const fn ttl(mut self, ttl: Duration) -> Self {
+        self.ttl = Some(ttl);
+        self
+    }
+}
+
+impl PublishPolicy<ConnectedRedisBroker> for RedisListPublish {
+    type Live = RedisListPublisher;
+
+    async fn pair(self, connected: &ConnectedRedisBroker) -> Result<Self::Live, PairError> {
+        Ok(connected.list_publisher(self))
+    }
+}
+
+/// Publishes onto a list with `LPUSH`, so right-popping consumers see FIFO order: a
+/// [`RedisListPublish`] policy paired with a connection.
+///
+/// Obtain it from
+/// [`ConnectedRedisBroker::list_publisher`](crate::ConnectedRedisBroker::list_publisher), or by
+/// pairing the policy. Publishing after the connection was shut down reports
+/// [`RedisError::ShutDown`].
 #[derive(Clone)]
 pub struct RedisListPublisher {
-    pool: Arc<tokio::sync::OnceCell<Pool>>,
+    core: Arc<RedisCore>,
     codec: Option<SharedEnvelope>,
     ttl: Option<Duration>,
 }
@@ -584,47 +659,12 @@ impl Debug for RedisListPublisher {
 }
 
 impl RedisListPublisher {
-    pub(crate) fn new(pool: Arc<tokio::sync::OnceCell<Pool>>) -> Self {
+    pub(crate) fn new(core: Arc<RedisCore>, publish: RedisListPublish) -> Self {
         Self {
-            pool,
-            codec: None,
-            ttl: None,
+            core,
+            codec: publish.codec,
+            ttl: publish.ttl,
         }
-    }
-
-    /// Serializes the header/payload envelope with `codec` (must match the subscriber). Without it
-    /// the default lossless binary framing is used.
-    #[must_use]
-    pub fn codec(mut self, codec: impl Codec + 'static) -> Self {
-        self.codec = Some(Arc::new(codec));
-        self
-    }
-
-    /// Sets a time-to-live on the list key, refreshed (`PEXPIRE`) on every publish, so an idle
-    /// queue auto-expires. Off by default: without it the list lives until drained or deleted.
-    ///
-    /// This is a per-key TTL on the whole list, not per-entry: Redis lists have no per-element
-    /// expiry, only the key can expire. Each publish pushes the entry and re-arms the key's TTL in
-    /// one pipeline, so an actively used queue never expires and only an idle one does. A sub-
-    /// millisecond `ttl` is clamped up to 1ms, since `PEXPIRE 0` would delete the key outright.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use std::time::Duration;
-    /// use ruststream_fred::RedisBroker;
-    ///
-    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    /// let broker = RedisBroker::connect("redis://localhost:6379").await?;
-    /// let publisher = broker.list_publisher().ttl(Duration::from_secs(300));
-    /// # let _ = publisher;
-    /// # Ok(())
-    /// # }
-    /// ```
-    #[must_use]
-    pub const fn ttl(mut self, ttl: Duration) -> Self {
-        self.ttl = Some(ttl);
-        self
     }
 }
 
@@ -638,7 +678,7 @@ impl ruststream::Publisher for RedisListPublisher {
     type Error = RedisError;
 
     async fn publish(&self, msg: ruststream::OutgoingMessage<'_>) -> Result<(), Self::Error> {
-        let pool = self.pool.get().cloned().ok_or(RedisError::NotConnected)?;
+        let pool = self.core.pool()?;
         let body = frame(self.codec.as_ref(), msg.payload(), msg.headers());
         let Some(ttl) = self.ttl else {
             let _: i64 = pool

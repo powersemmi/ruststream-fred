@@ -1,19 +1,53 @@
-//! [`RedisTestPublisher`]: `Publisher` + `TransactionalPublisher` on top of the in-memory router.
+//! [`RedisTestPublisher`]: `Publisher` + `TransactionalPublisher` on top of the in-memory router,
+//! and the [`RedisTestPublish`] policy it pairs from.
 
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
-use ruststream::{Headers, OutgoingMessage, Publisher, TransactionalPublisher};
+use ruststream::{
+    DefaultPublish, Headers, OutgoingMessage, PairError, PublishPolicy, Publisher,
+    TransactionalPublisher,
+};
 
 use crate::{
     error::RedisError,
-    testing::broker::{TestBrokerState, validate_publish_key},
+    testing::{
+        ConnectedRedisTestBroker,
+        broker::{TestBrokerState, validate_publish_key},
+    },
 };
 
 /// One buffered publish (key, payload, headers), held while a transaction is open.
 type Buffered = (String, Bytes, Headers);
 
-/// Publisher returned by [`crate::testing::RedisTestBroker::publisher`].
+/// The publish policy of the in-process broker, mirroring [`RedisPublish`](crate::RedisPublish).
+///
+/// # Examples
+///
+/// ```
+/// use ruststream_fred::testing::RedisTestPublish;
+///
+/// let policy = RedisTestPublish::default();
+/// # let _ = policy;
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[must_use]
+pub struct RedisTestPublish;
+
+impl PublishPolicy<ConnectedRedisTestBroker> for RedisTestPublish {
+    type Live = RedisTestPublisher;
+
+    async fn pair(self, connected: &ConnectedRedisTestBroker) -> Result<Self::Live, PairError> {
+        Ok(connected.publisher())
+    }
+}
+
+impl DefaultPublish for ConnectedRedisTestBroker {
+    type Policy = RedisTestPublish;
+}
+
+/// Publisher returned by
+/// [`ConnectedRedisTestBroker::publisher`](crate::testing::ConnectedRedisTestBroker::publisher).
 ///
 /// Mirrors the real publisher's transaction surface: messages published inside a transaction are
 /// buffered and only fan out on [`commit`](TransactionalPublisher::commit) (in publish order), or
@@ -74,25 +108,34 @@ impl Publisher for RedisTestPublisher {
 }
 
 impl TransactionalPublisher for RedisTestPublisher {
+    /// # Errors
+    ///
+    /// Returns [`RedisError::TransactionBusy`] when a transaction is already open on this handle,
+    /// leaving that one untouched.
     async fn begin_transaction(&self) -> Result<(), Self::Error> {
         let mut guard = self
             .txn
             .lock()
             .expect("redis test publisher mutex poisoned");
-        if guard.is_none() {
-            *guard = Some(Vec::new());
+        if guard.is_some() {
+            return Err(RedisError::TransactionBusy);
         }
+        *guard = Some(Vec::new());
         drop(guard);
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns [`RedisError::NoTransaction`] when no transaction is open on this handle.
     async fn commit(&self) -> Result<(), Self::Error> {
         let buffered = self
             .txn
             .lock()
             .expect("redis test publisher mutex poisoned")
-            .take();
-        for (key, payload, headers) in buffered.into_iter().flatten() {
+            .take()
+            .ok_or(RedisError::NoTransaction)?;
+        for (key, payload, headers) in buffered {
             self.state
                 .router
                 .publish(key, payload, headers, self.state.coordinator().as_ref());
@@ -100,11 +143,15 @@ impl TransactionalPublisher for RedisTestPublisher {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns [`RedisError::NoTransaction`] when no transaction is open on this handle.
     async fn abort(&self) -> Result<(), Self::Error> {
         self.txn
             .lock()
             .expect("redis test publisher mutex poisoned")
-            .take();
-        Ok(())
+            .take()
+            .ok_or(RedisError::NoTransaction)
+            .map(|_| ())
     }
 }

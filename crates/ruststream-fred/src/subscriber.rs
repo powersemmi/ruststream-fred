@@ -36,8 +36,8 @@ fn duration_to_millis(d: Duration) -> u64 {
 
 /// A Redis Streams subscription bound to a consumer group.
 ///
-/// Constructed by [`crate::RedisBroker::subscribe`] from a [`crate::RedisStream`] descriptor. The
-/// read mode (fresh tail vs reclaim) is fixed at construction.
+/// Constructed by [`crate::ConnectedRedisBroker::subscribe`] from a [`crate::RedisStream`]
+/// descriptor. The read mode (fresh tail vs reclaim) is fixed at construction.
 pub struct RedisSubscriber {
     pool: Pool,
     key: String,

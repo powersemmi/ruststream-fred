@@ -16,9 +16,10 @@ use std::time::Duration;
 
 use ruststream::SubscriptionSource;
 
+use crate::broker::ConnectedRedisBroker;
 use crate::deadletter::PoisonPolicy;
 use crate::delay::{DelayConfig, DelayedRetry};
-use crate::{RedisBroker, error::RedisError, subscriber::RedisSubscriber};
+use crate::{error::RedisError, subscriber::RedisSubscriber};
 
 const DEFAULT_COUNT: u64 = 64;
 const DEFAULT_BLOCK: Duration = Duration::from_secs(5);
@@ -62,7 +63,7 @@ pub(crate) enum ReadMode {
     Reclaim { min_idle: Duration },
 }
 
-/// Describes one Redis Streams subscription against [`crate::RedisBroker`].
+/// Describes one Redis Streams subscription against a [`ConnectedRedisBroker`].
 ///
 /// # Examples
 ///
@@ -245,20 +246,23 @@ impl RedisStream {
     }
 }
 
-impl SubscriptionSource<RedisBroker> for RedisStream {
+impl SubscriptionSource<ConnectedRedisBroker> for RedisStream {
     type Subscriber = RedisSubscriber;
 
     fn name(&self) -> &str {
         self.key()
     }
 
-    async fn subscribe(self, broker: &RedisBroker) -> Result<Self::Subscriber, RedisError> {
-        broker.subscribe(self).await
+    async fn subscribe(
+        self,
+        connected: &ConnectedRedisBroker,
+    ) -> Result<Self::Subscriber, RedisError> {
+        connected.subscribe(self).await
     }
 }
 
 #[cfg(feature = "testing")]
-impl SubscriptionSource<crate::testing::RedisTestBroker> for RedisStream {
+impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisStream {
     type Subscriber = crate::testing::RedisTestSubscriber;
 
     fn name(&self) -> &str {
@@ -267,9 +271,9 @@ impl SubscriptionSource<crate::testing::RedisTestBroker> for RedisStream {
 
     async fn subscribe(
         self,
-        broker: &crate::testing::RedisTestBroker,
+        connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> Result<Self::Subscriber, RedisError> {
-        broker.subscribe(self.key()).await
+        connected.subscribe(self.key()).await
     }
 }
 

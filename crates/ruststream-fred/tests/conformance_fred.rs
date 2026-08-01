@@ -1,7 +1,6 @@
 //! Conformance suites for the Redis broker. `run_suite` proves routing against the in-process
-//! `RedisTestBroker` (no server, runs everywhere); `lifecycle` and the batch capability prove the
-//! lazy-startup contract and `BatchSubscriber` against the real `RedisBroker` and are gated behind
-//! `REDIS_TEST_URL`.
+//! `RedisTestBroker` (no server, runs everywhere); `lifecycle` and the capability suites prove the
+//! broker contract against the real `RedisBroker` and are gated behind `REDIS_TEST_URL`.
 //!
 //! Run locally with a running Redis server:
 //!
@@ -32,7 +31,7 @@ async fn passes_lifecycle() {
     harness::lifecycle(
         || RedisBroker::standalone(url.clone()),
         |key| RedisStream::new(key).group("conformance"),
-        |broker| broker.publisher(),
+        |connected| connected.publisher(),
     )
     .await;
 }
@@ -46,7 +45,7 @@ async fn passes_batches() {
     capabilities::batches(
         || RedisBroker::standalone(url.clone()),
         |key| RedisStream::new(key).group("conformance"),
-        |broker| broker.publisher(),
+        |connected| connected.publisher(),
     )
     .await;
 }
@@ -60,7 +59,7 @@ async fn passes_transactions() {
     capabilities::transactions(
         || RedisBroker::standalone(url.clone()),
         |key| RedisStream::new(key).group("conformance"),
-        |broker| broker.publisher(),
+        |connected| connected.publisher(),
     )
     .await;
 }

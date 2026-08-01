@@ -22,14 +22,10 @@ sharded Pub/Sub on a cluster at the same time - each handler mounts on its own b
 --8<-- "crates/ruststream-fred/examples/fred_pubsub.rs:app"
 ```
 
-To publish, mount the handler with `include_publishing` and a `broker.pubsub_publisher()` (add
+To publish, chain `.publisher(..)` on the include site with a `RedisPubSubPublish` policy (add
 `.mode(PubSubMode::Sharded)` to match a sharded subscriber). The classic handler above uses the macro
-`publish("audit")` form, so its return value goes out through that Pub/Sub publisher - not the default
-stream publisher:
-
-```rust
---8<-- "crates/ruststream-fred/examples/fred_pubsub.rs:app"
-```
+`publish("audit")` form, so its return value goes out through that Pub/Sub policy - not the default
+stream publisher.
 
 Headers travel in a frame around the payload: a lossless binary frame by default, or - when you set a
 codec on both the publisher and the subscriber (`.codec(JsonCodec)`) - a readable codec-serialized
