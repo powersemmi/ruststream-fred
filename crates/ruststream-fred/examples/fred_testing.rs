@@ -129,12 +129,8 @@ async fn test_payment_processing() -> Result<(), Box<dyn std::error::Error>> {
             b.include(process_payment);
         });
 
-    let task = tokio::spawn(async move {
-        app.run_until(tokio::time::sleep(Duration::from_millis(500)))
-            .await
-    });
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // `start` resolves once subscriptions are open, so the injects below cannot race startup.
+    let running = app.start().await?;
 
     // Valid payment is saved.
     broker.inject(OutgoingMessage::new(
@@ -147,12 +143,15 @@ async fn test_payment_processing() -> Result<(), Box<dyn std::error::Error>> {
         br#"{"id":2,"user_id":42,"amount":0}"#,
     ));
 
-    // Wait until the valid payment is persisted.
-    let deadline = Duration::from_secs(2);
-    let start = std::time::Instant::now();
-    while !repository.contains(1).await && start.elapsed() < deadline {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    // Wait until the valid payment is persisted: the handler runs on another task, so
+    // yielding between checks is enough to let it progress.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !repository.contains(1).await {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("valid payment was not saved in time");
 
     assert!(repository.contains(1).await, "valid payment was not saved");
     assert!(
@@ -161,7 +160,7 @@ async fn test_payment_processing() -> Result<(), Box<dyn std::error::Error>> {
     );
     assert_eq!(repository.count().await, 1);
 
-    task.await??;
+    running.shutdown().await?;
     // --8<-- [end:business-test]
     Ok(())
 }
@@ -174,17 +173,13 @@ async fn test_stream_delivery() -> Result<(), Box<dyn std::error::Error>> {
         b.include(handle_stream_event);
     });
 
-    let task = tokio::spawn(async move {
-        app.run_until(tokio::time::sleep(Duration::from_millis(500)))
-            .await
-    });
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // `start` resolves once subscriptions are open, so the injects below cannot race startup.
+    let running = app.start().await?;
     broker.inject(OutgoingMessage::new(
         "events",
         br#"{"id":1,"user_id":42,"amount":100}"#,
     ));
-    task.await??;
+    running.shutdown().await?;
     // --8<-- [end:stream-test]
     Ok(())
 }
@@ -197,17 +192,13 @@ async fn test_list_delivery() -> Result<(), Box<dyn std::error::Error>> {
         b.include(handle_list_job);
     });
 
-    let task = tokio::spawn(async move {
-        app.run_until(tokio::time::sleep(Duration::from_millis(500)))
-            .await
-    });
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // `start` resolves once subscriptions are open, so the injects below cannot race startup.
+    let running = app.start().await?;
     broker.inject(OutgoingMessage::new(
         "jobs",
         br#"{"id":1,"user_id":42,"amount":100}"#,
     ));
-    task.await??;
+    running.shutdown().await?;
     // --8<-- [end:list-test]
     Ok(())
 }
@@ -220,17 +211,13 @@ async fn test_pubsub_delivery() -> Result<(), Box<dyn std::error::Error>> {
         b.include(handle_pubsub_notification);
     });
 
-    let task = tokio::spawn(async move {
-        app.run_until(tokio::time::sleep(Duration::from_millis(500)))
-            .await
-    });
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // `start` resolves once subscriptions are open, so the injects below cannot race startup.
+    let running = app.start().await?;
     broker.inject(OutgoingMessage::new(
         "notifications",
         br#"{"id":1,"user_id":42,"amount":100}"#,
     ));
-    task.await??;
+    running.shutdown().await?;
     // --8<-- [end:pubsub-test]
     Ok(())
 }
@@ -263,12 +250,8 @@ mod tests {
                 b.include(process_payment);
             });
 
-        let task = tokio::spawn(async move {
-            app.run_until(tokio::time::sleep(Duration::from_millis(500)))
-                .await
-        });
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // `start` resolves once subscriptions are open, so the injects below cannot race startup.
+        let running = app.start().await.expect("startup failed");
 
         broker.inject(OutgoingMessage::new(
             "payments",
@@ -279,17 +262,19 @@ mod tests {
             br#"{"id":2,"user_id":42,"amount":0}"#,
         ));
 
-        let deadline = Duration::from_secs(2);
-        let start = std::time::Instant::now();
-        while !repository.contains(1).await && start.elapsed() < deadline {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !repository.contains(1).await {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("valid payment was not saved in time");
 
         assert!(repository.contains(1).await);
         assert!(!repository.contains(2).await);
         assert_eq!(repository.count().await, 1);
 
-        task.await.unwrap().unwrap();
+        running.shutdown().await.expect("graceful shutdown failed");
     }
 }
 // --8<-- [end:unit-test]
