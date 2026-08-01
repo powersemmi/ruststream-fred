@@ -22,12 +22,12 @@ jobs:
       matrix:
         toolchain: [stable, msrv]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           path: ruststream-fred
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: powersemmi/ruststream
           persist-credentials: false
@@ -83,12 +83,12 @@ jobs:
     name: "Broker integration (Redis: standalone, cluster, sentinel)"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           path: ruststream-fred
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: powersemmi/ruststream
           persist-credentials: false
@@ -134,14 +134,14 @@ jobs:
     name: Templates (render + compile)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           path: ruststream-fred
 
       # The rendered scaffolds pin `ruststream` (and depend on this crate), so the cross-repo
       # sibling checkout must be present to patch them at the local checkouts. Mirror the rust job.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: powersemmi/ruststream
           persist-credentials: false
@@ -156,7 +156,7 @@ jobs:
           workspaces: ruststream-fred
 
       - name: Install cargo-generate
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.85.4
         with:
           tool: cargo-generate
 
@@ -185,7 +185,7 @@ jobs:
     name: Security scans
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           path: ruststream-fred
@@ -193,7 +193,7 @@ jobs:
       # cargo-deny resolves the whole dependency graph, so the cross-repo `ruststream`
       # path dependency must be present. Mirror the rust job's sibling layout and run the
       # tool natively (the Docker action only mounts this workspace, not the sibling).
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: powersemmi/ruststream
           persist-credentials: false
@@ -203,7 +203,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.85.4
         with:
           tool: cargo-deny
 
@@ -216,7 +216,7 @@ jobs:
 
       # No cache: there is no uv.lock anymore (uvx resolves the tools on the fly).
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v7
 
       - name: codespell
         working-directory: ruststream-fred

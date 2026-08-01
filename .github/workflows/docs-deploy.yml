@@ -27,11 +27,11 @@ jobs:
     steps:
       # Persisted credentials are required: `mike` pushes the built docs to the gh-pages branch
       # over the checkout's token. fetch-depth 0 gives mike the full gh-pages history it rewrites.
-      - uses: actions/checkout@v4 # zizmor: ignore[artipacked]
+      - uses: actions/checkout@v7 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
