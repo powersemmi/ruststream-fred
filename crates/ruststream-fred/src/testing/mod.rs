@@ -9,7 +9,7 @@
 //!   implements `Subscribe` and [`ruststream::testing::TestableBroker`] so it plugs straight into
 //!   the [`TestApp`](ruststream::testing::TestApp) harness and the framework's conformance suite;
 //! * [`RedisTestPublish`] / [`RedisTestPublisher`] - the publish policy and the live publisher it
-//!   pairs into;
+//!   pairs into, carrying both transaction kinds ([`RedisTestTransaction`] is the owned one);
 //! * [`RedisTestSubscriber`] / [`RedisTestMessage`] - `Subscriber` and `IncomingMessage` impls with
 //!   `nack(requeue = true)` redelivery (re-sent into the same subscriber's queue).
 //!
@@ -23,5 +23,5 @@ mod router;
 mod subscriber;
 
 pub use broker::{ConnectedRedisTestBroker, RedisTestBroker};
-pub use publisher::{RedisTestPublish, RedisTestPublisher};
+pub use publisher::{RedisTestPublish, RedisTestPublisher, RedisTestTransaction};
 pub use subscriber::{RedisTestMessage, RedisTestSubscriber};

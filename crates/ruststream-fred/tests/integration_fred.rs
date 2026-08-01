@@ -20,10 +20,10 @@ use std::time::Duration;
 use fred::interfaces::KeysInterface;
 use futures::StreamExt;
 use ruststream::codec::JsonCodec;
-use ruststream::runtime::RETRY_COUNT_HEADER;
+use ruststream::runtime::{RETRY_COUNT_HEADER, TypedPublisher};
 use ruststream::{
-    Broker, ConnectedBroker, Headers, IncomingMessage, OutgoingMessage, Publisher, Subscribe,
-    Subscriber,
+    Broker, ConnectedBroker, Headers, IncomingMessage, OutgoingMessage, OwnedTransactions,
+    Publisher, Subscribe, Subscriber, Transaction,
 };
 use ruststream_fred::{
     ConnectedRedisBroker, DEAD_LETTER_REASON_HEADER, DELIVERY_COUNT_HEADER, DelayedRetry,
@@ -54,6 +54,16 @@ where
         .await
         .expect("delivery within timeout")
         .expect("stream has a next item")
+}
+
+/// Asserts nothing lands on `stream` within a short window (a transaction that has not committed
+/// yet, an aborted one).
+async fn none_within<S>(stream: &mut S, label: &str)
+where
+    S: futures::Stream + Unpin,
+{
+    let polled = tokio::time::timeout(Duration::from_millis(300), stream.next()).await;
+    assert!(polled.is_err(), "{label}: expected no delivery yet");
 }
 
 async fn connect(broker: RedisBroker) -> ConnectedRedisBroker {
@@ -793,6 +803,147 @@ async fn list_publisher_ttl_sets_key_expiry() {
         .expect("pttl");
     assert!(pttl > 0, "expected a positive key TTL, got {pttl}");
 
+    broker.shutdown().await.expect("shutdown");
+}
+
+// The owned transaction kind: independent buffers on one handle, invisible until each commits,
+// with the handle still publishing directly meanwhile.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn owned_transactions_are_independent() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let orders_key = unique_key("owned_orders");
+    let audit_key = unique_key("owned_audit");
+
+    let mut orders_sub = broker
+        .subscribe(RedisStream::new(&orders_key).group("workers"))
+        .await
+        .expect("subscribe orders");
+    let mut audit_sub = broker
+        .subscribe(RedisStream::new(&audit_key).group("workers"))
+        .await
+        .expect("subscribe audit");
+
+    let publisher = broker.publisher();
+    let mut orders = publisher.transaction().await.expect("open orders txn");
+    let mut audit = publisher.transaction().await.expect("open audit txn");
+
+    orders
+        .publish(OutgoingMessage::new(orders_key.as_str(), b"o1"))
+        .await
+        .expect("buffer o1");
+    orders
+        .publish(OutgoingMessage::new(orders_key.as_str(), b"o2"))
+        .await
+        .expect("buffer o2");
+    audit
+        .publish(OutgoingMessage::new(audit_key.as_str(), b"a1"))
+        .await
+        .expect("buffer a1");
+
+    // A direct publish through the same handle is unaffected by the open transactions.
+    publisher
+        .publish(OutgoingMessage::new(orders_key.as_str(), b"direct"))
+        .await
+        .expect("direct publish");
+
+    let mut orders_stream = Box::pin(orders_sub.stream());
+    let direct = next(&mut orders_stream).await.expect("direct delivery");
+    assert_eq!(direct.payload(), b"direct");
+    direct.ack().await.expect("ack direct");
+    // Neither transaction has committed, so nothing else is visible.
+    none_within(&mut orders_stream, "orders before commit").await;
+
+    orders.commit().await.expect("commit orders");
+    let first = next(&mut orders_stream).await.expect("o1");
+    assert_eq!(first.payload(), b"o1", "commit preserves publish order");
+    first.ack().await.expect("ack o1");
+    let second = next(&mut orders_stream).await.expect("o2");
+    assert_eq!(second.payload(), b"o2");
+    second.ack().await.expect("ack o2");
+
+    // Settling one transaction leaves the other untouched.
+    let mut audit_stream = Box::pin(audit_sub.stream());
+    none_within(&mut audit_stream, "audit before commit").await;
+    audit.commit().await.expect("commit audit");
+    let entry = next(&mut audit_stream).await.expect("a1");
+    assert_eq!(entry.payload(), b"a1");
+    entry.ack().await.expect("ack a1");
+
+    drop(orders_stream);
+    drop(audit_stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn owned_transaction_abort_discards_the_buffer() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("owned_abort");
+
+    let mut sub = broker
+        .subscribe(RedisStream::new(&key).group("workers"))
+        .await
+        .expect("subscribe");
+
+    let publisher = broker.publisher();
+    let mut txn = publisher.transaction().await.expect("open txn");
+    txn.publish(OutgoingMessage::new(key.as_str(), b"discarded"))
+        .await
+        .expect("buffer");
+    txn.abort().await.expect("abort");
+
+    let mut stream = Box::pin(sub.stream());
+    none_within(&mut stream, "after abort").await;
+
+    // The handle is still usable after an aborted transaction.
+    publisher
+        .publish(OutgoingMessage::new(key.as_str(), b"after"))
+        .await
+        .expect("publish after abort");
+    let msg = next(&mut stream).await.expect("delivery after abort");
+    assert_eq!(msg.payload(), b"after");
+    msg.ack().await.expect("ack");
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+// The typed sugar over the owned kind: the publisher's codec encodes each value into the buffer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn typed_publisher_opens_owned_transactions() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("owned_typed");
+
+    let mut sub = broker
+        .subscribe(RedisStream::new(&key).group("workers"))
+        .await
+        .expect("subscribe");
+
+    let publisher = TypedPublisher::new(broker.publisher());
+    let mut txn = publisher.transaction().await.expect("open typed txn");
+    txn.publish(key.as_str(), &7_u32).await.expect("buffer 7");
+
+    let mut stream = Box::pin(sub.stream());
+    none_within(&mut stream, "typed before commit").await;
+
+    txn.commit().await.expect("commit typed txn");
+    let msg = next(&mut stream).await.expect("typed delivery");
+    assert_eq!(
+        msg.payload(),
+        b"7",
+        "the publisher's codec encoded the value"
+    );
+    msg.ack().await.expect("ack");
+
+    drop(stream);
     broker.shutdown().await.expect("shutdown");
 }
 

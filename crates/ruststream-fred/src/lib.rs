@@ -45,7 +45,7 @@ pub use list::{
     RedisList, RedisListMessage, RedisListPublish, RedisListPublisher, RedisListSubscriber,
 };
 pub use message::{PARTITION_KEY_HEADER, RedisMessage};
-pub use publisher::{RedisPublish, RedisPublisher};
+pub use publisher::{RedisPublish, RedisPublisher, RedisTransaction};
 pub use pubsub::{
     PubSubMode, RedisPubSub, RedisPubSubMessage, RedisPubSubPublish, RedisPubSubPublisher,
     RedisPubSubSubscriber,

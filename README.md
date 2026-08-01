@@ -40,6 +40,10 @@
 - **Publishers as policy plus connection.** `RedisPublish`, `RedisPubSubPublish`, and
   `RedisListPublish` are pure declarations, constructible anywhere and paired with the connected
   broker by the runtime, so publishing before connect is not representable.
+- **Both transaction kinds.** On standalone and sentinel the stream publisher carries the borrowed
+  kind (one transaction on the handle, flushed as a `fred` pipeline) and the owned kind
+  (`publisher.transaction()` returns a buffer-owning value, so any number can be open concurrently
+  and each commits as its own atomic `MULTI` / `EXEC` block).
 - **Acknowledgement via the republish-retry model.** `ack` is `XACK`; `nack(requeue = true)`
   re-appends a copy to the stream then acks the original (at-least-once); `nack(requeue = false)`
   acks to drop.

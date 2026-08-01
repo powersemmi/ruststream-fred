@@ -18,8 +18,8 @@ use ruststream::subscriber;
 use ruststream::testing::TestApp;
 use ruststream::{
     BatchSubscriber, Broker, ConnectedBroker, DescribeServer, Headers, IncomingMessage,
-    OutgoingMessage, Partitioned, Publisher, Subscriber, TransactionalPublisher,
-    testing::expect_published,
+    OutgoingMessage, OwnedTransactions, Partitioned, Publisher, RawMessage, Subscriber,
+    Transaction, TransactionalPublisher, testing::expect_published,
 };
 use ruststream_fred::{
     PARTITION_KEY_HEADER, RedisError, RedisStream,
@@ -407,6 +407,70 @@ async fn transaction_misuse_errors() {
 
     let observed = expect_published(&broker, "tx.misuse", 1, Duration::from_millis(50)).await;
     assert_eq!(observed.len(), 1);
+}
+
+// The owned kind mirrors the real publisher: independent buffers, invisible until each commits,
+// with the handle still publishing directly meanwhile.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn owned_transactions_are_independent() {
+    let broker = connected().await;
+    let publisher = broker.publisher();
+
+    let mut orders = publisher.transaction().await.expect("open orders txn");
+    let mut audit = publisher.transaction().await.expect("open audit txn");
+    orders
+        .publish(OutgoingMessage::new("owned.orders", b"o1"))
+        .await
+        .expect("buffer o1");
+    orders
+        .publish(OutgoingMessage::new("owned.orders", b"o2"))
+        .await
+        .expect("buffer o2");
+    audit
+        .publish(OutgoingMessage::new("owned.audit", b"a1"))
+        .await
+        .expect("buffer a1");
+
+    // A direct publish through the same handle is unaffected by the open transactions.
+    publisher
+        .publish(OutgoingMessage::new("owned.orders", b"direct"))
+        .await
+        .expect("direct publish");
+    let observed = expect_published(&broker, "owned.orders", 2, Duration::from_millis(50)).await;
+    assert_eq!(
+        observed.len(),
+        1,
+        "only the direct publish is visible before commit"
+    );
+    assert_eq!(observed[0].payload(), b"direct");
+
+    orders.commit().await.expect("commit orders");
+    let observed = expect_published(&broker, "owned.orders", 3, WAIT).await;
+    let payloads: Vec<&[u8]> = observed.iter().map(RawMessage::payload).collect();
+    assert_eq!(payloads, [b"direct".as_slice(), b"o1", b"o2"]);
+
+    // Settling one transaction leaves the other untouched.
+    let audit_before = expect_published(&broker, "owned.audit", 1, Duration::from_millis(50)).await;
+    assert!(audit_before.is_empty());
+    audit.commit().await.expect("commit audit");
+    let audit_after = expect_published(&broker, "owned.audit", 1, WAIT).await;
+    assert_eq!(audit_after.len(), 1);
+    assert_eq!(audit_after[0].payload(), b"a1");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn owned_transaction_abort_discards_the_buffer() {
+    let broker = connected().await;
+    let publisher = broker.publisher();
+
+    let mut txn = publisher.transaction().await.expect("open txn");
+    txn.publish(OutgoingMessage::new("owned.abort", b"discarded"))
+        .await
+        .expect("buffer");
+    txn.abort().await.expect("abort");
+
+    let observed = expect_published(&broker, "owned.abort", 1, Duration::from_millis(50)).await;
+    assert!(observed.is_empty(), "aborted messages must be discarded");
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
