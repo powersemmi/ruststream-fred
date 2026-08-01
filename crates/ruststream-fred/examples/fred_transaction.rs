@@ -2,12 +2,13 @@
 //!
 //! On standalone and sentinel the stream publisher carries the borrowed kind
 //! (`TransactionalPublisher`, one transaction on the handle) and the owned kind
-//! (`OwnedTransactions`, a buffer-owning value per call). The idiomatic use of the borrowed kind is
-//! a batch-publishing handler wired with a `.transactional()` publisher: every reply the handler
-//! returns is buffered and flushed together, in order, through a single `fred` pipeline (an `Err`
-//! publishes nothing and settles the batch). The owned kind suits publishes a handler does not
-//! reply with, several of which may be in flight at once. Cluster supports neither, because
-//! buffered keys may live on different nodes.
+//! (`OwnedTransactions`, a buffer-owning value per call). Both commit the same way: the buffer is
+//! flushed as one `MULTI` / `EXEC` block, so subscribers see the whole batch or none of it. The
+//! idiomatic use of the borrowed kind is a batch-publishing handler wired with a `.transactional()`
+//! publisher: every reply the handler returns is buffered and committed together, in order (an
+//! `Err` publishes nothing and settles the batch). The owned kind suits publishes a handler does
+//! not reply with, several of which may be in flight at once. Cluster supports neither, because a
+//! `MULTI` block cannot span hash slots.
 //!
 //! ```text
 //! cargo run --example fred_transaction --features macros,json -- run
@@ -42,7 +43,7 @@ fn app() -> impl App {
         // --8<-- [start:mount]
         // .transactional() requires the policy's live form to be transactional, which
         // RedisPublish's is on standalone and sentinel: the batch's replies are buffered and
-        // flushed as one pipeline on commit.
+        // committed as one MULTI / EXEC block.
         b.include_batch(process)
             .publisher(TypedPublisher::new(RedisPublish).transactional());
         // --8<-- [end:mount]

@@ -17,13 +17,14 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use fred::interfaces::KeysInterface;
+use fred::interfaces::{ClientLike, KeysInterface};
+use fred::types::InfoKind;
 use futures::StreamExt;
 use ruststream::codec::JsonCodec;
 use ruststream::runtime::{RETRY_COUNT_HEADER, TypedPublisher};
 use ruststream::{
     Broker, ConnectedBroker, Headers, IncomingMessage, OutgoingMessage, Publisher, Subscribe,
-    Subscriber,
+    Subscriber, TransactionalPublisher,
 };
 use ruststream_fred::{
     ConnectedRedisBroker, DEAD_LETTER_REASON_HEADER, DELIVERY_COUNT_HEADER, DelayedRetry,
@@ -839,6 +840,72 @@ async fn typed_publisher_opens_owned_transactions() {
         "the publisher's codec encoded the value"
     );
     msg.ack().await.expect("ack");
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// How many `EXEC` calls the server has served, read from `INFO commandstats`.
+async fn exec_calls(broker: &ConnectedRedisBroker) -> u64 {
+    let info: String = broker
+        .pool_handle()
+        .expect("live pool")
+        .next()
+        .info(Some(InfoKind::CommandStats))
+        .await
+        .expect("info commandstats");
+    info.lines()
+        .find_map(|line| line.strip_prefix("cmdstat_exec:calls="))
+        .and_then(|rest| rest.split(',').next())
+        .and_then(|calls| calls.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+// The visibility race a transaction rules out ("subscribers see all entries or none") cannot be
+// observed deterministically from a client: any read either precedes or follows the block. What is
+// deterministic is the mechanism that provides it - a borrowed commit must reach the server as ONE
+// EXEC block, not as N standalone writes the way a pipeline would - so that is what this asserts,
+// alongside the whole buffer arriving in publish order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn borrowed_commit_is_one_exec_block() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("borrowed_exec");
+
+    let mut sub = broker
+        .subscribe(RedisStream::new(&key).group("workers"))
+        .await
+        .expect("subscribe");
+
+    let publisher = broker.publisher();
+    let before = exec_calls(&broker).await;
+
+    publisher.begin_transaction().await.expect("begin");
+    for payload in [b"t1".as_slice(), b"t2", b"t3"] {
+        publisher
+            .publish(OutgoingMessage::new(key.as_str(), payload))
+            .await
+            .expect("buffer");
+    }
+    let mut stream = Box::pin(sub.stream());
+    none_within(&mut stream, "borrowed before commit").await;
+
+    publisher.commit().await.expect("commit");
+
+    for expected in [b"t1".as_slice(), b"t2", b"t3"] {
+        let msg = next(&mut stream).await.expect("committed delivery");
+        assert_eq!(msg.payload(), expected, "commit preserves publish order");
+        msg.ack().await.expect("ack");
+    }
+
+    let after = exec_calls(&broker).await;
+    assert_eq!(
+        after - before,
+        1,
+        "the three buffered writes must commit as a single EXEC block"
+    );
 
     drop(stream);
     broker.shutdown().await.expect("shutdown");

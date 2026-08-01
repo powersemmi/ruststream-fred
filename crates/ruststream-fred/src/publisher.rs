@@ -18,6 +18,35 @@ use crate::{convert::fields_for_publish, error::RedisError};
 /// One buffered `XADD` (stream key plus its encoded entry fields), held while a transaction is open.
 type Buffered = (String, Vec<(String, Vec<u8>)>);
 
+/// Flushes `buffered` as one `MULTI` / `EXEC` block, in publish order.
+///
+/// The single flush path of both transaction kinds: they differ only in where the buffer lives
+/// (the handle's slot for the borrowed kind, the [`RedisTransaction`] value for the owned one),
+/// never in what a commit does.
+///
+/// # Errors
+///
+/// Returns [`RedisError::ShutDown`] when the connection is gone, or [`RedisError::Publish`] when
+/// the block is rejected.
+async fn flush_block(core: &RedisCore, buffered: Vec<Buffered>) -> Result<(), RedisError> {
+    if buffered.is_empty() {
+        return Ok(());
+    }
+    let pool = core.pool()?;
+    let txn = pool.next().multi();
+    for (key, fields) in buffered {
+        // Queued client-side by `fred`; the whole block travels on one connection at `exec`.
+        let _: () = txn
+            .xadd(key, false, None::<()>, "*", fields)
+            .await
+            .map_err(RedisError::publish)?;
+    }
+    // `abort_on_error = true`: a command the server refuses to queue discards the block instead
+    // of committing a partial one.
+    let _: Value = txn.exec(true).await.map_err(RedisError::publish)?;
+    Ok(())
+}
+
 /// The declaration half of the stream publisher: pure policy, constructible anywhere.
 ///
 /// `XADD` needs no options beyond the target key, which travels on each message, so the policy is
@@ -68,21 +97,26 @@ impl DefaultPublish for ConnectedRedisBroker {
 ///
 /// # Transactions
 ///
-/// Both framework transaction kinds are available on standalone and sentinel topologies. Cluster
-/// supports neither (buffered keys may live on different nodes), so opening one there returns
-/// [`RedisError::InvalidOptions`].
+/// Both framework transaction kinds are available on standalone and sentinel topologies, and both
+/// commit the same way: the buffer is held client-side while the transaction is open and flushed
+/// as one `MULTI` / `EXEC` block, in publish order, so subscribers see the whole batch or none of
+/// it. They differ only in where that buffer lives.
 ///
 /// * Borrowed ([`TransactionalPublisher`]): the handle carries one transaction.
-///   [`begin_transaction`](TransactionalPublisher::begin_transaction) starts buffering published
-///   messages, [`commit`](TransactionalPublisher::commit) flushes the buffer in publish order
-///   through a single `fred` pipeline, and [`abort`](TransactionalPublisher::abort) discards it.
-///   Clones of a handle share the same open transaction buffer, and a second
-///   `begin_transaction` while one is open is rejected.
+///   [`begin_transaction`](TransactionalPublisher::begin_transaction) claims it and starts
+///   buffering published messages, [`commit`](TransactionalPublisher::commit) flushes them, and
+///   [`abort`](TransactionalPublisher::abort) discards them. Clones of a handle share the same
+///   open transaction, and a second `begin_transaction` while one is open is rejected.
 /// * Owned ([`OwnedTransactions`]): every [`transaction`](OwnedTransactions::transaction) call
 ///   returns a [`RedisTransaction`] owning its own buffer, so any number can be open on one
-///   handle concurrently and the handle keeps publishing directly meanwhile. Its commit flushes
-///   the buffer as one `MULTI` / `EXEC` block, which is where the two kinds differ in strength:
-///   the borrowed pipeline batches the writes, the owned block also makes them atomic.
+///   handle concurrently and the handle keeps publishing directly meanwhile.
+///
+/// Two Redis properties apply to both kinds. Cluster supports neither, because a `MULTI` block
+/// cannot span hash slots, so opening a transaction there returns
+/// [`RedisError::InvalidOptions`]. And Redis has no rollback: a command that fails at *runtime*
+/// inside `EXEC` does not undo the commands before it. For a block of `XADD`s against stream keys
+/// that is practically limited to out-of-memory and wrong-type keys; a command the server refuses
+/// to *queue* discards the whole block.
 #[derive(Clone)]
 pub struct RedisPublisher {
     core: Arc<RedisCore>,
@@ -169,35 +203,24 @@ impl TransactionalPublisher for RedisPublisher {
         Ok(())
     }
 
-    /// Flushes the buffered `XADD`s in publish order through one pipeline, then clears the
-    /// transaction.
+    /// Flushes the buffered `XADD`s as one `MULTI` / `EXEC` block, in publish order, then clears
+    /// the transaction.
     ///
     /// # Errors
     ///
     /// Returns [`RedisError::NoTransaction`] when no transaction is open on this handle,
     /// [`RedisError::ShutDown`] when the connection is gone, or [`RedisError::Publish`] if the
-    /// pipeline fails. On failure the transaction is already closed: the buffer is lost, and
+    /// block is rejected. On failure the transaction is already closed: the buffer is lost, and
     /// recovery is redelivery of the inputs rather than resubmission of the buffer.
     async fn commit(&self) -> Result<(), Self::Error> {
+        // Taken before the flush: a failed commit has still closed the transaction.
         let buffered = self
             .txn
             .lock()
             .expect("redis publisher mutex poisoned")
             .take()
             .ok_or(RedisError::NoTransaction)?;
-        if buffered.is_empty() {
-            return Ok(());
-        }
-        let pool = self.core.pool()?;
-        let pipeline = pool.next().pipeline();
-        for (key, fields) in buffered {
-            let _: () = pipeline
-                .xadd(key, false, None::<()>, "*", fields)
-                .await
-                .map_err(RedisError::publish)?;
-        }
-        let _: Vec<Value> = pipeline.all().await.map_err(RedisError::publish)?;
-        Ok(())
+        flush_block(&self.core, buffered).await
     }
 
     /// Discards the buffered messages.
@@ -240,13 +263,14 @@ impl OwnedTransactions for RedisPublisher {
 /// An owned Redis transaction, opened by [`transaction`](OwnedTransactions::transaction) on a
 /// [`RedisPublisher`].
 ///
-/// A private `XADD` buffer, flushed to the server on commit as one `MULTI` / `EXEC` block (so the
-/// whole batch becomes visible atomically, in publish order) and discarded on abort.
+/// A private `XADD` buffer, flushed on commit through the same `MULTI` / `EXEC` path as the
+/// handle-level kind (so the whole batch becomes visible atomically, in publish order) and
+/// discarded on abort.
 ///
-/// Unlike the handle-level [`TransactionalPublisher`] buffer, any number of these can be open on
-/// one handle at a time, and the handle keeps publishing directly while they are. The buffers are
-/// independent, so settling one never touches another; only the flush itself takes a pooled
-/// connection.
+/// What sets it apart from the handle-level [`TransactionalPublisher`] buffer is ownership, not
+/// the commit: any number of these can be open on one handle at a time, and the handle keeps
+/// publishing directly while they are. The buffers are independent, so settling one never touches
+/// another; only the flush itself takes a pooled connection.
 ///
 /// # Examples
 ///
@@ -322,22 +346,7 @@ impl Transaction for RedisTransaction {
         // Settled before the flush: a failed commit has still consumed the transaction (the
         // buffer is lost per the Transaction contract), so the drop warning must not fire.
         self.settled = true;
-        if self.buffered.is_empty() {
-            return Ok(());
-        }
-        let pool = self.core.pool()?;
-        let txn = pool.next().multi();
-        for (key, fields) in self.buffered.drain(..) {
-            // Queued client-side by `fred`; the whole block travels on one connection at `exec`.
-            let _: () = txn
-                .xadd(key, false, None::<()>, "*", fields)
-                .await
-                .map_err(RedisError::publish)?;
-        }
-        // `abort_on_error = true`: a rejected queued command discards the block instead of
-        // committing a partial one.
-        let _: Value = txn.exec(true).await.map_err(RedisError::publish)?;
-        Ok(())
+        flush_block(&self.core, std::mem::take(&mut self.buffered)).await
     }
 
     /// Discards the buffer. Nothing was sent to the server, so this cannot fail.
