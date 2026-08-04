@@ -16,7 +16,7 @@ authors = ["RustStream contributors"]
 
 [workspace.dependencies]
 ruststream-fred = { path = "crates/ruststream-fred" }
-ruststream = { version = ">=0.5.3, <0.6.0", default-features = false }
+ruststream = { version = ">=0.5.3, <0.7.0", default-features = false }
 
 fred = "10"
 bytes = "1"
