@@ -124,3 +124,19 @@ with `XADD`, so the retry survives a restart. The sweeper's granularity is the r
 and the retry-count header is incremented on each pass. An optional TTL on the ZSET key cleans up an
 abandoned queue, but it must exceed the longest scheduled delay or pending entries are dropped before
 they fire. Scores are wall-clock epoch milliseconds, so keep clocks synced (NTP).
+
+## Capabilities
+
+Which of the framework's optional capability traits this broker implements natively. Streams
+implements the most of the three transports; the notes name where Lists and Pub/Sub differ.
+
+| Capability | Native | Notes |
+| --- | --- | --- |
+| `Subscribe` | yes | Subscribes by stream key through a consumer group (the bare-string form needs `default_group`). Lists and Pub/Sub subscribe through their own descriptors. |
+| `BatchSubscriber` | yes (Streams) | One batch per non-empty `XREADGROUP` / `XAUTOCLAIM` read, up to `RedisStream::count` entries, never empty. The List and Pub/Sub subscribers deliver one message at a time. |
+| `TransactionalPublisher` | yes (Streams, standalone and sentinel) | The stream publisher buffers on the handle and commits it as one `MULTI` / `EXEC`. A cluster publisher rejects it, because a `MULTI` block cannot span hash slots. The List and Pub/Sub publishers have no transaction. See [Transactions](transactions.md). |
+| `OwnedTransactions` | yes (Streams, standalone and sentinel) | `publisher.transaction()` returns a buffer-owning value, so any number can be open on one handle; cluster is rejected for the same reason. |
+| `RequestReply` | no | Redis has no request-reply primitive: nothing on the wire carries a reply address or correlates a reply with its request. |
+| `Partitioned` | yes | All three transports read the key from the `redis-partition-key` header for the runtime's `workers(n, by_key)` lanes. The sender sets it. |
+| `Seekable` + `Positioned` | yes (Streams) | The group cursor moves with `XGROUP SETID`, and a delivery reports the position that redelivers it. See [Repositioning a group](#repositioning-a-group). A list is destructive and Pub/Sub keeps no history, so neither implements it. |
+| `DescribeServer` | yes | Reports the configured address (the first seed on cluster and sentinel). |
