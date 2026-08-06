@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+         <loc>https://powersemmi.github.io/ruststream-fred/0.6/</loc>
+         <lastmod>2026-08-06</lastmod>
+    </url>
+    <url>
+         <loc>https://powersemmi.github.io/ruststream-fred/0.6/auth-tls/</loc>
+         <lastmod>2026-08-06</lastmod>
+    </url>
+    <url>
+         <loc>https://powersemmi.github.io/ruststream-fred/0.6/dead-letter/</loc>
+         <lastmod>2026-08-06</lastmod>
+    </url>
+    <url>
+         <loc>https://powersemmi.github.io/ruststream-fred/0.6/lists/</loc>
+         <lastmod>2026-08-06</lastmod>
+    </url>
+    <url>
+         <loc>https://powersemmi.github.io/ruststream-fred/0.6/pubsub/</loc>
+         <lastmod>2026-08-06</lastmod>
+    </url>
+    <url>
+         <loc>https://powersemmi.github.io/ruststream-fred/0.6/streams/</loc>
+         <lastmod>2026-08-06</lastmod>
+    </url>
+    <url>
+         <loc>https://powersemmi.github.io/ruststream-fred/0.6/testing/</loc>
+         <lastmod>2026-08-06</lastmod>
+    </url>
+    <url>
+         <loc>https://powersemmi.github.io/ruststream-fred/0.6/transactions/</loc>
+         <lastmod>2026-08-06</lastmod>
+    </url>
+</urlset>
