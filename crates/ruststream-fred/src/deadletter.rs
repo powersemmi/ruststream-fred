@@ -25,7 +25,7 @@ use ruststream::Headers;
 
 use crate::convert::fields_for_publish;
 
-/// Header naming why a message was dead-lettered: [`REASON_DROPPED`] or [`REASON_MAX_DELIVERIES`].
+/// Header naming why a message was dead-lettered: `dropped` or `max-deliveries`.
 pub const DEAD_LETTER_REASON_HEADER: &str = "x-dead-letter-reason";
 /// Header exposing the native Redis Streams delivery count on a reclaimed delivery, so a handler can
 /// branch or dead-letter manually.

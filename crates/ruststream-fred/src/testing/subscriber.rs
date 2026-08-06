@@ -201,7 +201,7 @@ impl BatchSubscriber for RedisTestSubscriber {
     type Batch = Vec<RedisTestMessage>;
 
     /// Drains whatever is already buffered in the subscriber's channel (at least one, at most
-    /// [`TEST_BATCH_LIMIT`] messages). Blocks until the first message arrives.
+    /// `TEST_BATCH_LIMIT` messages). Blocks until the first message arrives.
     fn batches(&mut self) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
         let requeue = self.requeue.clone();
         let coordinator = self.coordinator.clone();
