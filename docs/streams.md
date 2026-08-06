@@ -52,7 +52,8 @@ list transport is destructive and Pub/Sub keeps no history, so neither does).
 
 **A seek is group-wide.** Redis keeps one cursor per consumer group, so moving it repositions every
 consumer of that group, not just the subscription that asked - unlike a partitioned log, where a seek
-is scoped to one consumer. The type names say so: `RedisGroupPosition` and `RedisGroupSeeker`.
+is scoped to one consumer. The type names carry that scope: `RedisGroupPosition` and
+`RedisGroupSeeker`.
 
 Three positions, named by constructor:
 
@@ -76,10 +77,10 @@ service runs:
 ```
 
 A delivery also reports its own position (`Positioned::position`), and seeking to it delivers that
-message again followed by the entries after it - the id is decremented for you, since the cursor is
-exclusive.
+message again followed by the entries after it - the id is decremented automatically, since the
+cursor is exclusive.
 
-What a seek deliberately does not touch:
+What a seek does not touch:
 
 - **the pending entries list.** Entries already delivered and not acknowledged stay pending whichever
   way the cursor moved, and remain reachable through the reclaim path.
