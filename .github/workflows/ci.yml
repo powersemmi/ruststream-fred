@@ -156,7 +156,7 @@ jobs:
           workspaces: ruststream-fred
 
       - name: Install cargo-generate
-        uses: taiki-e/install-action@v2.85.4
+        uses: taiki-e/install-action@v2.85.5
         with:
           tool: cargo-generate
 
@@ -203,7 +203,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@v2.85.4
+        uses: taiki-e/install-action@v2.85.5
         with:
           tool: cargo-deny
 
