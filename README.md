@@ -47,7 +47,7 @@
 - **Repositioning a group.** The streams subscriber implements the `Seekable` capability: a
   `start_at(..)` clause opens a subscription at a chosen point and a `Seek` parameter moves the
   cursor from a handler. A Redis cursor belongs to the consumer group, so a seek repositions every
-  consumer of that group - the `RedisGroupPosition` / `RedisGroupSeeker` names say so.
+  consumer of that group, a scope the `RedisGroupPosition` / `RedisGroupSeeker` names carry.
 - **Acknowledgement via the republish-retry model.** `ack` is `XACK`; `nack(requeue = true)`
   re-appends a copy to the stream then acks the original (at-least-once); `nack(requeue = false)`
   acks to drop.

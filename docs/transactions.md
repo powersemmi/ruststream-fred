@@ -49,7 +49,7 @@ publisher's codec before buffering.
 Two properties apply to both kinds, because both are `MULTI` / `EXEC`:
 
 - **No cluster.** A `MULTI` block cannot span hash slots, so a cluster publisher rejects either kind
-  with an error instead of pretending to be atomic.
+  with an error rather than committing a batch that is not atomic.
 - **No rollback.** A command that fails at *runtime* inside `EXEC` does not undo the commands before
   it - Redis has no rollback. For a block of `XADD`s against stream keys that is practically limited
   to running out of memory or a key holding a non-stream type. A command the server refuses to
