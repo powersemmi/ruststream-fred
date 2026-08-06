@@ -168,7 +168,8 @@ impl RedisStream {
 
     /// Routes dropped and poison messages to the named dead-letter stream instead of discarding
     /// them. Off by default. The copy is tagged with
-    /// [`DEAD_LETTER_REASON_HEADER`](crate::DEAD_LETTER_REASON_HEADER). See [`crate::deadletter`].
+    /// [`DEAD_LETTER_REASON_HEADER`](crate::DEAD_LETTER_REASON_HEADER). See the
+    /// [dead-letter guide](https://powersemmi.github.io/ruststream-fred/latest/dead-letter/).
     pub fn dead_letter(mut self, key: impl Into<String>) -> Self {
         self.dead_letter = Some(key.into());
         self

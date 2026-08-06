@@ -35,7 +35,8 @@ mod seek;
 mod stream;
 mod subscriber;
 
-/// Optional typed per-delivery context exposing native Redis metadata by compile-time key.
+// The module carries its own `//!` summary. A second doc fragment here would be written in the
+// crate root's scope, and rustdoc would then resolve the module's intra-doc links there too.
 pub mod context;
 
 pub use broker::{ClosedRedisBroker, ConnectedRedisBroker, RedisBroker};

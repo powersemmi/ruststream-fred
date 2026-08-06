@@ -152,7 +152,8 @@ impl RedisList {
     /// In reliable mode, routes dropped and poison entries to the named dead-letter list (`LPUSH`)
     /// instead of discarding them, tagged with
     /// [`DEAD_LETTER_REASON_HEADER`](crate::DEAD_LETTER_REASON_HEADER). Off by default. Has no effect
-    /// on a simple list, which cannot ack. See [`crate::deadletter`].
+    /// on a simple list, which cannot ack. See the
+    /// [dead-letter guide](https://powersemmi.github.io/ruststream-fred/latest/dead-letter/).
     pub fn dead_letter(mut self, key: impl Into<String>) -> Self {
         self.dead_letter = Some(key.into());
         self
@@ -183,7 +184,8 @@ impl RedisList {
     ///
     /// Off by default (a dead consumer's entry stays stranded on the processing list). The key has
     /// no sane default, so it is named explicitly here; pair it with [`min_idle`](Self::min_idle),
-    /// which is required when recovery is on. Reliable mode is implied. See [`crate::recovery`].
+    /// which is required when recovery is on. Reliable mode is implied. See
+    /// [orphan recovery](https://powersemmi.github.io/ruststream-fred/latest/lists/#orphan-recovery).
     pub fn recovery_zset(mut self, key: impl Into<String>) -> Self {
         self.recovery_zset = Some(key.into());
         self.reliable = true;
