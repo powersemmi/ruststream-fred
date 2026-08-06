@@ -15,9 +15,11 @@ crashed handler does not silently lose its job:
 --8<-- "crates/ruststream-fred/examples/fred_list.rs:reliable"
 ```
 
-Publish with `broker.list_publisher()` (`LPUSH`). Headers travel in the same frame as Pub/Sub: a
-lossless binary frame by default, or a readable codec-serialized envelope when a codec is set on both
-ends (`.codec(JsonCodec)`).
+Publish with the `RedisListPublish` policy (`LPUSH`): attach it where the handler is mounted and the
+runtime pairs it with the connected broker, or call
+`connected.list_publisher(RedisListPublish::new())` outside an app. Headers travel in the same frame
+as Pub/Sub: a lossless binary frame by default, or a readable codec-serialized envelope when a codec
+is set on both ends (`.codec(JsonCodec)`).
 
 ## Orphan recovery
 
@@ -37,7 +39,7 @@ durable, recoverable path.
 
 ## List publisher TTL
 
-An idle list can be bounded with a key TTL: `broker.list_publisher().ttl(Duration::from_secs(300))`
+An idle list can be bounded with a key TTL: `RedisListPublish::new().ttl(Duration::from_secs(300))`
 re-arms a `PEXPIRE` on the list key on every publish, so an actively used queue never expires and
 only an idle one lapses. It is off by default and per-key (the whole list), not per-entry - Redis
 lists have no per-element expiry. Pub/Sub has no equivalent (`PUBLISH` stores nothing to expire), and

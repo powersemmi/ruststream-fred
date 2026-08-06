@@ -2,6 +2,8 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Formatter};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use fred::clients::Pool;
@@ -9,13 +11,14 @@ use fred::interfaces::StreamsInterface;
 use fred::types::streams::XReadValue;
 use futures::Stream;
 use futures::stream::unfold;
-use ruststream::{BatchSubscriber, Subscriber};
+use ruststream::{BatchSubscriber, Seekable, Subscriber};
 
 use crate::convert::{HEADER_PREFIX, parts_from_fields};
 use crate::deadletter::{
     self, DELIVERY_COUNT_HEADER, IDLE_MS_HEADER, PoisonPolicy, REASON_MAX_DELIVERIES,
 };
 use crate::delay::{self, DelayConfig};
+use crate::seek::{EntryId, RedisGroupSeeker};
 use crate::{error::RedisError, message::RedisMessage, stream::ReadMode};
 
 /// One decoded stream entry: its ID and field map.
@@ -36,8 +39,8 @@ fn duration_to_millis(d: Duration) -> u64 {
 
 /// A Redis Streams subscription bound to a consumer group.
 ///
-/// Constructed by [`crate::RedisBroker::subscribe`] from a [`crate::RedisStream`] descriptor. The
-/// read mode (fresh tail vs reclaim) is fixed at construction.
+/// Constructed by [`crate::ConnectedRedisBroker::subscribe`] from a [`crate::RedisStream`]
+/// descriptor. The read mode (fresh tail vs reclaim) is fixed at construction.
 pub struct RedisSubscriber {
     pool: Pool,
     key: String,
@@ -54,6 +57,12 @@ pub struct RedisSubscriber {
     cursor: String,
     /// Entries fetched but not yet yielded.
     buffer: VecDeque<Entry>,
+    /// Bumped by every [`RedisGroupSeeker`] minted off this subscription. Shared, because a seek
+    /// can land while this subscriber is parked in a blocking read.
+    generation: Arc<AtomicU64>,
+    /// The generation the buffered entries were selected under. A mismatch means a seek moved the
+    /// cursor after they were chosen, so they belong to the position the group left.
+    buffer_generation: u64,
 }
 
 impl Debug for RedisSubscriber {
@@ -95,21 +104,46 @@ impl RedisSubscriber {
             delay,
             cursor: RECLAIM_START.to_owned(),
             buffer: VecDeque::new(),
+            generation: Arc::new(AtomicU64::new(0)),
+            buffer_generation: 0,
         }
     }
 
-    fn message(&self, id: String, fields: HashMap<String, Vec<u8>>) -> RedisMessage {
+    /// Builds the delivery for one fetched entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RedisError::Stream`] when the server sent an id that is not a well-formed
+    /// `<milliseconds>-<sequence>` pair, which would leave the delivery unable to report its
+    /// position.
+    fn message(
+        &self,
+        id: String,
+        fields: HashMap<String, Vec<u8>>,
+    ) -> Result<RedisMessage, RedisError> {
+        let entry: EntryId = id.parse()?;
         let (payload, headers) = parts_from_fields(fields);
-        RedisMessage::new(
+        Ok(RedisMessage::new(
             self.pool.clone(),
             self.key.clone(),
             self.group.clone(),
             id,
+            entry,
             payload,
             headers,
             self.policy.clone(),
             self.delay.clone(),
-        )
+        ))
+    }
+
+    /// Drops entries selected before a seek moved the group cursor: they belong to the position
+    /// the group left, so delivering them would contradict the reposition.
+    fn discard_stale(&mut self) {
+        let current = self.generation.load(Ordering::Acquire);
+        if self.buffer_generation != current {
+            self.buffer.clear();
+            self.buffer_generation = current;
+        }
     }
 
     /// Fetches the next batch of entries into the buffer. A read that timed out with nothing
@@ -120,10 +154,19 @@ impl RedisSubscriber {
         if let Some(cfg) = &self.delay {
             delay::sweep_due(&self.pool, cfg, &self.key).await?;
         }
+        // Captured before the read, not after: a blocking read selects its entries against the
+        // cursor as it stood when the read started, so a seek that lands mid-read invalidates
+        // whatever comes back.
+        let selected_at = self.generation.load(Ordering::Acquire);
         let entries = match self.mode.clone() {
             ReadMode::Fresh => self.fetch_fresh().await?,
             ReadMode::Reclaim { min_idle } => self.fetch_reclaim(min_idle).await?,
         };
+        if selected_at != self.generation.load(Ordering::Acquire) {
+            // A seek overtook this read; drop its entries and let the caller read again.
+            return Ok(());
+        }
+        self.buffer_generation = selected_at;
         self.buffer.extend(entries);
         Ok(())
     }
@@ -265,8 +308,9 @@ impl Subscriber for RedisSubscriber {
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
         unfold(self, |s| async move {
             loop {
+                s.discard_stale();
                 if let Some((id, fields)) = s.buffer.pop_front() {
-                    return Some((Ok(s.message(id, fields)), s));
+                    return Some((s.message(id, fields), s));
                 }
                 // An empty fetch (a blocking read that timed out) just loops and reads again.
                 if let Err(err) = s.fetch().await {
@@ -274,6 +318,21 @@ impl Subscriber for RedisSubscriber {
                 }
             }
         })
+    }
+}
+
+/// Repositioning the subscription moves its consumer group's cursor, which is shared by every
+/// consumer of that group; see [`RedisGroupSeeker`] for the full contract.
+impl Seekable for RedisSubscriber {
+    type Seeker = RedisGroupSeeker;
+
+    fn seeker(&self) -> RedisGroupSeeker {
+        RedisGroupSeeker::new(
+            self.pool.clone(),
+            self.key.clone(),
+            self.group.clone(),
+            Arc::clone(&self.generation),
+        )
     }
 }
 
@@ -290,6 +349,7 @@ impl BatchSubscriber for RedisSubscriber {
     fn batches(&mut self) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
         unfold(self, |s| async move {
             loop {
+                s.discard_stale();
                 if !s.buffer.is_empty() {
                     // Move the buffer out first so `s.message` can borrow `s` without overlapping
                     // a live mutable borrow of `s.buffer`.
@@ -297,8 +357,8 @@ impl BatchSubscriber for RedisSubscriber {
                     let batch = entries
                         .into_iter()
                         .map(|(id, fields)| s.message(id, fields))
-                        .collect::<Vec<_>>();
-                    return Some((Ok(batch), s));
+                        .collect::<Result<Vec<_>, _>>();
+                    return Some((batch, s));
                 }
                 if let Err(err) = s.fetch().await {
                     return Some((Err(err), s));

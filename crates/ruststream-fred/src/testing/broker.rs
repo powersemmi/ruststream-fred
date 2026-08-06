@@ -1,13 +1,14 @@
-//! [`RedisTestBroker`]: a full `Broker` + `Subscribe` + `DescribeServer` backed by the in-process
-//! key router, which also implements [`TestableBroker`](ruststream::testing::TestableBroker) so the
-//! same type drives both the [`TestApp`](ruststream::testing::TestApp) harness and the conformance
-//! suite.
+//! The in-process broker ladder: [`RedisTestBroker`] -> [`ConnectedRedisTestBroker`].
+//!
+//! The connected form implements [`TestableBroker`](ruststream::testing::TestableBroker), so the
+//! same transport drives the [`TestApp`](ruststream::testing::TestApp) harness and the framework's
+//! conformance suite.
 
 use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
 use ruststream::{
-    Broker, DescribeServer, OutgoingMessage, RawMessage, ServerSpec, Subscribe,
+    Broker, ConnectedBroker, DescribeServer, OutgoingMessage, RawMessage, ServerSpec, Subscribe,
     testing::{Coordinator, TestableBroker},
 };
 
@@ -18,9 +19,9 @@ use crate::{
 
 /// Shared state owned by every clone of a single test broker instance.
 ///
-/// Cloning [`RedisTestBroker`] clones an [`Arc`] of this; all clones see the same router and
-/// therefore the same set of subscriptions. Distinct instances (different [`RedisTestBroker::new`]
-/// calls) are fully isolated.
+/// Cloning [`RedisTestBroker`] clones an [`Arc`] of this; all clones and the connected form see the
+/// same router and therefore the same set of subscriptions. Distinct instances (different
+/// [`RedisTestBroker::new`] calls) are fully isolated.
 #[derive(Default)]
 pub(crate) struct TestBrokerState {
     pub(crate) router: KeyRouter,
@@ -52,7 +53,10 @@ impl std::fmt::Debug for TestBrokerState {
     }
 }
 
-/// In-process Redis broker used for handler-level tests.
+/// In-process stand-in for [`RedisBroker`](crate::RedisBroker), used for handler-level tests.
+///
+/// `new` is synchronous and I/O-free like the real one, and [`Broker::connect`] yields the
+/// [`ConnectedRedisTestBroker`] the subscriptions and publishers hang off.
 ///
 /// `publish` matches stream keys exactly (Redis Streams have no wildcard subjects) and hands the
 /// message to every matching subscriber's channel; `ack`/`nack(requeue = false)` consume the
@@ -61,28 +65,54 @@ impl std::fmt::Debug for TestBrokerState {
 /// Broker-specific edge cases (consumer-group cursors, `XAUTOCLAIM` redelivery, idle reclaim,
 /// `MAXLEN` trimming, dead-letter routing) are intentionally NOT simulated. Use a real Redis server
 /// for those scenarios.
+///
+/// # Examples
+///
+/// ```
+/// use ruststream_fred::testing::RedisTestBroker;
+///
+/// let broker = RedisTestBroker::new();
+/// # let _ = broker;
+/// ```
 #[derive(Clone, Default, Debug)]
+#[must_use]
 pub struct RedisTestBroker {
     state: Arc<TestBrokerState>,
 }
 
 impl RedisTestBroker {
     /// Constructs a fresh, isolated test broker. Equivalent to [`Self::default`].
-    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
+}
 
+impl Broker for RedisTestBroker {
+    type Error = RedisError;
+    type Connected = ConnectedRedisTestBroker;
+
+    async fn connect(self) -> Result<Self::Connected, Self::Error> {
+        Ok(ConnectedRedisTestBroker { state: self.state })
+    }
+}
+
+/// The connected form of [`RedisTestBroker`]: what the harness and the conformance suite drive.
+#[derive(Clone, Debug)]
+pub struct ConnectedRedisTestBroker {
+    state: Arc<TestBrokerState>,
+}
+
+impl ConnectedRedisTestBroker {
     /// Opens a subscription on the stream `key`. Mirrors the public surface of
-    /// [`crate::RedisBroker::subscribe`]; in handler-stub mode only the key is used for routing
-    /// (no consumer-group bookkeeping).
+    /// [`ConnectedRedisBroker::subscribe`](crate::ConnectedRedisBroker::subscribe); in
+    /// handler-stub mode only the key is used for routing (no consumer-group bookkeeping).
     ///
     /// # Errors
     ///
     /// Returns [`RedisError::Subscribe`] when `key` is empty.
     #[allow(
         clippy::unused_async,
-        reason = "API parity with RedisBroker::subscribe"
+        reason = "API parity with ConnectedRedisBroker::subscribe"
     )]
     pub async fn subscribe(
         &self,
@@ -106,30 +136,30 @@ impl RedisTestBroker {
     }
 }
 
-impl Broker for RedisTestBroker {
+impl ConnectedBroker for ConnectedRedisTestBroker {
     type Error = RedisError;
+    type Closed = ();
 
-    async fn connect(&self) -> Result<(), Self::Error> {
-        Ok(())
-    }
-
-    async fn shutdown(&self) -> Result<(), Self::Error> {
+    async fn shutdown(self) -> Result<Self::Closed, Self::Error> {
         self.state.router.clear();
         Ok(())
     }
 }
 
-#[allow(clippy::use_self)]
-impl Subscribe for RedisTestBroker {
+#[allow(
+    clippy::use_self,
+    reason = "the type name disambiguates the inherent subscribe from this trait method"
+)]
+impl Subscribe for ConnectedRedisTestBroker {
     type Subscriber = RedisTestSubscriber;
 
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
-        RedisTestBroker::subscribe(self, name).await
+        ConnectedRedisTestBroker::subscribe(self, name).await
     }
 }
 
 // --8<-- [start:testable]
-impl TestableBroker for RedisTestBroker {
+impl TestableBroker for ConnectedRedisTestBroker {
     fn install_coordinator(&self, coordinator: Coordinator) {
         self.state.install_coordinator(coordinator);
     }
@@ -151,7 +181,7 @@ impl TestableBroker for RedisTestBroker {
     }
 }
 
-ruststream::register_testable_broker!(RedisTestBroker);
+ruststream::register_testable_broker!(ConnectedRedisTestBroker);
 // --8<-- [end:testable]
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;

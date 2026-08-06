@@ -939,9 +939,9 @@ dependencies = [
 
 [[package]]
 name = "ruststream"
-version = "0.5.3"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f468fbb930df5ccfd2b51d1551fb119677be5a760964f140add9d8c6880380f"
+checksum = "a90182cca2d543ec8f05e38527646c54ce15d4518672c932f749fb05fa661f40"
 dependencies = [
  "bytes",
  "futures",
@@ -957,7 +957,7 @@ dependencies = [
 
 [[package]]
 name = "ruststream-fred"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -972,13 +972,13 @@ dependencies = [
 
 [[package]]
 name = "ruststream-macros"
-version = "0.5.3"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c6b3698bbe6a9ca251d7593050c3178e5619b52a3b1d9d0f56361384729084e"
+checksum = "a6023d648ca0c37d596b0f361076cae6ce8b9cedef889a516a46b0e0df368699"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn 3.0.3",
 ]
 
 [[package]]

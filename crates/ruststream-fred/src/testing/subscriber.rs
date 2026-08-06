@@ -21,7 +21,7 @@ use crate::{
     },
 };
 
-/// Subscriber returned by [`crate::testing::RedisTestBroker::subscribe`].
+/// Subscriber returned by [`crate::testing::ConnectedRedisTestBroker::subscribe`].
 pub struct RedisTestSubscriber {
     state: Arc<TestBrokerState>,
     id: SubscriptionId,

@@ -1,6 +1,12 @@
-//! The [`RedisBroker`]: the entry point of the `fred` integration.
+//! The broker ladder: [`RedisBroker`] -> [`ConnectedRedisBroker`] -> [`ClosedRedisBroker`].
+//!
+//! Construction is synchronous and I/O-free: the named constructors only record the topology and
+//! its options. All network work happens in the consuming [`Broker::connect`], and the connected
+//! form owns the live `fred` pool, so subscriptions and publishers exist only once a connection
+//! does.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use fred::clients::{Client, Pool};
 use fred::interfaces::{ClientLike, EventInterface, PubsubInterface, StreamsInterface};
@@ -13,14 +19,15 @@ use fred::types::config::CredentialProvider;
 ))]
 use fred::types::config::TlsConfig;
 use fred::types::config::{Config, ServerConfig};
-use ruststream::{Broker, DescribeServer, ServerSpec, Subscribe};
-use tokio::sync::OnceCell;
+use ruststream::{Broker, ConnectedBroker, DescribeServer, ServerSpec, Subscribe};
 
 use crate::{
     error::RedisError,
-    list::{RedisList, RedisListPublisher, RedisListSubscriber},
+    list::{RedisList, RedisListPublish, RedisListPublisher, RedisListSubscriber},
     publisher::RedisPublisher,
-    pubsub::{PubSubMode, RedisPubSub, RedisPubSubPublisher, RedisPubSubSubscriber},
+    pubsub::{
+        PubSubMode, RedisPubSub, RedisPubSubPublish, RedisPubSubPublisher, RedisPubSubSubscriber,
+    },
     stream::RedisStream,
     subscriber::RedisSubscriber,
 };
@@ -39,8 +46,9 @@ enum Topology {
     /// Sentinel-managed replication: the monitored primary's `service` name plus the `host:port`
     /// of each sentinel.
     Sentinel { service: String, hosts: Vec<String> },
-    /// A pool supplied already-connected via [`RedisBroker::from_pool`]; no config to build.
-    Preconnected,
+    /// A pool supplied already-connected via [`RedisBroker::from_pool`]; `connect` adopts it
+    /// instead of dialing.
+    Preconnected(Pool),
 }
 
 /// Parses a `host:port` address (tolerating a `redis://` / `rediss://` scheme prefix) into the
@@ -135,61 +143,40 @@ impl std::fmt::Debug for AuthConfig {
     }
 }
 
-/// A Redis broker handle backed by a `fred` connection [`Pool`].
+/// An unconnected Redis broker: the recorded topology and its options, no I/O performed yet.
 ///
-/// Construct it synchronously with [`RedisBroker::standalone`] and let the runtime connect it at
-/// startup, or eagerly with [`RedisBroker::connect`] / [`RedisBroker::from_pool`]. The handle is
-/// cheap to clone, and clones share one pool. Subscriptions are opened through
-/// [`RedisBroker::subscribe`] with a [`RedisStream`] descriptor.
-///
-/// # Lazy connection
-///
-/// [`standalone`](Self::standalone) performs no I/O: it only records the server address. The pool
-/// is opened by [`Broker::connect`], which the runtime calls once at startup, so a Redis service
-/// can be built with the synchronous `#[ruststream::app]` macro. Publishers handed out before
-/// `connect` resolve the shared pool on first use; operations that need it before `connect` return
-/// [`RedisError::NotConnected`].
+/// Build it with [`standalone`](Self::standalone), [`cluster`](Self::cluster),
+/// [`sentinel`](Self::sentinel), or [`from_pool`](Self::from_pool). All four are synchronous and
+/// perform no I/O, so a Redis service composes with the synchronous `#[ruststream::app]` builder;
+/// the runtime dials once at startup through the consuming [`Broker::connect`], which yields the
+/// [`ConnectedRedisBroker`] every subscription and publisher is reached from.
 ///
 /// # Examples
 ///
 /// ```no_run
+/// use ruststream::{Broker, ConnectedBroker};
 /// use ruststream_fred::{RedisBroker, RedisStream};
 ///
 /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-/// let broker = RedisBroker::connect("redis://localhost:6379").await?;
-/// let publisher = broker.publisher();
-/// let sub = broker.subscribe(RedisStream::new("orders").group("workers")).await?;
+/// let connected = RedisBroker::standalone("redis://localhost:6379").connect().await?;
+/// let publisher = connected.publisher();
+/// let sub = connected.subscribe(RedisStream::new("orders").group("workers")).await?;
 /// # let _ = (publisher, sub);
-/// broker.shutdown_pool().await;
+/// let _closed = connected.shutdown().await?;
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Clone)]
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct RedisBroker {
-    pool: Arc<OnceCell<Pool>>,
     topology: Topology,
     pool_size: usize,
     default_group: Option<String>,
     auth: AuthConfig,
 }
 
-impl std::fmt::Debug for RedisBroker {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RedisBroker")
-            .field("topology", &self.topology)
-            .field("pool_size", &self.pool_size)
-            .field("default_group", &self.default_group)
-            .field("auth", &self.auth)
-            .finish_non_exhaustive()
-    }
-}
-
 impl RedisBroker {
     /// Creates a standalone-topology broker that connects to `url` when [`Broker::connect`] runs.
-    ///
-    /// Synchronous and performs no I/O, so it slots into the `#[ruststream::app]` builder; the
-    /// connection is opened lazily at startup. See the [type docs](Self#lazy-connection).
-    #[must_use]
     pub fn standalone(url: impl Into<String>) -> Self {
         Self::with_topology(Topology::Standalone(url.into()))
     }
@@ -197,8 +184,6 @@ impl RedisBroker {
     /// Creates a Redis Cluster broker from one or more `host:port` seed nodes.
     ///
     /// Only one reachable node is needed; `fred` discovers the rest of the cluster on connect.
-    /// Synchronous and performs no I/O. See the [type docs](Self#lazy-connection).
-    #[must_use]
     pub fn cluster(nodes: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self::with_topology(Topology::Cluster(
             nodes.into_iter().map(Into::into).collect(),
@@ -207,9 +192,6 @@ impl RedisBroker {
 
     /// Creates a Sentinel-backed broker that tracks the primary named `service`, discovering it
     /// through the given sentinel `host:port` addresses.
-    ///
-    /// Synchronous and performs no I/O. See the [type docs](Self#lazy-connection).
-    #[must_use]
     pub fn sentinel(
         service: impl Into<String>,
         sentinels: impl IntoIterator<Item = impl Into<String>>,
@@ -220,9 +202,17 @@ impl RedisBroker {
         })
     }
 
+    /// Wraps an already-connected `fred` pool. Useful for advanced configuration (TLS, cluster,
+    /// sentinel, custom performance and reconnection policies).
+    ///
+    /// [`Broker::connect`] adopts the pool instead of dialing; the config it was built from is
+    /// reused for the dedicated clients Pub/Sub subscriptions need.
+    pub fn from_pool(pool: Pool) -> Self {
+        Self::with_topology(Topology::Preconnected(pool))
+    }
+
     fn with_topology(topology: Topology) -> Self {
         Self {
-            pool: Arc::new(OnceCell::new()),
             topology,
             pool_size: DEFAULT_POOL_SIZE,
             default_group: None,
@@ -231,7 +221,6 @@ impl RedisBroker {
     }
 
     /// Sets the connection-pool size. Defaults to 4.
-    #[must_use]
     pub const fn pool(mut self, size: usize) -> Self {
         self.pool_size = size;
         self
@@ -241,7 +230,6 @@ impl RedisBroker {
     /// form (Redis Streams always read through a group). Without it a bare-string subscription
     /// returns [`RedisError::InvalidOptions`]; name the group per subscription with
     /// [`RedisStream::group`] instead.
-    #[must_use]
     pub fn default_group(mut self, group: impl Into<String>) -> Self {
         self.default_group = Some(group.into());
         self
@@ -265,7 +253,6 @@ impl RedisBroker {
     /// let broker = RedisBroker::cluster(["10.0.0.1:6379"]).credentials("worker", "s3cr3t");
     /// # let _ = broker;
     /// ```
-    #[must_use]
     pub fn credentials(mut self, username: impl Into<String>, password: impl Into<String>) -> Self {
         self.auth.username = Some(username.into());
         self.auth.password = Some(password.into());
@@ -283,7 +270,6 @@ impl RedisBroker {
     /// let broker = RedisBroker::sentinel("mymaster", ["10.0.0.1:26379"]).password("s3cr3t");
     /// # let _ = broker;
     /// ```
-    #[must_use]
     pub fn password(mut self, password: impl Into<String>) -> Self {
         self.auth.password = Some(password.into());
         self
@@ -311,7 +297,6 @@ impl RedisBroker {
         feature = "tls-rustls-ring",
         feature = "tls-native-tls"
     ))]
-    #[must_use]
     pub fn tls(mut self, tls: impl Into<TlsConfig>) -> Self {
         self.auth.tls = Some(tls.into());
         self
@@ -333,7 +318,6 @@ impl RedisBroker {
     /// # let _ = broker;
     /// ```
     #[cfg(feature = "sentinel-auth")]
-    #[must_use]
     pub fn sentinel_credentials(
         mut self,
         username: impl Into<String>,
@@ -359,7 +343,6 @@ impl RedisBroker {
     /// # let _ = broker;
     /// ```
     #[cfg(feature = "sentinel-auth")]
-    #[must_use]
     pub fn sentinel_password(mut self, password: impl Into<String>) -> Self {
         self.auth.sentinel_password = Some(password.into());
         self
@@ -382,35 +365,9 @@ impl RedisBroker {
     /// }
     /// ```
     #[cfg(feature = "credential-provider")]
-    #[must_use]
     pub fn credential_provider(mut self, provider: Arc<dyn CredentialProvider>) -> Self {
         self.auth.credential_provider = Some(provider);
         self
-    }
-
-    /// Connects to a standalone Redis server eagerly, returning an already-connected broker.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RedisError::Connect`] when the URL is invalid or the connection cannot be
-    /// established.
-    pub async fn connect(url: impl Into<String>) -> Result<Self, RedisError> {
-        let broker = Self::standalone(url);
-        Broker::connect(&broker).await?;
-        Ok(broker)
-    }
-
-    /// Wraps an already-connected `fred` pool. Useful for advanced configuration (TLS, cluster,
-    /// sentinel, custom performance and reconnection policies).
-    #[must_use]
-    pub fn from_pool(pool: Pool) -> Self {
-        Self {
-            pool: Arc::new(OnceCell::new_with(Some(pool))),
-            topology: Topology::Preconnected,
-            pool_size: DEFAULT_POOL_SIZE,
-            default_group: None,
-            auth: AuthConfig::default(),
-        }
     }
 
     /// Builds the `fred` config for this broker's topology, then folds in the auth/TLS settings.
@@ -433,8 +390,9 @@ impl RedisBroker {
                     ..Config::default()
                 }
             }
-            // A preconnected pool never reaches connect()'s init path.
-            Topology::Preconnected => return Err(RedisError::NotConnected),
+            // A caller-supplied pool carries the config it was built from; reusing it keeps the
+            // Pub/Sub path (which dials a dedicated client per subscription) available.
+            Topology::Preconnected(pool) => pool.next().client_config(),
         };
         self.apply_auth(&mut config);
         Ok(config)
@@ -477,27 +435,112 @@ impl RedisBroker {
         }
     }
 
-    /// The connected pool, or [`RedisError::NotConnected`] when `connect` has not run yet.
-    fn connected(&self) -> Result<Pool, RedisError> {
-        self.pool.get().cloned().ok_or(RedisError::NotConnected)
+    /// Whether this topology can offer multi-key transactions. Cluster cannot (buffered keys may
+    /// hash to different nodes), so its publishers reject `begin_transaction`.
+    const fn supports_transactions(&self) -> bool {
+        !matches!(self.topology, Topology::Cluster(_))
+    }
+}
+
+impl Broker for RedisBroker {
+    type Error = RedisError;
+    type Connected = ConnectedRedisBroker;
+
+    /// Opens (or adopts) the connection pool, consuming the unconnected form.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RedisError::Connect`] when the recorded topology cannot be turned into a `fred`
+    /// config or the pool cannot reach the server.
+    async fn connect(self) -> Result<Self::Connected, Self::Error> {
+        let config = self.build_config()?;
+        let transactions_supported = self.supports_transactions();
+        let pool = if let Topology::Preconnected(pool) = &self.topology {
+            pool.clone()
+        } else {
+            let pool = Pool::new(config.clone(), None, None, None, self.pool_size)
+                .map_err(|err| RedisError::Connect(Box::new(err)))?;
+            pool.init()
+                .await
+                .map_err(|err| RedisError::Connect(Box::new(err)))?;
+            pool
+        };
+        Ok(ConnectedRedisBroker {
+            core: Arc::new(RedisCore {
+                pool,
+                config,
+                default_group: self.default_group,
+                transactions_supported,
+                closed: AtomicBool::new(false),
+            }),
+        })
+    }
+}
+
+/// `DescribeServer` reports the configured Redis address (the first seed for cluster/sentinel).
+impl DescribeServer for RedisBroker {
+    fn describe_server(&self) -> ServerSpec {
+        let host = match &self.topology {
+            Topology::Standalone(url) => url
+                .trim_start_matches("rediss://")
+                .trim_start_matches("redis://")
+                .to_owned(),
+            Topology::Cluster(nodes) => nodes.first().cloned().unwrap_or_default(),
+            Topology::Sentinel { hosts, .. } => hosts.first().cloned().unwrap_or_default(),
+            Topology::Preconnected(_) => String::new(),
+        };
+        ServerSpec::new(host, "redis")
+    }
+}
+
+/// The live connection shared by the connected broker and every handle derived from it.
+pub(crate) struct RedisCore {
+    pool: Pool,
+    /// The config the pool was built from; Pub/Sub subscriptions dial their dedicated client
+    /// from it.
+    config: Config,
+    default_group: Option<String>,
+    transactions_supported: bool,
+    /// Flipped by [`ConnectedBroker::shutdown`]. The ladder makes owner-side misuse a compile
+    /// error, but publishers handed out before the shutdown alias the connection and outlive it,
+    /// so their operations check this flag rather than issuing a command against a dead pool.
+    closed: AtomicBool,
+}
+
+impl RedisCore {
+    /// The live pool, or [`RedisError::ShutDown`] once the connection was torn down.
+    pub(crate) fn pool(&self) -> Result<Pool, RedisError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(RedisError::ShutDown);
+        }
+        Ok(self.pool.clone())
     }
 
-    /// Returns a clone of the underlying pool. Useful for advanced operations not covered by the
-    /// wrapper.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the broker has not connected yet (built with [`standalone`](Self::standalone) and
-    /// [`Broker::connect`] not run). Call it after startup, or build with [`connect`](Self::connect)
-    /// / [`from_pool`](Self::from_pool).
-    #[must_use]
-    pub fn pool_handle(&self) -> Pool {
-        self.pool
-            .get()
-            .cloned()
-            .expect("RedisBroker::pool_handle() called before connect()")
+    pub(crate) const fn transactions_supported(&self) -> bool {
+        self.transactions_supported
     }
+}
 
+impl std::fmt::Debug for RedisCore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RedisCore")
+            .field("pool", &self.pool)
+            .field("closed", &self.closed.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
+}
+
+/// The typed witness that [`Broker::connect`] succeeded: it owns the live `fred` pool.
+///
+/// Every subscription and every publisher is reached from here, so "not connected" is not
+/// representable. [`ConnectedBroker::shutdown`] consumes it, which makes a publish or subscribe
+/// after shutdown a compile error for the owner of the handle.
+#[derive(Debug)]
+pub struct ConnectedRedisBroker {
+    core: Arc<RedisCore>,
+}
+
+impl ConnectedRedisBroker {
     /// Opens a stream subscription described by `def`.
     ///
     /// Ensures the consumer group exists (`XGROUP CREATE ... MKSTREAM`, ignoring an
@@ -505,11 +548,11 @@ impl RedisBroker {
     ///
     /// # Errors
     ///
-    /// Returns [`RedisError::NotConnected`] when the broker has not connected,
+    /// Returns [`RedisError::ShutDown`] when the connection was already torn down,
     /// [`RedisError::InvalidOptions`] when `def` names no consumer group, or
     /// [`RedisError::Subscribe`] when the group cannot be created.
     pub async fn subscribe(&self, def: RedisStream) -> Result<RedisSubscriber, RedisError> {
-        let pool = self.connected()?;
+        let pool = self.core.pool()?;
         let group = def.group_or_err()?.to_owned();
         let consumer = def.consumer_or_auto();
         ensure_group(&pool, def.key(), &group, def.start().as_id()).await?;
@@ -526,38 +569,12 @@ impl RedisBroker {
         ))
     }
 
-    /// Returns a publisher bound to this broker.
-    ///
-    /// It may be created before [`Broker::connect`] (for example inside the `with_broker` builder);
-    /// it resolves the shared pool when it first publishes.
-    #[must_use]
-    pub fn publisher(&self) -> RedisPublisher {
-        RedisPublisher::new(Arc::clone(&self.pool), self.supports_transactions())
-    }
-
-    /// Whether this topology can offer multi-key transactions. Cluster cannot (buffered keys may
-    /// hash to different nodes), so its publishers reject `begin_transaction`.
-    const fn supports_transactions(&self) -> bool {
-        !matches!(self.topology, Topology::Cluster(_))
-    }
-
-    /// Builds and connects a dedicated `fred` client (used for Pub/Sub, which needs an isolated
-    /// message stream and channel state per subscriber).
-    async fn new_client(&self) -> Result<Client, RedisError> {
-        let config = self.build_config()?;
-        let client = Client::new(config, None, None, None);
-        client
-            .init()
-            .await
-            .map_err(|err| RedisError::Connect(Box::new(err)))?;
-        Ok(client)
-    }
-
     /// Opens a Pub/Sub subscription described by `def` on a dedicated client.
     ///
     /// # Errors
     ///
     /// Returns [`RedisError::InvalidOptions`] for an invalid mode/pattern combination,
+    /// [`RedisError::ShutDown`] when the connection was already torn down,
     /// [`RedisError::Connect`] when the dedicated client cannot connect, or
     /// [`RedisError::Subscribe`] when the subscribe command fails.
     pub async fn subscribe_pubsub(
@@ -582,14 +599,14 @@ impl RedisBroker {
     ///
     /// # Errors
     ///
-    /// Returns [`RedisError::NotConnected`] when the broker has not connected, or
+    /// Returns [`RedisError::ShutDown`] when the connection was already torn down, or
     /// [`RedisError::InvalidOptions`] when `def` names a recovery ZSET without a `min_idle`.
     #[allow(
         clippy::unused_async,
         reason = "async for parity with the other subscribe methods and the SubscriptionSource shape"
     )]
     pub async fn subscribe_list(&self, def: RedisList) -> Result<RedisListSubscriber, RedisError> {
-        let pool = self.connected()?;
+        let pool = self.core.pool()?;
         let recovery = def.recovery_config()?;
         Ok(RedisListSubscriber::new(
             pool,
@@ -603,24 +620,105 @@ impl RedisBroker {
         ))
     }
 
-    /// Returns a Pub/Sub publisher (classic mode by default; override with
-    /// [`RedisPubSubPublisher::mode`]).
+    /// Returns a stream publisher (`XADD`) bound to this connection.
     #[must_use]
-    pub fn pubsub_publisher(&self) -> RedisPubSubPublisher {
-        RedisPubSubPublisher::new(Arc::clone(&self.pool), PubSubMode::Classic)
+    pub fn publisher(&self) -> RedisPublisher {
+        RedisPublisher::new(Arc::clone(&self.core))
     }
 
-    /// Returns a list publisher (`LPUSH`).
+    /// Returns a Pub/Sub publisher configured by `publish` (mode and envelope codec).
     #[must_use]
-    pub fn list_publisher(&self) -> RedisListPublisher {
-        RedisListPublisher::new(Arc::clone(&self.pool))
+    pub fn pubsub_publisher(&self, publish: RedisPubSubPublish) -> RedisPubSubPublisher {
+        RedisPubSubPublisher::new(Arc::clone(&self.core), publish)
     }
 
-    /// Closes the underlying pool. A no-op if the broker never connected.
-    pub async fn shutdown_pool(&self) {
-        if let Some(pool) = self.pool.get() {
-            let _ = pool.quit().await;
-        }
+    /// Returns a list publisher (`LPUSH`) configured by `publish` (envelope codec and key TTL).
+    #[must_use]
+    pub fn list_publisher(&self, publish: RedisListPublish) -> RedisListPublisher {
+        RedisListPublisher::new(Arc::clone(&self.core), publish)
+    }
+
+    /// Returns a clone of the underlying pool, for advanced operations not covered by the
+    /// wrapper.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RedisError::ShutDown`] once the connection was torn down.
+    pub fn pool_handle(&self) -> Result<Pool, RedisError> {
+        self.core.pool()
+    }
+
+    /// Builds and connects a dedicated `fred` client (used for Pub/Sub, which needs an isolated
+    /// message stream and channel state per subscriber).
+    async fn new_client(&self) -> Result<Client, RedisError> {
+        // The dedicated client is a second connection to the same server: refuse to dial one for
+        // a connection whose owner already shut down.
+        let _ = self.core.pool()?;
+        let client = Client::new(self.core.config.clone(), None, None, None);
+        client
+            .init()
+            .await
+            .map_err(|err| RedisError::Connect(Box::new(err)))?;
+        Ok(client)
+    }
+}
+
+impl ConnectedBroker for ConnectedRedisBroker {
+    type Error = RedisError;
+    type Closed = ClosedRedisBroker;
+
+    /// Closes every pooled connection and marks the shared connection dead, so publishers handed
+    /// out earlier report [`RedisError::ShutDown`] instead of running against a closed pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RedisError::Connect`] when the `QUIT` roundtrip fails.
+    async fn shutdown(self) -> Result<Self::Closed, Self::Error> {
+        self.core.closed.store(true, Ordering::Release);
+        let connections_closed = self.core.pool.clients().len();
+        self.core
+            .pool
+            .quit()
+            .await
+            .map_err(|err| RedisError::Connect(Box::new(err)))?;
+        Ok(ClosedRedisBroker { connections_closed })
+    }
+}
+
+/// The terminal witness returned by shutting down a [`ConnectedRedisBroker`].
+///
+/// It has no publish or subscribe surface; it carries the teardown diagnostics as plain data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClosedRedisBroker {
+    connections_closed: usize,
+}
+
+impl ClosedRedisBroker {
+    /// How many pooled connections the teardown closed.
+    #[must_use]
+    pub const fn connections_closed(&self) -> usize {
+        self.connections_closed
+    }
+}
+
+// By-name subscription capability for the bare string `#[subscriber("key")]` form. Redis Streams
+// always read through a consumer group, so this requires a broker-wide default group.
+#[allow(
+    clippy::use_self,
+    reason = "the type name disambiguates the inherent subscribe from this trait method"
+)]
+impl Subscribe for ConnectedRedisBroker {
+    type Subscriber = RedisSubscriber;
+
+    async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
+        let group = self.core.default_group.clone().ok_or_else(|| {
+            RedisError::InvalidOptions(format!(
+                "bare-string subscription on `{name}` needs a broker-wide default group: \
+                 call RedisBroker::default_group(name), or subscribe with \
+                 RedisStream::new(name).group(group)"
+            ))
+        })?;
+        ConnectedRedisBroker::subscribe(self, RedisStream::new(name).group(group)).await
     }
 }
 
@@ -641,96 +739,9 @@ async fn ensure_group(
     }
 }
 
-impl Broker for RedisBroker {
-    type Error = RedisError;
-
-    async fn connect(&self) -> Result<(), Self::Error> {
-        self.pool
-            .get_or_try_init(|| async {
-                let config = self.build_config()?;
-                let pool = Pool::new(config, None, None, None, self.pool_size)
-                    .map_err(|err| RedisError::Connect(Box::new(err)))?;
-                pool.init()
-                    .await
-                    .map_err(|err| RedisError::Connect(Box::new(err)))?;
-                Ok(pool)
-            })
-            .await?;
-        Ok(())
-    }
-
-    async fn shutdown(&self) -> Result<(), Self::Error> {
-        self.shutdown_pool().await;
-        Ok(())
-    }
-}
-
-// By-name subscription capability for the bare string `#[subscriber("key")]` form. Redis Streams
-// always read through a consumer group, so this requires a broker-wide default group.
-#[allow(clippy::use_self)]
-impl Subscribe for RedisBroker {
-    type Subscriber = RedisSubscriber;
-
-    async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
-        let group = self.default_group.clone().ok_or_else(|| {
-            RedisError::InvalidOptions(format!(
-                "bare-string subscription on `{name}` needs a broker-wide default group: \
-                 call RedisBroker::default_group(name), or subscribe with \
-                 RedisStream::new(name).group(group)"
-            ))
-        })?;
-        RedisBroker::subscribe(self, RedisStream::new(name).group(group)).await
-    }
-}
-
-/// `DescribeServer` reports the configured Redis address (the first seed for cluster/sentinel).
-impl DescribeServer for RedisBroker {
-    fn describe_server(&self) -> ServerSpec {
-        let host = match &self.topology {
-            Topology::Standalone(url) => url
-                .trim_start_matches("rediss://")
-                .trim_start_matches("redis://")
-                .to_owned(),
-            Topology::Cluster(nodes) => nodes.first().cloned().unwrap_or_default(),
-            Topology::Sentinel { hosts, .. } => hosts.first().cloned().unwrap_or_default(),
-            Topology::Preconnected => String::new(),
-        };
-        ServerSpec::new(host, "redis")
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use ruststream::{OutgoingMessage, Publisher};
-
     use super::*;
-
-    // `standalone` records the address without connecting, so operations needing the connection
-    // fail cleanly until `Broker::connect` runs. No server required.
-    #[tokio::test]
-    async fn standalone_does_not_connect() {
-        let broker = RedisBroker::standalone("redis://127.0.0.1:6379");
-
-        let publish_err = broker
-            .publisher()
-            .publish(OutgoingMessage::new("orders", b"{}".as_slice()))
-            .await
-            .unwrap_err();
-        assert!(matches!(publish_err, RedisError::NotConnected));
-
-        let subscribe_err = broker
-            .subscribe(RedisStream::new("orders").group("g"))
-            .await
-            .unwrap_err();
-        assert!(matches!(subscribe_err, RedisError::NotConnected));
-    }
-
-    #[tokio::test]
-    async fn bare_string_subscription_needs_default_group() {
-        let broker = RedisBroker::standalone("redis://127.0.0.1:6379");
-        let err = Subscribe::subscribe(&broker, "orders").await.unwrap_err();
-        assert!(matches!(err, RedisError::InvalidOptions(msg) if msg.contains("default group")));
-    }
 
     #[test]
     fn describe_server_reports_redis() {

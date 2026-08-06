@@ -7,11 +7,12 @@ use bytes::Bytes;
 use fred::clients::Pool;
 use fred::interfaces::StreamsInterface;
 use ruststream::runtime::RETRY_COUNT_HEADER;
-use ruststream::{AckError, Headers, IncomingMessage, Partitioned};
+use ruststream::{AckError, Headers, IncomingMessage, Partitioned, Positioned};
 
 use crate::convert::fields_for_publish;
 use crate::deadletter::{self, PoisonPolicy, REASON_DROPPED, REASON_MAX_DELIVERIES};
 use crate::delay::{self, DelayConfig};
+use crate::seek::{EntryId, RedisGroupPosition};
 
 /// The well-known header key for per-message routing / partitioning.
 ///
@@ -39,6 +40,9 @@ pub struct RedisMessage {
     payload: Bytes,
     headers: Headers,
     ack: Option<AckHandle>,
+    /// The parsed form of the entry id, kept beside the wire form so
+    /// [`Positioned::position`] cannot fail. Both are derived from the same server-issued id.
+    entry: EntryId,
     policy: PoisonPolicy,
     /// Set when the subscription opted into a durable ZSET delay queue; makes `nack_after` native.
     delay: Option<DelayConfig>,
@@ -65,6 +69,7 @@ impl RedisMessage {
         key: String,
         group: String,
         id: String,
+        entry: EntryId,
         payload: Bytes,
         headers: Headers,
         policy: PoisonPolicy,
@@ -79,6 +84,7 @@ impl RedisMessage {
                 group,
                 id,
             }),
+            entry,
             policy,
             delay,
         }
@@ -88,6 +94,12 @@ impl RedisMessage {
     #[must_use]
     pub fn id(&self) -> Option<&str> {
         self.ack.as_ref().map(|a| a.id.as_str())
+    }
+
+    /// The parsed entry id this message was read at.
+    #[must_use]
+    pub const fn entry_id(&self) -> EntryId {
+        self.entry
     }
 
     /// The consumer group this delivery was read through, or `None` once the message has settled.
@@ -100,6 +112,20 @@ impl RedisMessage {
 impl Partitioned for RedisMessage {
     fn partition_key(&self) -> Option<&[u8]> {
         self.headers().get(PARTITION_KEY_HEADER)
+    }
+}
+
+/// The position of a delivery is the group cursor that redelivers it.
+///
+/// The cursor is exclusive (a group resumes *after* the id it holds), so the pinned position is
+/// the id immediately below this entry's - seeking to it delivers this message again, followed by
+/// the entries after it. Repositioning is group-wide; see
+/// [`RedisGroupSeeker`](crate::RedisGroupSeeker).
+impl Positioned for RedisMessage {
+    type Position = RedisGroupPosition;
+
+    fn position(&self) -> RedisGroupPosition {
+        RedisGroupPosition::after(self.entry.previous())
     }
 }
 
@@ -244,20 +270,38 @@ mod tests {
         Pool::new(Config::default(), None, None, None, 1).expect("offline pool")
     }
 
-    #[test]
-    fn build_context_reads_entry_id_and_group() {
-        let msg = RedisMessage::new(
+    fn delivery(id: &str) -> RedisMessage {
+        RedisMessage::new(
             offline_pool(),
             "orders".to_owned(),
             "workers".to_owned(),
-            "1700000000000-0".to_owned(),
+            id.to_owned(),
+            id.parse().expect("valid entry id"),
             Bytes::from_static(b"{}"),
             Headers::new(),
             PoisonPolicy::default(),
             None,
-        );
-        let cx = StreamContext::build(&msg);
+        )
+    }
+
+    #[test]
+    fn build_context_reads_entry_id_and_group() {
+        let cx = StreamContext::build(&delivery("1700000000000-0"));
         assert_eq!(cx.entry_id(), Some("1700000000000-0"));
         assert_eq!(cx.consumer_group(), Some("workers"));
+    }
+
+    // The group cursor is exclusive, so the position that redelivers an entry sits one id below
+    // it: pinning `<ms>-0` has to borrow from the millisecond half.
+    #[test]
+    fn position_pins_the_delivery_for_redelivery() {
+        assert_eq!(
+            delivery("1700000000000-4").position(),
+            RedisGroupPosition::after(EntryId::new(1_700_000_000_000, 3))
+        );
+        assert_eq!(
+            delivery("1700000000000-0").position(),
+            RedisGroupPosition::after(EntryId::new(1_699_999_999_999, u64::MAX))
+        );
     }
 }

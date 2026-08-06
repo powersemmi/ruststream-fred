@@ -1,4 +1,6 @@
-name: ruststream-tests
+# A repo-unique project name: sibling broker repos run their own compose stacks on this
+# machine, and a shared name would make `docker compose down` reap their containers too.
+name: ruststream-fred-tests
 
 # Three Redis topologies for the integration tests, each independent:
 #

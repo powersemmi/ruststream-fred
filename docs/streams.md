@@ -43,6 +43,56 @@ The recovery handler on the same group, reclaiming entries idle for over 30 seco
 --8<-- "crates/ruststream-fred/examples/fred_reclaim.rs:reclaim"
 ```
 
+## Repositioning a group
+
+A stream keeps its entries until it is trimmed, so a group can be moved back over history or forward
+past a region. `StreamStart` only chooses where a group starts when it is first created; moving a
+group that already exists is the `Seekable` capability, which the streams transport implements (the
+list transport is destructive and Pub/Sub keeps no history, so neither does).
+
+**A seek is group-wide.** Redis keeps one cursor per consumer group, so moving it repositions every
+consumer of that group, not just the subscription that asked - unlike a partitioned log, where a seek
+is scoped to one consumer. The type names say so: `RedisGroupPosition` and `RedisGroupSeeker`.
+
+Three positions, named by constructor:
+
+| Constructor | Where the group resumes |
+| --- | --- |
+| `RedisGroupPosition::beginning()` | the oldest entry the stream still retains |
+| `RedisGroupPosition::end()` | the tail: only entries added afterwards |
+| `RedisGroupPosition::after(id)` | the entry following `id` (the cursor is exclusive, like `XGROUP SETID`) |
+
+A `start_at(..)` clause seeks the subscription before its first delivery, on every startup:
+
+```rust
+--8<-- "crates/ruststream-fred/examples/fred_seek.rs:start-at"
+```
+
+A `Seek` parameter injects the subscription's own seeker, so a handler can move the group while the
+service runs:
+
+```rust
+--8<-- "crates/ruststream-fred/examples/fred_seek.rs:seek-param"
+```
+
+A delivery also reports its own position (`Positioned::position`), and seeking to it delivers that
+message again followed by the entries after it - the id is decremented for you, since the cursor is
+exclusive.
+
+What a seek deliberately does not touch:
+
+- **the pending entries list.** Entries already delivered and not acknowledged stay pending whichever
+  way the cursor moved, and remain reachable through the reclaim path.
+- **scheduled delayed retries.** Copies already sitting in a ZSET delay queue are keyed by their due
+  time, so they are appended to the stream when they fall due regardless of where the group reads.
+- **delivery counts.** A replayed entry is delivered again, so its native delivery count grows; a
+  reclaim subscription with `max_deliveries` therefore counts replays towards the poison cap, while
+  the framework retry-count header only moves on an actual `nack`.
+
+The cursor changes as soon as the seek returns, but a subscription parked in a blocking `XREADGROUP`
+observes it on its next read - within one `block` interval. Entries selected under the old cursor are
+discarded rather than delivered.
+
 ## Acknowledgement
 
 Settlement follows the republish-retry model:

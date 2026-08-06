@@ -1,27 +1,28 @@
 //! In-process unit-testing examples for ruststream-fred.
 //!
-//! The `testing` feature ships `RedisTestBroker`, an in-process transport that is a full broker and
-//! also implements `ruststream::testing::TestableBroker`. Use it to test `#[subscriber]` handlers
-//! the same way you wire them in production: build a `RustStream` app around a `RedisTestBroker`,
-//! then drive publishes by injecting messages onto the broker's bus.
+//! The `testing` feature ships `RedisTestBroker`, an in-process transport whose connected form
+//! implements `ruststream::testing::TestableBroker`. Use it to test `#[subscriber]` handlers the
+//! same way you wire them in production: build a `RustStream` app around a `RedisTestBroker`, hand
+//! it to the `TestApp` harness, and publish through the harness handle.
+//!
+//! This example is a test driver rather than a service, so it runs on a plain `#[tokio::main]`
+//! instead of the `#[ruststream::app]` macro.
 //!
 //! ```text
 //! cargo run --example fred_testing --features testing
 //! ```
 
 use std::sync::Arc;
-use std::time::Duration;
 
-use ruststream::OutgoingMessage;
 use ruststream::conformance::harness;
 use ruststream::runtime::{AppInfo, HandlerResult, RustStream};
 use ruststream::subscriber;
-use ruststream::testing::TestableBroker;
+use ruststream::testing::TestApp;
 use ruststream_fred::{RedisList, RedisPubSub, RedisStream, testing::RedisTestBroker};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 struct Payment {
     id: u64,
     user_id: u64,
@@ -115,9 +116,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn payment(id: u64, amount: u64) -> Payment {
+    Payment {
+        id,
+        user_id: 42,
+        amount,
+    }
+}
+
 async fn test_payment_processing() -> Result<(), Box<dyn std::error::Error>> {
     // --8<-- [start:business-test]
-    let broker = RedisTestBroker::new();
     let repository = PaymentRepository::default();
     let repository_for_app = repository.clone();
 
@@ -125,33 +133,21 @@ async fn test_payment_processing() -> Result<(), Box<dyn std::error::Error>> {
         // The startup hook produces the typed app state; the test keeps its own clone (the inner
         // store is shared via `Arc`) to assert on it afterwards.
         .on_startup(move |()| async move { Ok::<_, std::convert::Infallible>(repository_for_app) })
-        .with_broker(broker.clone(), |b| {
+        .with_broker(RedisTestBroker::new(), |b| {
             b.include(process_payment);
         });
 
-    // `start` resolves once subscriptions are open, so the injects below cannot race startup.
-    let running = app.start().await?;
+    // The harness runs the app's real startup and drives every publish to quiescence, so the
+    // assertions below need no waiting.
+    let tb = TestApp::start(app).await?;
 
-    // Valid payment is saved.
-    broker.inject(OutgoingMessage::new(
-        "payments",
-        br#"{"id":1,"user_id":42,"amount":100}"#,
-    ));
-    // Invalid payment (amount == 0) is dropped.
-    broker.inject(OutgoingMessage::new(
-        "payments",
-        br#"{"id":2,"user_id":42,"amount":0}"#,
-    ));
-
-    // Wait until the valid payment is persisted: the handler runs on another task, so
-    // yielding between checks is enough to let it progress.
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while !repository.contains(1).await {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("valid payment was not saved in time");
+    // The valid payment is saved; the invalid one (amount == 0) is dropped.
+    tb.broker::<RedisTestBroker>()
+        .publish("payments", &payment(1, 100))
+        .await?;
+    tb.broker::<RedisTestBroker>()
+        .publish("payments", &payment(2, 0))
+        .await?;
 
     assert!(repository.contains(1).await, "valid payment was not saved");
     assert!(
@@ -160,64 +156,73 @@ async fn test_payment_processing() -> Result<(), Box<dyn std::error::Error>> {
     );
     assert_eq!(repository.count().await, 1);
 
-    running.shutdown().await?;
+    tb.shutdown().await?;
     // --8<-- [end:business-test]
     Ok(())
 }
 
 async fn test_stream_delivery() -> Result<(), Box<dyn std::error::Error>> {
     // --8<-- [start:stream-test]
-    let broker = RedisTestBroker::new();
+    let app =
+        RustStream::new(AppInfo::new("test", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
+            b.include(handle_stream_event);
+        });
 
-    let app = RustStream::new(AppInfo::new("test", "0.1.0")).with_broker(broker.clone(), |b| {
-        b.include(handle_stream_event);
-    });
+    let tb = TestApp::start(app).await?;
+    tb.broker::<RedisTestBroker>()
+        .publish("events", &payment(1, 100))
+        .await?;
 
-    // `start` resolves once subscriptions are open, so the injects below cannot race startup.
-    let running = app.start().await?;
-    broker.inject(OutgoingMessage::new(
-        "events",
-        br#"{"id":1,"user_id":42,"amount":100}"#,
-    ));
-    running.shutdown().await?;
+    tb.broker::<RedisTestBroker>()
+        .subscriber("events")
+        .assert_called_once()
+        .settled(HandlerResult::Ack);
+
+    tb.shutdown().await?;
     // --8<-- [end:stream-test]
     Ok(())
 }
 
 async fn test_list_delivery() -> Result<(), Box<dyn std::error::Error>> {
     // --8<-- [start:list-test]
-    let broker = RedisTestBroker::new();
+    let app =
+        RustStream::new(AppInfo::new("test", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
+            b.include(handle_list_job);
+        });
 
-    let app = RustStream::new(AppInfo::new("test", "0.1.0")).with_broker(broker.clone(), |b| {
-        b.include(handle_list_job);
-    });
+    let tb = TestApp::start(app).await?;
+    tb.broker::<RedisTestBroker>()
+        .publish("jobs", &payment(1, 100))
+        .await?;
 
-    // `start` resolves once subscriptions are open, so the injects below cannot race startup.
-    let running = app.start().await?;
-    broker.inject(OutgoingMessage::new(
-        "jobs",
-        br#"{"id":1,"user_id":42,"amount":100}"#,
-    ));
-    running.shutdown().await?;
+    tb.broker::<RedisTestBroker>()
+        .subscriber("jobs")
+        .assert_called_once()
+        .settled(HandlerResult::Ack);
+
+    tb.shutdown().await?;
     // --8<-- [end:list-test]
     Ok(())
 }
 
 async fn test_pubsub_delivery() -> Result<(), Box<dyn std::error::Error>> {
     // --8<-- [start:pubsub-test]
-    let broker = RedisTestBroker::new();
+    let app =
+        RustStream::new(AppInfo::new("test", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
+            b.include(handle_pubsub_notification);
+        });
 
-    let app = RustStream::new(AppInfo::new("test", "0.1.0")).with_broker(broker.clone(), |b| {
-        b.include(handle_pubsub_notification);
-    });
+    let tb = TestApp::start(app).await?;
+    tb.broker::<RedisTestBroker>()
+        .publish("notifications", &payment(1, 100))
+        .await?;
 
-    // `start` resolves once subscriptions are open, so the injects below cannot race startup.
-    let running = app.start().await?;
-    broker.inject(OutgoingMessage::new(
-        "notifications",
-        br#"{"id":1,"user_id":42,"amount":100}"#,
-    ));
-    running.shutdown().await?;
+    tb.broker::<RedisTestBroker>()
+        .subscriber("notifications")
+        .assert_called_once()
+        .settled(HandlerResult::Ack);
+
+    tb.shutdown().await?;
     // --8<-- [end:pubsub-test]
     Ok(())
 }
@@ -238,7 +243,6 @@ mod tests {
 
     #[tokio::test]
     async fn valid_payment_is_saved_and_invalid_is_dropped() {
-        let broker = RedisTestBroker::new();
         let repository = PaymentRepository::default();
         let repository_for_app = repository.clone();
 
@@ -246,35 +250,26 @@ mod tests {
             .on_startup(
                 move |()| async move { Ok::<_, std::convert::Infallible>(repository_for_app) },
             )
-            .with_broker(broker.clone(), |b| {
+            .with_broker(RedisTestBroker::new(), |b| {
                 b.include(process_payment);
             });
 
-        // `start` resolves once subscriptions are open, so the injects below cannot race startup.
-        let running = app.start().await.expect("startup failed");
+        let tb = TestApp::start(app).await.expect("startup failed");
 
-        broker.inject(OutgoingMessage::new(
-            "payments",
-            br#"{"id":1,"user_id":42,"amount":100}"#,
-        ));
-        broker.inject(OutgoingMessage::new(
-            "payments",
-            br#"{"id":2,"user_id":42,"amount":0}"#,
-        ));
-
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while !repository.contains(1).await {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("valid payment was not saved in time");
+        tb.broker::<RedisTestBroker>()
+            .publish("payments", &payment(1, 100))
+            .await
+            .expect("publish valid");
+        tb.broker::<RedisTestBroker>()
+            .publish("payments", &payment(2, 0))
+            .await
+            .expect("publish invalid");
 
         assert!(repository.contains(1).await);
         assert!(!repository.contains(2).await);
         assert_eq!(repository.count().await, 1);
 
-        running.shutdown().await.expect("graceful shutdown failed");
+        tb.shutdown().await.expect("graceful shutdown failed");
     }
 }
 // --8<-- [end:unit-test]
