@@ -31,6 +31,7 @@ mod message;
 mod publisher;
 mod pubsub;
 mod recovery;
+mod seek;
 mod stream;
 mod subscriber;
 
@@ -50,6 +51,7 @@ pub use pubsub::{
     PubSubMode, RedisPubSub, RedisPubSubMessage, RedisPubSubPublish, RedisPubSubPublisher,
     RedisPubSubSubscriber,
 };
+pub use seek::{EntryId, RedisGroupPosition, RedisGroupSeeker};
 pub use stream::{RedisStream, StreamStart};
 pub use subscriber::RedisSubscriber;
 
