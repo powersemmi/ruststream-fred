@@ -44,7 +44,7 @@ fn app() -> impl App {
         // .transactional() requires the policy's live form to be transactional, which
         // RedisPublish's is on standalone and sentinel: the batch's replies are buffered and
         // committed as one MULTI / EXEC block.
-        b.include_batch(process)
+        b.include(process)
             .publisher(TypedPublisher::new(RedisPublish).transactional());
         // --8<-- [end:mount]
 
