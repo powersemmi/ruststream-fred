@@ -149,11 +149,11 @@ jobs:
         working-directory: ruststream-fred
         run: cargo +nightly update -Z minimal-versions
 
-      # Every pin here is a bound some manifest declares more loosely than the code behind it
-      # actually needs, so minimal resolution picks a version that does not compile. Each was
-      # established by bisecting the failure, and each names the manifest at fault so it can be
-      # dropped when that crate tightens its own floor. A bound this repo declares itself is
-      # raised in the manifest instead of pinned here. Order matters for the openssl pair only.
+      # Every pin here is a bound a third-party manifest declares more loosely than the code behind
+      # it actually needs, so minimal resolution picks a version that does not compile. Each was
+      # established by bisecting the failure, and each names the crate at fault so it can be dropped
+      # when that crate tightens its own floor. A bound this repo declares itself is raised in the
+      # manifest instead of pinned here. Order matters for the openssl pair only.
       - name: Pin dependencies whose declared bounds are too loose
         working-directory: ruststream-fred
         run: |
@@ -162,16 +162,9 @@ jobs:
           # modern struct. Those releases also lack `BorrowedStrDeserializer` and the i128 methods
           # that `ruststream`'s typed_headers uses. 1.0.103 is the first lockstep release.
           cargo update -p serde --precise 1.0.103
-          # `ruststream` declares `tracing = "0.1"`, but its middleware uses the debug-shorthand
-          # `warn!(target: .., ?field, ..)` arm, which 0.1.23 does not have. Core issue #264 is
-          # tightening that bound; drop this pin once it ships.
-          cargo update -p tracing --precise 0.1.24
-          # Same manifest, same issue: `ruststream`'s `#[instrument]` needs `Value for Option<T>`,
-          # and 0.1.22 additionally breaks on the cross-crate `lazy_static!` below.
-          cargo update -p tracing-core --precise 0.1.23
-          # tracing-core declares `lazy_static = "1"` but invokes the macro across crates; 1.0.0
-          # expands its helper unqualified, and 1.1.0 is the release that adds the `$crate::` path.
-          cargo update -p lazy_static --precise 1.1.0
+          # tracing-attributes declares `syn = "1"` but calls `LitInt::base10_parse`, which syn
+          # 1.0.0 does not have. Disambiguated by version because syn 2 and 3 are in the graph too.
+          cargo update -p syn@1.0.0 --precise 1.0.4
           # fred declares `tokio-stream = "0.1"` but uses `tokio_stream::wrappers`, added in 0.1.1.
           cargo update -p tokio-stream --precise 0.1.1
           # native-tls' floor selects an openssl that predates OpenSSL 3.x and binds FFI symbols
