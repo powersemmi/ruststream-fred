@@ -26,20 +26,24 @@ mod deadletter;
 mod delay;
 mod envelope;
 mod error;
-mod list;
 mod message;
 mod partition;
 mod publisher;
-mod pubsub;
 mod recovery;
 mod seek;
-mod stream;
 mod subscriber;
 
 // These modules carry their own `//!` summaries. A second doc fragment here would be written in
 // the crate root's scope, and rustdoc would then resolve the module's intra-doc links there too.
 pub mod context;
 pub mod prelude;
+
+// The three transport forms. Each is public for its own `prelude` and its `Publish` alias, so an
+// include site names the policy by the same word whichever form it is on; the types they hold stay
+// re-exported at the crate root as well, for a file that mixes forms.
+pub mod list;
+pub mod pubsub;
+pub mod stream;
 
 pub use broker::{ClosedRedisBroker, ConnectedRedisBroker, RedisBroker};
 pub use deadletter::{DEAD_LETTER_REASON_HEADER, DELIVERY_COUNT_HEADER, IDLE_MS_HEADER};

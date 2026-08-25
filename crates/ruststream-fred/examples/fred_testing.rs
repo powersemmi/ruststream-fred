@@ -14,8 +14,7 @@
 
 use std::sync::Arc;
 
-// The harness surfaces stay explicit on both sides: neither prelude carries test tooling, because
-// what a test drives is not what a service writes.
+// This example drives all three forms, so it takes the crate prelude rather than one form's.
 use ruststream::conformance::harness;
 use ruststream::testing::TestApp;
 use ruststream_fred::prelude::*;

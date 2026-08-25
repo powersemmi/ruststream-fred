@@ -9,7 +9,7 @@
 //! * [`PubSubMode::Sharded`] - `SSUBSCRIBE` / `SPUBLISH` (Redis 7+), slot-local so it scales across
 //!   a cluster, but has no pattern support.
 //!
-//! Headers travel in a frame around the payload (see [`crate::envelope`]): a lossless binary frame
+//! Headers travel in a frame around the payload: a lossless binary frame
 //! by default, or a readable codec-serialized envelope when a codec is set with
 //! [`RedisPubSub::codec`] / [`RedisPubSubPublish::codec`].
 
@@ -32,6 +32,41 @@ use tokio::sync::broadcast::{Receiver, error::RecvError};
 use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::envelope::{SharedEnvelope, frame, unframe};
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
+
+/// This form's publish policy, [`RedisPubSubPublish`], under the name
+/// every form gives its own. Its options, the delivery mode and the framing codec, still chain off
+/// it.
+pub use crate::pubsub::RedisPubSubPublish as Publish;
+
+/// The core prelude, the broker, the [`RedisPubSub`] descriptor with its [`PubSubMode`], and this
+/// form's [`Publish`] policy. Pub/Sub carries no core capability traits.
+///
+/// # Examples
+///
+/// ```
+/// use ruststream_fred::pubsub::prelude::*;
+///
+/// let events = RedisPubSub::new("events").mode(PubSubMode::Sharded);
+/// let broker = RedisBroker::standalone("redis://localhost:6379");
+/// let replies = TypedPublisher::new(Publish::new().mode(PubSubMode::Sharded));
+/// let _ = (events, broker, replies);
+/// ```
+///
+/// A file that also globs another form's prelude sees an ambiguous `Publish`; use
+/// [`crate::prelude`] and write `pubsub::Publish` there.
+pub mod prelude {
+    pub use ruststream::prelude::*;
+
+    pub use super::{PubSubMode, Publish, RedisPubSub};
+    pub use crate::{PARTITION_KEY_HEADER, RedisBroker, RedisPublishExt};
+
+    #[cfg(any(
+        feature = "tls-rustls",
+        feature = "tls-rustls-ring",
+        feature = "tls-native-tls"
+    ))]
+    pub use crate::{TlsConfig, TlsConnector};
+}
 
 /// Pub/Sub delivery mode. Defaults to [`Classic`](Self::Classic).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

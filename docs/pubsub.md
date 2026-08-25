@@ -1,5 +1,8 @@
 # Pub/Sub
 
+A service on this form globs `ruststream_fred::pubsub::prelude::*`, which carries the descriptor,
+its mode and this form's publish policy as `Publish`.
+
 Pub/Sub is fire-and-forget: no durability, no consumer groups, no ack (`ack` / `nack` report
 `Unsupported`). A `RedisPubSub` descriptor selects the channel and mode. Classic broadcasts
 cluster-wide and supports patterns:

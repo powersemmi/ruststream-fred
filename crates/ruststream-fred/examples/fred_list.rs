@@ -16,7 +16,7 @@
 
 use std::time::Duration;
 
-use ruststream_fred::prelude::*;
+use ruststream_fred::list::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]

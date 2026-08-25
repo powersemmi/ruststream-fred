@@ -6,7 +6,7 @@
 // `RouterDef` names the opaque return type of a router builder, so it is spelled out here; the
 // rest of the wiring arrives with the broker.
 use ruststream::runtime::RouterDef;
-use ruststream_fred::prelude::*;
+use ruststream_fred::stream::prelude::*;
 
 use crate::orders;
 
@@ -22,7 +22,7 @@ use crate::orders;
 /// reply, so its `include` stands alone. The router is a consuming builder, so the calls chain;
 /// the registration list is opaque, hence `impl RouterDef`.
 pub fn orders() -> impl RouterDef<RedisBroker> {
-    let confirmations = TypedPublisher::new(RedisPublish);
+    let confirmations = TypedPublisher::new(Publish);
 
     Router::new()
         .include(orders::confirm)

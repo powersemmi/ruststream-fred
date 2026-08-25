@@ -13,10 +13,9 @@
 //! before settling leaves its entry stranded on the processing list. Opting into a recovery ZSET
 //! with [`RedisList::recovery_zset`] (and [`RedisList::min_idle`]) starts a watchdog that returns
 //! such orphans to the main list; without it (the default) reliable lists have no orphan recovery,
-//! and Redis Streams ([`crate::RedisStream`]) remain the recommended durable path. See
-//! [`crate::recovery`].
+//! and Redis Streams ([`crate::RedisStream`]) remain the recommended durable path.
 //!
-//! Headers travel in a frame around the payload (see [`crate::envelope`]): a lossless binary frame
+//! Headers travel in a frame around the payload: a lossless binary frame
 //! by default, or a readable codec-serialized envelope when a codec is set with
 //! [`RedisList::codec`] / [`RedisListPublish::codec`].
 
@@ -42,6 +41,40 @@ use crate::deadletter::{self, PoisonPolicy, REASON_DROPPED, REASON_MAX_DELIVERIE
 use crate::envelope::{SharedEnvelope, frame, unframe};
 use crate::recovery::{self, RecoveryConfig};
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
+
+/// This form's publish policy, [`RedisListPublish`], under the name every
+/// form gives its own. Its options, the framing codec and the key TTL, still chain off it.
+pub use crate::list::RedisListPublish as Publish;
+
+/// The core prelude, the broker, the [`RedisList`] descriptor and this form's [`Publish`] policy.
+/// A list carries no core capability traits.
+///
+/// # Examples
+///
+/// ```
+/// use ruststream_fred::list::prelude::*;
+///
+/// let jobs = RedisList::new("jobs").reliable();
+/// let broker = RedisBroker::standalone("redis://localhost:6379");
+/// let replies = TypedPublisher::new(Publish::new());
+/// let _ = (jobs, broker, replies);
+/// ```
+///
+/// A file that also globs another form's prelude sees an ambiguous `Publish`; use
+/// [`crate::prelude`] and write `list::Publish` there.
+pub mod prelude {
+    pub use ruststream::prelude::*;
+
+    pub use super::{Publish, RedisList};
+    pub use crate::{PARTITION_KEY_HEADER, RedisBroker, RedisPublishExt};
+
+    #[cfg(any(
+        feature = "tls-rustls",
+        feature = "tls-rustls-ring",
+        feature = "tls-native-tls"
+    ))]
+    pub use crate::{TlsConfig, TlsConnector};
+}
 
 const DEFAULT_BLOCK: Duration = Duration::from_secs(5);
 /// Suffix appended to the list key to form the default per-consumer processing list (reliable mode).

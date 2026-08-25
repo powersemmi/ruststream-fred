@@ -14,10 +14,8 @@
 //! cargo run --example fred_transaction --features macros,json -- run
 //! ```
 
-// The transaction capabilities arrive with the broker's prelude; the raw outgoing message does
-// not, because a service publishes through the builder rather than assembling one.
 use ruststream::OutgoingMessage;
-use ruststream_fred::prelude::*;
+use ruststream_fred::stream::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -42,11 +40,11 @@ fn app() -> impl App {
     let broker = RedisBroker::standalone("redis://localhost:6379").default_group("workers");
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         // --8<-- [start:mount]
-        // .transactional() requires the policy's live form to be transactional, which
-        // RedisPublish's is on standalone and sentinel: the batch's replies are buffered and
-        // committed as one MULTI / EXEC block.
+        // .transactional() requires the policy's live form to be transactional, which the stream
+        // form's is on standalone and sentinel: the batch's replies are buffered and committed as
+        // one MULTI / EXEC block.
         b.include(process)
-            .publisher(TypedPublisher::new(RedisPublish).transactional());
+            .publisher(TypedPublisher::new(Publish).transactional());
         // --8<-- [end:mount]
 
         // --8<-- [start:owned]
@@ -54,7 +52,7 @@ fn app() -> impl App {
         // several can be open on one publisher at once and settling one never touches another.
         // `after_startup` is where a service makes its first publishes, once the broker is
         // connected.
-        b.after_startup(RedisPublish, async move |publisher| {
+        b.after_startup(Publish, async move |publisher| {
             let mut seed = publisher.transaction().await?;
             seed.publish(OutgoingMessage::new("processed", br#"{"id":0}"#.as_slice()))
                 .await?;

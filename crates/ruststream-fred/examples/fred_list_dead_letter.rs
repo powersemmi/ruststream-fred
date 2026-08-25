@@ -11,7 +11,7 @@
 //! redis-cli LPUSH jobs.dlq '{"id":0}'
 //! ```
 
-use ruststream_fred::prelude::*;
+use ruststream_fred::list::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]

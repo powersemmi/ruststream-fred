@@ -11,7 +11,7 @@
 //! redis-cli XADD orders '*' _payload '{"id":0}'
 //! ```
 
-use ruststream_fred::prelude::*;
+use ruststream_fred::stream::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]

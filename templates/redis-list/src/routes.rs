@@ -6,7 +6,7 @@
 // `RouterDef` names the opaque return type of a router builder, so it is spelled out here; the
 // rest of the wiring arrives with the broker.
 use ruststream::runtime::RouterDef;
-use ruststream_fred::prelude::*;
+use ruststream_fred::list::prelude::*;
 
 use crate::orders;
 

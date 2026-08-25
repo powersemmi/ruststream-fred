@@ -6,7 +6,7 @@
 //! no reply path here (its `ack` / `nack` report `Unsupported`). Returning `Ack` simply marks the
 //! delivery handled; the runtime tolerates the unsupported settle.
 
-use ruststream_fred::prelude::*;
+use ruststream_fred::pubsub::prelude::*;
 use schemars::JsonSchema;
 use serde::Deserialize;
 

@@ -23,7 +23,7 @@
 //! ```
 
 // --8<-- [start:handler]
-use ruststream_fred::prelude::*;
+use ruststream_fred::stream::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]

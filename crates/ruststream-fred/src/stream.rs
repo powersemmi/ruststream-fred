@@ -21,6 +21,47 @@ use crate::deadletter::PoisonPolicy;
 use crate::delay::{DelayConfig, DelayedRetry};
 use crate::{error::RedisError, subscriber::RedisSubscriber};
 
+/// This form's publish policy, [`RedisPublish`](crate::RedisPublish), under the name every form
+/// gives its own. Mode transitions such as `.transactional()` still chain off it.
+pub use crate::publisher::RedisPublish as Publish;
+
+/// The core prelude, the broker, the [`RedisStream`] descriptor and its options, the group seek
+/// types, this form's [`Publish`] policy, and the transaction, position and seek capabilities.
+///
+/// # Examples
+///
+/// ```
+/// use ruststream_fred::stream::prelude::*;
+///
+/// let orders = RedisStream::new("orders").group("workers");
+/// let broker = RedisBroker::standalone("redis://localhost:6379");
+/// let replies = TypedPublisher::new(Publish).transactional();
+/// let _ = (orders, broker, replies);
+/// ```
+///
+/// A file that also globs another form's prelude sees an ambiguous `Publish`; use
+/// [`crate::prelude`] and write `stream::Publish` there.
+pub mod prelude {
+    pub use ruststream::prelude::*;
+
+    pub use ruststream::{
+        OwnedTransactions, Positioned, Seeker, Transaction, TransactionalPublisher,
+    };
+
+    pub use super::{Publish, RedisStream, StreamStart};
+    pub use crate::{
+        DelayedRetry, PARTITION_KEY_HEADER, RedisBroker, RedisGroupPosition, RedisGroupSeeker,
+        RedisPublishExt,
+    };
+
+    #[cfg(any(
+        feature = "tls-rustls",
+        feature = "tls-rustls-ring",
+        feature = "tls-native-tls"
+    ))]
+    pub use crate::{TlsConfig, TlsConnector};
+}
+
 const DEFAULT_COUNT: u64 = 64;
 const DEFAULT_BLOCK: Duration = Duration::from_secs(5);
 
