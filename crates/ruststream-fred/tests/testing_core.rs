@@ -281,10 +281,10 @@ async fn partition_key_absent_yields_none() {
     broker.shutdown().await.expect("shutdown");
 }
 
-/// The builder step is the publish-side counterpart of `Partitioned`: what it stamps is what the
+/// The adapter is the publish-side counterpart of `Partitioned`: what it carries is what the
 /// delivery reports, with no hand-built header map at the call site.
 #[tokio::test]
-async fn partition_key_step_stamps_the_header() {
+async fn partition_key_step_carries_the_header() {
     let broker = connected().await;
     let mut sub = broker.subscribe("keyed.plain").await.expect("subscribe");
     let publisher = broker.publisher();
@@ -307,8 +307,8 @@ async fn partition_key_step_stamps_the_header() {
 }
 
 /// The reason the step exists: a message declaring a header contract fills the builder's single
-/// headers position with that contract, so a partition key has nowhere else to go. Riding on the
-/// publisher instead, it composes with the contract rather than competing for the position.
+/// headers position with that contract, so a partition key has nowhere else to go. Travelling
+/// beneath it as base headers, the key composes with the contract instead of competing for it.
 #[tokio::test]
 async fn partition_key_step_composes_with_a_header_contract() {
     let broker = connected().await;
@@ -336,17 +336,16 @@ async fn partition_key_step_composes_with_a_header_contract() {
     broker.shutdown().await.expect("shutdown");
 }
 
-/// A key stamped on the publisher replaces only its own header; everything the call site put in
-/// the map survives.
+/// The handle's key sits under the call's headers, not over them, so naming unrelated headers at
+/// the call site leaves the key in place and the call's own entries untouched.
 #[tokio::test]
-async fn partition_key_step_keeps_other_headers() {
+async fn partition_key_step_survives_unrelated_call_site_headers() {
     let broker = connected().await;
     let mut sub = broker.subscribe("keyed.map").await.expect("subscribe");
     let publisher = broker.publisher();
 
     let mut headers = Headers::new();
     headers.insert("trace-id", "abc");
-    headers.insert(PARTITION_KEY_HEADER, "stale");
 
     publisher
         .partition_key("tenant-b")
@@ -362,6 +361,35 @@ async fn partition_key_step_keeps_other_headers() {
     assert_eq!(
         Partitioned::partition_key(&msg),
         Some(b"tenant-b".as_slice())
+    );
+    msg.ack().await.ok();
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// Call site wins: the handle serves many publishes, a call names one message, so a partition key
+/// written into the publish's own headers overrides the one the handle carries.
+#[tokio::test]
+async fn call_site_partition_key_overrides_the_step() {
+    let broker = connected().await;
+    let mut sub = broker.subscribe("keyed.override").await.expect("subscribe");
+    let publisher = broker.publisher();
+
+    let mut headers = Headers::new();
+    headers.insert(PARTITION_KEY_HEADER, "call-site");
+
+    publisher
+        .partition_key("handle")
+        .raw(b"payload")
+        .with_headers(headers)
+        .to("keyed.override")
+        .publish()
+        .await
+        .expect("publish");
+
+    let msg = next_message(&mut Box::pin(sub.stream())).await;
+    assert_eq!(
+        Partitioned::partition_key(&msg),
+        Some(b"call-site".as_slice())
     );
     msg.ack().await.ok();
     broker.shutdown().await.expect("shutdown");

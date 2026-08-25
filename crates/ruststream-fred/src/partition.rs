@@ -9,25 +9,31 @@
 //!
 //! The core's publish chain is closed - [`Publish`](ruststream::runtime::Publish) keeps its fields
 //! and constructors private, so a broker crate cannot add a position to it. A per-message argument
-//! is embedded the other way round: by an adapter that sits *ahead* of the builder's entry point,
-//! wrapping the publisher and editing each message on its way out. Because the adapter is itself a
-//! [`Publisher`], the blanket [`PublishExt`](ruststream::runtime::PublishExt) hands it the whole
-//! builder, so the key composes with every publish form without the chain having to open up.
+//! is embedded the other way round: by an adapter that sits *ahead* of the builder's entry point
+//! and offers the key as its
+//! [base headers](ruststream::Publisher::base_headers), which the builder merges underneath the
+//! publish's own headers position. Because the adapter is itself a [`Publisher`], the blanket
+//! [`PublishExt`](ruststream::runtime::PublishExt) hands it the whole builder, so the key composes
+//! with every publish form without the chain having to open up.
 
-use bytes::Bytes;
-use ruststream::{OutgoingMessage, Publisher};
+use ruststream::{Headers, OutgoingMessage, Publisher};
 
 use crate::list::RedisListPublisher;
 use crate::message::PARTITION_KEY_HEADER;
 use crate::publisher::RedisPublisher;
 use crate::pubsub::RedisPubSubPublisher;
 
-/// A publisher adapter that stamps a partition key on every message sent through it.
+/// A publisher adapter that carries a partition key under every message sent through it.
 ///
 /// Produced by [`RedisPublishExt::partition_key`]. It borrows the publisher it wraps and is a
 /// [`Publisher`] in its own right, which is what gives it the whole core publish builder through
-/// the blanket [`PublishExt`](ruststream::runtime::PublishExt): the key is applied as each message
-/// leaves the builder, not as a position inside it.
+/// the blanket [`PublishExt`](ruststream::runtime::PublishExt).
+///
+/// The key is offered as [`base_headers`](Publisher::base_headers) rather than written into each
+/// message, so it sits *underneath* the publish's own headers: a call naming
+/// [`PARTITION_KEY_HEADER`] itself overrides the handle's key, and the handle's key survives a call
+/// that names any other header. That is the builder's ordinary precedence - the call site wins over
+/// the handle - and it is what lets a keyed publish also carry a declared header contract.
 ///
 /// # Examples
 ///
@@ -44,18 +50,21 @@ use crate::pubsub::RedisPubSubPublisher;
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 #[must_use = "a keyed publisher does nothing until something is published through it"]
 pub struct PartitionKeyed<'a, P: ?Sized> {
     inner: &'a P,
-    key: &'a [u8],
+    // Built once, when the step is constructed: the builder borrows it per publish rather than
+    // making the adapter rebuild or re-stamp a map on the path every message takes.
+    base: Headers,
 }
 
 impl<P: ?Sized> PartitionKeyed<'_, P> {
-    /// The partition key stamped on every message published through this handle.
+    /// The partition key carried under every message published through this handle.
     #[must_use]
-    pub const fn key(&self) -> &[u8] {
-        self.key
+    pub fn key(&self) -> &[u8] {
+        // The constructor always writes this entry, so the fallback is unreachable.
+        self.base.get(PARTITION_KEY_HEADER).unwrap_or(&[])
     }
 }
 
@@ -63,13 +72,11 @@ impl<P: Publisher + ?Sized> Publisher for PartitionKeyed<'_, P> {
     type Error = P::Error;
 
     async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
-        // `OutgoingMessage` exposes no mutable header access, so the key is added to a copy of the
-        // map the builder just produced. `Headers` values are `Bytes` (refcounted), so the copy is
-        // one small allocation per header name, not per payload byte.
-        let mut headers = msg.headers().clone();
-        headers.insert(PARTITION_KEY_HEADER, Bytes::copy_from_slice(self.key));
-        let keyed = OutgoingMessage::new(msg.name(), msg.payload()).with_headers(headers);
-        self.inner.publish(keyed).await
+        self.inner.publish(msg).await
+    }
+
+    fn base_headers(&self) -> Option<&Headers> {
+        Some(&self.base)
     }
 }
 
@@ -106,19 +113,21 @@ impl<P: Publisher + ?Sized> Publisher for PartitionKeyed<'_, P> {
 /// # }
 /// ```
 pub trait RedisPublishExt: Publisher {
-    /// Returns an adapter that stamps `key` as the partition key of everything sent through it.
+    /// Returns an adapter carrying `key` as the partition key of everything sent through it.
     ///
     /// The key feeds the runtime's keyed worker lanes (`workers(n, by_key)`): deliveries sharing a
-    /// key are dispatched to the same lane, so their relative order survives concurrency. It is
-    /// carried as [`PARTITION_KEY_HEADER`] and replaces any value already under that name.
-    fn partition_key<'a, K>(&'a self, key: &'a K) -> PartitionKeyed<'a, Self>
+    /// key are dispatched to the same lane, so their relative order survives concurrency. It
+    /// travels as [`PARTITION_KEY_HEADER`], underneath the publish's own headers, so a call naming
+    /// that header itself overrides the handle's key.
+    ///
+    /// `key` is copied into the adapter, so it need not outlive the publisher.
+    fn partition_key<K>(&self, key: &K) -> PartitionKeyed<'_, Self>
     where
         K: AsRef<[u8]> + ?Sized,
     {
-        PartitionKeyed {
-            inner: self,
-            key: key.as_ref(),
-        }
+        let mut base = Headers::new();
+        base.insert(PARTITION_KEY_HEADER, key.as_ref().to_vec());
+        PartitionKeyed { inner: self, base }
     }
 }
 
