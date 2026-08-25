@@ -3,8 +3,10 @@
 //! Keeping registration in its own module lets the handlers stay broker-agnostic - the router binds
 //! to a concrete broker only when `main` mounts it.
 
-use ruststream::runtime::{Router, RouterDef};
-use ruststream_fred::RedisBroker;
+// `RouterDef` names the opaque return type of a router builder, so it is spelled out here; the
+// rest of the wiring arrives with the broker.
+use ruststream::runtime::RouterDef;
+use ruststream_fred::prelude::*;
 
 use crate::orders;
 

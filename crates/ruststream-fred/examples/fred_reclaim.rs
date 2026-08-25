@@ -14,9 +14,7 @@
 
 use std::time::Duration;
 
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
-use ruststream::subscriber;
-use ruststream_fred::{RedisBroker, RedisStream};
+use ruststream_fred::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]

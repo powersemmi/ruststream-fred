@@ -16,9 +16,7 @@
 //! redis-cli XADD orders '*' _payload '{"id":0}'
 //! ```
 
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream, Seek};
-use ruststream::{Seeker, subscriber};
-use ruststream_fred::{RedisBroker, RedisGroupPosition, RedisGroupSeeker, RedisStream};
+use ruststream_fred::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]

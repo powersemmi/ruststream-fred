@@ -15,9 +15,7 @@
 //! redis-cli PUBLISH events '{"kind":"login"}'
 //! ```
 
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream, TypedPublisher};
-use ruststream::subscriber;
-use ruststream_fred::{PubSubMode, RedisBroker, RedisPubSub, RedisPubSubPublish};
+use ruststream_fred::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize)]

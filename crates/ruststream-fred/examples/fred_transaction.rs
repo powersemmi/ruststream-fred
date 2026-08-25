@@ -14,9 +14,10 @@
 //! cargo run --example fred_transaction --features macros,json -- run
 //! ```
 
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream, TypedPublisher};
-use ruststream::{OutgoingMessage, OwnedTransactions, Transaction, subscriber};
-use ruststream_fred::{RedisBroker, RedisPublish};
+// The transaction capabilities arrive with the broker's prelude; the raw outgoing message does
+// not, because a service publishes through the builder rather than assembling one.
+use ruststream::OutgoingMessage;
+use ruststream_fred::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize)]

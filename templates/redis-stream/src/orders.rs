@@ -6,9 +6,7 @@
 //! durable and each entry is `XACK`ed when the handler returns `Ack`. `confirm` consumes `orders` and
 //! replies on the `confirmations` stream; `on_cancel` consumes `cancellations`.
 
-use ruststream::runtime::HandlerResult;
-use ruststream::subscriber;
-use ruststream_fred::RedisStream;
+use ruststream_fred::prelude::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

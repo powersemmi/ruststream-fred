@@ -6,9 +6,7 @@
 //! at-most-once `BRPOP` with no acknowledgement; switch to `RedisList::new("jobs").reliable()` for
 //! at-least-once delivery where the entry is removed only on `Ack`.
 
-use ruststream::runtime::HandlerResult;
-use ruststream::subscriber;
-use ruststream_fred::RedisList;
+use ruststream_fred::prelude::*;
 use schemars::JsonSchema;
 use serde::Deserialize;
 

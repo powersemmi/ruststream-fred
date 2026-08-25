@@ -36,9 +36,10 @@ mod seek;
 mod stream;
 mod subscriber;
 
-// The module carries its own `//!` summary. A second doc fragment here would be written in the
-// crate root's scope, and rustdoc would then resolve the module's intra-doc links there too.
+// These modules carry their own `//!` summaries. A second doc fragment here would be written in
+// the crate root's scope, and rustdoc would then resolve the module's intra-doc links there too.
 pub mod context;
+pub mod prelude;
 
 pub use broker::{ClosedRedisBroker, ConnectedRedisBroker, RedisBroker};
 pub use deadletter::{DEAD_LETTER_REASON_HEADER, DELIVERY_COUNT_HEADER, IDLE_MS_HEADER};

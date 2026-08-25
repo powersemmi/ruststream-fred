@@ -135,8 +135,8 @@ handle serves every publish for that key:
 
 <!-- inline-rust: two-publish fragment isolating the keyed handle; the compiled call sites are the crate's `partition_key` doctests, which need a connected broker and so cannot double as a snippet source here -->
 ```rust
-use ruststream::runtime::PublishExt;
-use ruststream_fred::RedisPublishExt;
+// Both extension traits arrive with the prelude glob.
+use ruststream_fred::prelude::*;
 
 let tenant = publisher.partition_key("tenant-a");
 tenant.message(&Order { id: 7 }).publish().await?;

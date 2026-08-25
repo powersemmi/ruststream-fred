@@ -11,9 +11,7 @@
 //! redis-cli LPUSH jobs.dlq '{"id":0}'
 //! ```
 
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
-use ruststream::subscriber;
-use ruststream_fred::{RedisBroker, RedisList};
+use ruststream_fred::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]

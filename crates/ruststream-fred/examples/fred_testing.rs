@@ -14,11 +14,12 @@
 
 use std::sync::Arc;
 
+// The harness surfaces stay explicit on both sides: neither prelude carries test tooling, because
+// what a test drives is not what a service writes.
 use ruststream::conformance::harness;
-use ruststream::runtime::{AppInfo, HandlerResult, RustStream};
-use ruststream::subscriber;
 use ruststream::testing::TestApp;
-use ruststream_fred::{RedisList, RedisPubSub, RedisStream, testing::RedisTestBroker};
+use ruststream_fred::prelude::*;
+use ruststream_fred::testing::RedisTestBroker;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
