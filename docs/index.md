@@ -6,8 +6,8 @@ deliveries are durable and acknowledged. It also ships an in-memory test broker 
 feature.
 
 ```toml
-ruststream = { version = "0.6", features = ["macros"] }
-ruststream-fred = "0.6"
+ruststream = { version = "0.7", features = ["macros"] }
+ruststream-fred = "0.7"
 serde = { version = "1", features = ["derive"] }
 ```
 
