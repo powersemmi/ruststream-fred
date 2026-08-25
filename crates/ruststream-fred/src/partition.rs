@@ -1,4 +1,4 @@
-//! The per-message partition key as a step on the publish builder.
+//! The per-message partition key, carried by a publisher adapter.
 //!
 //! Redis has no native partition concept, so the key travels as the well-known
 //! [`PARTITION_KEY_HEADER`] header and the sender sets it. Writing that header by hand is the one
@@ -6,6 +6,13 @@
 //! and a raw [`Headers`](ruststream::Headers) map stands for no contract, so a message declaring
 //! `#[outgoing(headers = ..)]` has nowhere left to put a key. Stamping it on the publisher instead
 //! keeps the position free for the contract.
+//!
+//! The core's publish chain is closed - [`Publish`](ruststream::runtime::Publish) keeps its fields
+//! and constructors private, so a broker crate cannot add a position to it. A per-message argument
+//! is embedded the other way round: by an adapter that sits *ahead* of the builder's entry point,
+//! wrapping the publisher and editing each message on its way out. Because the adapter is itself a
+//! [`Publisher`], the blanket [`PublishExt`](ruststream::runtime::PublishExt) hands it the whole
+//! builder, so the key composes with every publish form without the chain having to open up.
 
 use bytes::Bytes;
 use ruststream::{OutgoingMessage, Publisher};
@@ -15,10 +22,12 @@ use crate::message::PARTITION_KEY_HEADER;
 use crate::publisher::RedisPublisher;
 use crate::pubsub::RedisPubSubPublisher;
 
-/// A borrowed publisher that stamps a partition key on every message sent through it.
+/// A publisher adapter that stamps a partition key on every message sent through it.
 ///
-/// Produced by [`RedisPublishExt::partition_key`]; it is a publisher itself, so the whole core
-/// publish builder rides on top of it unchanged.
+/// Produced by [`RedisPublishExt::partition_key`]. It borrows the publisher it wraps and is a
+/// [`Publisher`] in its own right, which is what gives it the whole core publish builder through
+/// the blanket [`PublishExt`](ruststream::runtime::PublishExt): the key is applied as each message
+/// leaves the builder, not as a position inside it.
 ///
 /// # Examples
 ///
@@ -64,10 +73,11 @@ impl<P: Publisher + ?Sized> Publisher for PartitionKeyed<'_, P> {
     }
 }
 
-/// The Redis-specific steps that graft onto the core publish builder.
+/// The Redis-specific publisher adapters, applied ahead of the publish builder.
 ///
 /// Import it to reach [`partition_key`](Self::partition_key) on any of this crate's publishers.
-/// The trait is bound to those types, so the step does not appear on another broker's publisher.
+/// The trait is bound to those types, so the adapter does not appear on another broker's
+/// publisher.
 ///
 /// # Examples
 ///
@@ -96,7 +106,7 @@ impl<P: Publisher + ?Sized> Publisher for PartitionKeyed<'_, P> {
 /// # }
 /// ```
 pub trait RedisPublishExt: Publisher {
-    /// Returns a publisher that stamps `key` as the partition key of everything sent through it.
+    /// Returns an adapter that stamps `key` as the partition key of everything sent through it.
     ///
     /// The key feeds the runtime's keyed worker lanes (`workers(n, by_key)`): deliveries sharing a
     /// key are dispatched to the same lane, so their relative order survives concurrency. It is
@@ -112,7 +122,7 @@ pub trait RedisPublishExt: Publisher {
     }
 }
 
-// Bound to this crate's publishers rather than blanket over `Publisher`: the step is Redis
+// Bound to this crate's publishers rather than blanket over `Publisher`: the adapter is Redis
 // vocabulary, and a blanket impl would grow it on every other broker's publisher too. Deliberately
 // not implemented for `PartitionKeyed`, so re-keying an already-keyed publisher does not compile.
 impl RedisPublishExt for RedisPublisher {}

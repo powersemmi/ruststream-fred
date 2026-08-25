@@ -129,8 +129,9 @@ they fire. Scores are wall-clock epoch milliseconds, so keep clocks synced (NTP)
 
 Running a subscription on several workers (`workers(n, by_key)`) keeps per-key ordering: deliveries
 sharing a partition key go to the same lane. Redis has no native partition, so the key travels as a
-header, and the sender sets it. `partition_key` puts it on the publisher rather than in the message,
-so one keyed handle serves every publish for that key:
+header, and the sender sets it. `partition_key` wraps the publisher in an adapter that stamps that
+header on its way out, rather than putting the key in the message, so one keyed handle serves every
+publish for that key:
 
 ```rust
 use ruststream::runtime::PublishExt;
@@ -143,7 +144,8 @@ tenant.message(&Order { id: 8 }).publish().await?;
 
 Keeping it off the message matters because the builder's headers position is filled once: a message
 declaring `#[outgoing(headers = ..)]` spends that position on its contract, so a key written into a
-header map by hand has nowhere to go. On the publisher the two compose:
+header map by hand has nowhere to go. The adapter sits ahead of the builder instead of inside it, so
+the two compose:
 
 ```rust
 publisher
@@ -154,7 +156,9 @@ publisher
     .await?;
 ```
 
-The step is available on all three transports' publishers, and the header name stays public as
+The adapter is a publisher itself, which is what gives it the whole publish builder through the
+blanket `PublishExt`: nothing about the core chain changes, and every publish form works as usual.
+It is available on all three transports' publishers, and the header name stays public as
 `PARTITION_KEY_HEADER` for code that reads it off a delivery.
 
 ## Capabilities
