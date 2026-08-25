@@ -10,11 +10,15 @@
 //! broker-specificity lives in the crate path, so the core glob rides along rather than
 //! contradicting it.
 //!
-//! It is also this broker's capability manifest. The capability traits below are exactly the ones
-//! Redis implements here, so what the glob puts in scope is what this transport can do - and what
-//! it omits, it cannot: `RequestReply` is absent because Redis has no request-reply primitive, and
-//! its absence is the manifest working rather than an oversight. A service that globs two broker
-//! preludes is safe: the shared items are the same core traits, so the globs unify and the
+//! It is also this broker's capability manifest, carrying the capability traits Redis implements
+//! here *that a service writes*: in a bound ([`TransactionalPublisher`], [`OwnedTransactions`]), or
+//! by calling their methods on a value the handler is handed ([`Seeker`], [`Positioned`],
+//! [`Partitioned`], and [`Transaction`] on what `OwnedTransactions` returns). So what the glob puts
+//! in scope is what this transport can do, and what it omits, it cannot: `RequestReply` would sit
+//! in the first group and is absent because Redis has no request-reply primitive - that absence is
+//! the manifest working, not an oversight. Traits the runtime consumes on a service's behalf stay
+//! out even where implemented; see the note by the exclusions below. A service that globs two
+//! broker preludes is safe: the shared items are the same core traits, so the globs unify and the
 //! compiler checks it.
 //!
 //! # Examples
@@ -32,13 +36,14 @@
 // publishing types and the macros all arrive with the broker rather than beside it.
 pub use ruststream::prelude::*;
 
-// The capability manifest: precisely the core capability traits this crate's live and delivered
-// forms implement. `Transaction` rides with `OwnedTransactions` because the value that capability
-// hands back carries its methods there, so one without the other is unusable. `RequestReply` is
-// deliberately not here - Redis has no primitive for it.
+// The capability manifest: the capability traits Redis implements here that a service actually
+// writes - either in a bound (`TransactionalPublisher`, `OwnedTransactions`) or by calling their
+// methods on a value it is handed (`Seeker::seek`, `Positioned::position`,
+// `Partitioned::partition_key`, and `Transaction` on the value `OwnedTransactions` returns).
+// `RequestReply` would belong to the first group, and is deliberately not here: Redis has no
+// primitive for it.
 pub use ruststream::{
-    BatchSubscriber, OwnedTransactions, Partitioned, Positioned, Seekable, Seeker, Transaction,
-    TransactionalPublisher,
+    OwnedTransactions, Partitioned, Positioned, Seeker, Transaction, TransactionalPublisher,
 };
 
 pub use crate::{
@@ -61,6 +66,9 @@ pub use crate::{TlsConfig, TlsConnector};
 //
 // - The `testing` module (`RedisTestBroker` and friends): feature-gated harness tooling, imported
 //   explicitly by the tests that use it, not by the service under test.
+// - `Seekable` and `BatchSubscriber`, both implemented here: they are subscriber-side, and the
+//   runtime's plumbing consumes them. A service names the seeker type and declares the batch form
+//   in the subscriber attribute, so it never writes either trait.
 // - The live and delivered forms - the connected and closed brokers, the subscribers, the
 //   publishers, the transaction and message types, `PartitionKeyed`, `EntryId`. A service reaches
 //   them through the builder and the handler signature; code that names one is working a layer
