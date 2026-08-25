@@ -1,5 +1,8 @@
 # Redis Streams
 
+A service on this form globs `ruststream_fred::stream::prelude::*`, which carries the descriptor,
+the seek types and this form's publish policy as `Publish`.
+
 A `#[subscriber("key")]` handler binds to a Redis stream key. Because Redis Streams always read
 through a consumer group, the bare-string form needs a broker-wide default group
 (`.default_group`):
@@ -129,24 +132,19 @@ they fire. Scores are wall-clock epoch milliseconds, so keep clocks synced (NTP)
 
 Running a subscription on several workers (`workers(n, by_key)`) keeps per-key ordering: deliveries
 sharing a partition key go to the same lane. Redis has no native partition, so the key travels as a
-header, and the sender sets it. `partition_key` wraps the publisher in an adapter that offers that
-header as the publisher's base headers, rather than putting the key in the message, so one keyed
-handle serves every publish for that key:
+header. `partition_key` wraps the publisher in an adapter carrying it, so one keyed handle serves
+every publish for that key:
 
 <!-- inline-rust: two-publish fragment isolating the keyed handle; the compiled call sites are the crate's `partition_key` doctests, which need a connected broker and so cannot double as a snippet source here -->
 ```rust
-// Both extension traits arrive with the prelude glob.
-use ruststream_fred::prelude::*;
+use ruststream_fred::stream::prelude::*;
 
 let tenant = publisher.partition_key("tenant-a");
 tenant.message(&Order { id: 7 }).publish().await?;
 tenant.message(&Order { id: 8 }).publish().await?;
 ```
 
-Keeping it off the message matters because the builder's headers position is filled once: a message
-declaring `#[outgoing(headers = ..)]` spends that position on its contract, so a key written into a
-header map by hand has nowhere to go. Base headers sit underneath that position rather than in it,
-so the two compose:
+The key rides underneath the publish's own headers, so it composes with a declared header contract:
 
 <!-- inline-rust: isolates the contract-plus-key chain; the compiled form is the `partition_key_step_composes_with_a_header_contract` test, whose broker setup would bury the four lines that matter -->
 ```rust
@@ -158,14 +156,9 @@ publisher
     .await?;
 ```
 
-The adapter is a publisher itself, which is what gives it the whole publish builder through the
-blanket `PublishExt`: nothing about the core chain changes, and every publish form works as usual.
-
-Because the key is a base header, the call site has the last word - the handle serves many
-publishes, a call names one message. Naming `redis-partition-key` in a publish's own headers
-overrides the handle's key for that message; naming any other header leaves the key in place. The
-adapter is available on all three transports' publishers, and the header name stays public as
-`PARTITION_KEY_HEADER` for code that reads it off a delivery or overrides it at a call.
+Naming `redis-partition-key` in a publish's own headers overrides the handle's key for that message;
+naming any other header leaves it in place. The adapter is available on all three transports'
+publishers, and the header name is public as `PARTITION_KEY_HEADER`.
 
 ## Capabilities
 

@@ -1,20 +1,9 @@
 //! The per-message partition key, carried by a publisher adapter.
 //!
 //! Redis has no native partition concept, so the key travels as the well-known
-//! [`PARTITION_KEY_HEADER`] header and the sender sets it. Writing that header by hand is the one
-//! outgoing knob that cannot ride the builder's own headers position: that position is filled once,
-//! and a raw [`Headers`](ruststream::Headers) map stands for no contract, so a message declaring
-//! `#[outgoing(headers = ..)]` has nowhere left to put a key. Stamping it on the publisher instead
-//! keeps the position free for the contract.
-//!
-//! The core's publish chain is closed - [`Publish`](ruststream::runtime::Publish) keeps its fields
-//! and constructors private, so a broker crate cannot add a position to it. A per-message argument
-//! is embedded the other way round: by an adapter that sits *ahead* of the builder's entry point
-//! and offers the key as its
-//! [base headers](ruststream::Publisher::base_headers), which the builder merges underneath the
-//! publish's own headers position. Because the adapter is itself a [`Publisher`], the blanket
-//! [`PublishExt`](ruststream::runtime::PublishExt) hands it the whole builder, so the key composes
-//! with every publish form without the chain having to open up.
+//! [`PARTITION_KEY_HEADER`] header. [`RedisPublishExt::partition_key`] wraps a publisher in an
+//! adapter that offers the key as its [base headers](ruststream::Publisher::base_headers), so it
+//! sits underneath whatever the publish itself names.
 
 use ruststream::{Headers, OutgoingMessage, Publisher};
 
@@ -26,14 +15,10 @@ use crate::pubsub::RedisPubSubPublisher;
 /// A publisher adapter that carries a partition key under every message sent through it.
 ///
 /// Produced by [`RedisPublishExt::partition_key`]. It borrows the publisher it wraps and is a
-/// [`Publisher`] in its own right, which is what gives it the whole core publish builder through
-/// the blanket [`PublishExt`](ruststream::runtime::PublishExt).
+/// [`Publisher`] itself, so the whole core publish builder is available on it.
 ///
-/// The key is offered as [`base_headers`](Publisher::base_headers) rather than written into each
-/// message, so it sits *underneath* the publish's own headers: a call naming
-/// [`PARTITION_KEY_HEADER`] itself overrides the handle's key, and the handle's key survives a call
-/// that names any other header. That is the builder's ordinary precedence - the call site wins over
-/// the handle - and it is what lets a keyed publish also carry a declared header contract.
+/// The key rides underneath the publish's own headers: a call naming [`PARTITION_KEY_HEADER`]
+/// overrides it, and it survives a call that names any other header.
 ///
 /// # Examples
 ///
@@ -54,8 +39,8 @@ use crate::pubsub::RedisPubSubPublisher;
 #[must_use = "a keyed publisher does nothing until something is published through it"]
 pub struct PartitionKeyed<'a, P: ?Sized> {
     inner: &'a P,
-    // Built once, when the step is constructed: the builder borrows it per publish rather than
-    // making the adapter rebuild or re-stamp a map on the path every message takes.
+    // Built once at construction; the builder borrows it per publish. Do not move this back into
+    // `publish`, which would clone a header map on the path every message takes.
     base: Headers,
 }
 
@@ -131,9 +116,8 @@ pub trait RedisPublishExt: Publisher {
     }
 }
 
-// Bound to this crate's publishers rather than blanket over `Publisher`: the adapter is Redis
-// vocabulary, and a blanket impl would grow it on every other broker's publisher too. Deliberately
-// not implemented for `PartitionKeyed`, so re-keying an already-keyed publisher does not compile.
+// Listed per type rather than blanket over `Publisher`, which would grow the adapter on every
+// other broker's publisher. Not implemented for `PartitionKeyed`, so re-keying does not compile.
 impl RedisPublishExt for RedisPublisher {}
 impl RedisPublishExt for RedisListPublisher {}
 impl RedisPublishExt for RedisPubSubPublisher {}
