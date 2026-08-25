@@ -169,6 +169,12 @@ impl IncomingMessage for RedisTestMessage {
             .map_or_else(|| EMPTY.get_or_init(Headers::new), |d| &d.headers)
     }
 
+    // The stub broker mirrors the real one here too, so a keyed-lane test in-process behaves the
+    // way the same service will against a live Redis.
+    fn partition_key(&self) -> Option<&[u8]> {
+        Partitioned::partition_key(self)
+    }
+
     async fn ack(mut self) -> Result<(), AckError> {
         self.delivery.take();
         Ok(())

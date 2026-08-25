@@ -302,6 +302,12 @@ async fn partition_key_step_carries_the_header() {
         Partitioned::partition_key(&msg),
         Some(b"tenant-a".as_slice())
     );
+    // The runtime's keyed lanes read the key through `IncomingMessage`, not through the
+    // capability, so the two have to agree or `workers(n, by_key)` sees nothing.
+    assert_eq!(
+        IncomingMessage::partition_key(&msg),
+        Some(b"tenant-a".as_slice())
+    );
     msg.ack().await.ok();
     broker.shutdown().await.expect("shutdown");
 }

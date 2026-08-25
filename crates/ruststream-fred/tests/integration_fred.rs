@@ -355,6 +355,11 @@ async fn stream_partition_key_survives_the_round_trip() {
         Partitioned::partition_key(&msg),
         Some(b"tenant-a".as_slice())
     );
+    // What the runtime's keyed lanes actually read, off a real stream entry.
+    assert_eq!(
+        IncomingMessage::partition_key(&msg),
+        Some(b"tenant-a".as_slice())
+    );
     msg.ack().await.expect("ack");
     drop(stream);
     broker.shutdown().await.expect("shutdown");

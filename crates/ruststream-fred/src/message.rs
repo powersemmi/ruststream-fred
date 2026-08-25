@@ -138,6 +138,12 @@ impl IncomingMessage for RedisMessage {
         &self.headers
     }
 
+    // The runtime's keyed worker lanes read the key from here, not from `Partitioned`, so the
+    // capability has to be wired through or `workers(n, by_key)` silently rotates every delivery.
+    fn partition_key(&self) -> Option<&[u8]> {
+        Partitioned::partition_key(self)
+    }
+
     async fn ack(mut self) -> Result<(), AckError> {
         let handle = self.ack.take().expect("RedisMessage settled twice");
         xack(&handle).await

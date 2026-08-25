@@ -290,6 +290,11 @@ impl IncomingMessage for RedisPubSubMessage {
         &self.headers
     }
 
+    // See `RedisMessage`: the keyed worker lanes read the key from here, not from `Partitioned`.
+    fn partition_key(&self) -> Option<&[u8]> {
+        Partitioned::partition_key(self)
+    }
+
     async fn ack(self) -> Result<(), AckError> {
         Err(AckError::Unsupported)
     }
