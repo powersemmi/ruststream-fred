@@ -14,6 +14,7 @@
 //! [`RedisPubSub::codec`] / [`RedisPubSubPublish::codec`].
 
 use std::fmt::{Debug, Formatter};
+use std::future::{Future, ready};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -290,12 +291,12 @@ impl IncomingMessage for RedisPubSubMessage {
         &self.headers
     }
 
-    async fn ack(self) -> Result<(), AckError> {
-        Err(AckError::Unsupported)
+    fn ack(self) -> impl Future<Output = Result<(), AckError>> {
+        ready(Err(AckError::Unsupported))
     }
 
-    async fn nack(self, _requeue: bool) -> Result<(), AckError> {
-        Err(AckError::Unsupported)
+    fn nack(self, _requeue: bool) -> impl Future<Output = Result<(), AckError>> {
+        ready(Err(AckError::Unsupported))
     }
 }
 
@@ -359,8 +360,11 @@ impl RedisPubSubPublish {
 impl PublishPolicy<ConnectedRedisBroker> for RedisPubSubPublish {
     type Live = RedisPubSubPublisher;
 
-    async fn pair(self, connected: &ConnectedRedisBroker) -> Result<Self::Live, PairError> {
-        Ok(connected.pubsub_publisher(self))
+    fn pair(
+        self,
+        connected: &ConnectedRedisBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(connected.pubsub_publisher(self)))
     }
 }
 

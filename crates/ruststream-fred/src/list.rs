@@ -21,6 +21,7 @@
 //! [`RedisList::codec`] / [`RedisListPublish::codec`].
 
 use std::fmt::{Debug, Formatter};
+use std::future::{Future, ready};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -205,6 +206,12 @@ impl RedisList {
     #[must_use]
     pub fn key(&self) -> &str {
         &self.key
+    }
+
+    /// Consumes the definition for its key, so opening a subscription moves the string out
+    /// instead of copying it.
+    pub(crate) fn into_key(self) -> String {
+        self.key
     }
 
     pub(crate) const fn is_reliable(&self) -> bool {
@@ -632,8 +639,11 @@ impl RedisListPublish {
 impl PublishPolicy<ConnectedRedisBroker> for RedisListPublish {
     type Live = RedisListPublisher;
 
-    async fn pair(self, connected: &ConnectedRedisBroker) -> Result<Self::Live, PairError> {
-        Ok(connected.list_publisher(self))
+    fn pair(
+        self,
+        connected: &ConnectedRedisBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(connected.list_publisher(self)))
     }
 }
 
