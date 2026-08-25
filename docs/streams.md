@@ -133,6 +133,7 @@ header, and the sender sets it. `partition_key` wraps the publisher in an adapte
 header on its way out, rather than putting the key in the message, so one keyed handle serves every
 publish for that key:
 
+<!-- inline-rust: two-publish fragment isolating the keyed handle; the compiled call sites are the crate's `partition_key` doctests, which need a connected broker and so cannot double as a snippet source here -->
 ```rust
 use ruststream::runtime::PublishExt;
 use ruststream_fred::RedisPublishExt;
@@ -147,6 +148,7 @@ declaring `#[outgoing(headers = ..)]` spends that position on its contract, so a
 header map by hand has nowhere to go. The adapter sits ahead of the builder instead of inside it, so
 the two compose:
 
+<!-- inline-rust: isolates the contract-plus-key chain; the compiled form is the `partition_key_step_composes_with_a_header_contract` test, whose broker setup would bury the four lines that matter -->
 ```rust
 publisher
     .partition_key("tenant-a")
