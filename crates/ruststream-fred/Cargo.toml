@@ -43,7 +43,9 @@ ruststream = { workspace = true, features = ["conformance", "testing", "macros",
 serde = { version = "1", features = ["derive"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 # Only the credential-provider unit test implements fred's async CredentialProvider trait.
-async-trait = "0.1"
+# 0.1.77 is the real floor, not 0.1: earlier releases declare `quote = "0.6"` yet do not compile
+# against quote 0.6.0, so the minimal-versions job resolved a graph that could not build.
+async-trait = "0.1.77"
 
 [dependencies]
 ruststream = { workspace = true, default-features = false }

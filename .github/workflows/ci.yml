@@ -149,36 +149,37 @@ jobs:
         working-directory: ruststream-fred
         run: cargo +nightly update -Z minimal-versions
 
-      # Every pin here is a bound some manifest declares more loosely than the code it ships
+      # Every pin here is a bound some manifest declares more loosely than the code behind it
       # actually needs, so minimal resolution picks a version that does not compile. Each was
-      # established by bisecting the failure, and each should be dropped when the crate at fault
-      # tightens its own floor. Order matters only for the openssl pair, noted below.
+      # established by bisecting the failure, and each names the manifest at fault so it can be
+      # dropped when that crate tightens its own floor. A bound this repo declares itself is
+      # raised in the manifest instead of pinned here. Order matters for the openssl pair only.
       - name: Pin dependencies whose declared bounds are too loose
         working-directory: ruststream-fred
         run: |
-          # serde <= 1.0.102 declares `serde_derive = "1.0"` rather than an exact pin, so minimal
-          # resolution pairs it with serde_derive 1.0.0 (built on syn 0.11), which cannot parse a
-          # modern struct. 1.0.103 is the first serde that exact-pins its own derive.
+          # serde <= 1.0.102 declares `serde_derive = "1.0"` instead of pinning it in lockstep, so
+          # minimal resolution pairs it with a serde_derive built on syn 0.11, which panics on a
+          # modern struct. Those releases also lack `BorrowedStrDeserializer` and the i128 methods
+          # that `ruststream`'s typed_headers uses. 1.0.103 is the first lockstep release.
           cargo update -p serde --precise 1.0.103
-          # async-trait 0.1.0 declares `quote = "0.6"` but expands `quote_spanned!`. 0.1.77 is the
-          # first release whose own floors (proc-macro2, quote, syn 2) are tight enough to build.
-          cargo update -p async-trait --precise 0.1.77
-          # The `warn!(target: .., ?field, "msg")` macro arm does not exist before tracing 0.1.24,
-          # so a `Duration` field is passed by value and fails the `Value` bound.
+          # `ruststream` declares `tracing = "0.1"`, but its middleware uses the debug-shorthand
+          # `warn!(target: .., ?field, ..)` arm, which 0.1.23 does not have. Core issue #264 is
+          # tightening that bound; drop this pin once it ships.
           cargo update -p tracing --precise 0.1.24
-          # tracing 0.1.24 declares `tracing-core = "0.1.17"`, which lacks the `Value` impl for
-          # `Option<T>` that an `#[instrument(fields(..))]` on an optional target needs.
+          # Same manifest, same issue: `ruststream`'s `#[instrument]` needs `Value for Option<T>`,
+          # and 0.1.22 additionally breaks on the cross-crate `lazy_static!` below.
           cargo update -p tracing-core --precise 0.1.23
-          # tracing-core declares `lazy_static = "1"` but invokes it by path; 1.0.0 exports the
-          # macro without `local_inner_macros`, so its helper is out of scope at the call site.
+          # tracing-core declares `lazy_static = "1"` but invokes the macro across crates; 1.0.0
+          # expands its helper unqualified, and 1.1.0 is the release that adds the `$crate::` path.
           cargo update -p lazy_static --precise 1.1.0
           # fred declares `tokio-stream = "0.1"` but uses `tokio_stream::wrappers`, added in 0.1.1.
           cargo update -p tokio-stream --precise 0.1.1
-          # native-tls 0.2.3 pulls openssl 0.10.15, which predates OpenSSL 3.x and fails against
-          # the runner's headers. 0.10.38 is the first release with OpenSSL 3.0 support.
+          # native-tls' floor selects an openssl that predates OpenSSL 3.x and binds FFI symbols
+          # since removed, so it cannot build against the runner's headers. 0.10.38 is the first
+          # OpenSSL-3-capable release.
           cargo update -p openssl --precise 0.10.38
-          # Must follow the openssl pin: that pin re-resolves the `ffi` dependency to the newest
-          # 0.9.x, whose callback signatures no longer match 0.10.38.
+          # Must follow the openssl pin, which drags openssl-sys up to 0.9.117 on its own. Earlier
+          # openssl-sys build scripts reject a system OpenSSL 3.x outright.
           cargo update -p openssl-sys --precise 0.9.72
 
       # Minimum dependencies on the minimum compiler: the worst case a user can assemble.
