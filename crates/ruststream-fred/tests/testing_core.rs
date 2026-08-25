@@ -13,16 +13,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
-use ruststream::runtime::{AppInfo, HandlerResult, RustStream};
+use ruststream::runtime::{AppInfo, HandlerResult, PublishExt, RustStream};
 use ruststream::subscriber;
 use ruststream::testing::TestApp;
 use ruststream::{
-    BatchSubscriber, Broker, ConnectedBroker, DescribeServer, Headers, IncomingMessage,
+    BatchSubscriber, Broker, ConnectedBroker, DescribeServer, Headers, IncomingMessage, Outgoing,
     OutgoingMessage, OwnedTransactions, Partitioned, Publisher, RawMessage, Subscriber,
     Transaction, TransactionalPublisher, testing::expect_published,
 };
 use ruststream_fred::{
-    PARTITION_KEY_HEADER, RedisError, RedisStream,
+    PARTITION_KEY_HEADER, RedisError, RedisPublishExt, RedisStream,
     testing::{ConnectedRedisTestBroker, RedisTestBroker, RedisTestMessage},
 };
 use serde::{Deserialize, Serialize};
@@ -47,6 +47,31 @@ where
     let payload = msg.payload().to_vec();
     msg.ack().await.expect("ack");
     payload
+}
+
+/// The undrained counterpart of [`next_payload`], for cases that assert on headers before settling.
+async fn next_message<S>(stream: &mut S) -> RedisTestMessage
+where
+    S: Stream<Item = Result<RedisTestMessage, RedisError>> + Unpin,
+{
+    tokio::time::timeout(WAIT, stream.next())
+        .await
+        .expect("delivery within timeout")
+        .expect("stream has next")
+        .expect("delivery ok")
+}
+
+/// A message declaring a header contract: the shape whose publish leaves the builder's headers
+/// position occupied, so the partition key has to ride elsewhere.
+#[derive(Outgoing, Serialize, Deserialize)]
+#[outgoing(name = "orders.keyed", headers = OrderMeta)]
+struct KeyedOrder {
+    id: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct OrderMeta {
+    region: String,
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -252,6 +277,92 @@ async fn partition_key_absent_yields_none() {
         .expect("ok");
 
     assert_eq!(Partitioned::partition_key(&msg), None);
+    msg.ack().await.ok();
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// The builder step is the publish-side counterpart of `Partitioned`: what it stamps is what the
+/// delivery reports, with no hand-built header map at the call site.
+#[tokio::test]
+async fn partition_key_step_stamps_the_header() {
+    let broker = connected().await;
+    let mut sub = broker.subscribe("keyed.plain").await.expect("subscribe");
+    let publisher = broker.publisher();
+
+    publisher
+        .partition_key("tenant-a")
+        .raw(b"payload")
+        .to("keyed.plain")
+        .publish()
+        .await
+        .expect("publish");
+
+    let msg = next_message(&mut Box::pin(sub.stream())).await;
+    assert_eq!(
+        Partitioned::partition_key(&msg),
+        Some(b"tenant-a".as_slice())
+    );
+    msg.ack().await.ok();
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// The reason the step exists: a message declaring a header contract fills the builder's single
+/// headers position with that contract, so a partition key has nowhere else to go. Riding on the
+/// publisher instead, it composes with the contract rather than competing for the position.
+#[tokio::test]
+async fn partition_key_step_composes_with_a_header_contract() {
+    let broker = connected().await;
+    let mut sub = broker.subscribe("orders.keyed").await.expect("subscribe");
+    let publisher = broker.publisher();
+
+    publisher
+        .partition_key("tenant-a")
+        .message(&KeyedOrder { id: 7 })
+        .with_headers(&OrderMeta {
+            region: "eu".into(),
+        })
+        .publish()
+        .await
+        .expect("publish");
+
+    let msg = next_message(&mut Box::pin(sub.stream())).await;
+    assert_eq!(
+        Partitioned::partition_key(&msg),
+        Some(b"tenant-a".as_slice())
+    );
+    // The contract travelled untouched next to the key.
+    assert_eq!(msg.headers().get_str("region"), Some("eu"));
+    msg.ack().await.ok();
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// A key stamped on the publisher replaces only its own header; everything the call site put in
+/// the map survives.
+#[tokio::test]
+async fn partition_key_step_keeps_other_headers() {
+    let broker = connected().await;
+    let mut sub = broker.subscribe("keyed.map").await.expect("subscribe");
+    let publisher = broker.publisher();
+
+    let mut headers = Headers::new();
+    headers.insert("trace-id", "abc");
+    headers.insert(PARTITION_KEY_HEADER, "stale");
+
+    publisher
+        .partition_key("tenant-b")
+        .raw(b"payload")
+        .with_headers(headers)
+        .to("keyed.map")
+        .publish()
+        .await
+        .expect("publish");
+
+    let msg = next_message(&mut Box::pin(sub.stream())).await;
+    assert_eq!(msg.headers().get_str("trace-id"), Some("abc"));
+    assert_eq!(
+        Partitioned::partition_key(&msg),
+        Some(b"tenant-b".as_slice())
+    );
     msg.ack().await.ok();
     broker.shutdown().await.expect("shutdown");
 }

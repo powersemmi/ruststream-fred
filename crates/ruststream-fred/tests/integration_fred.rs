@@ -21,15 +21,15 @@ use fred::interfaces::{ClientLike, KeysInterface};
 use fred::types::InfoKind;
 use futures::StreamExt;
 use ruststream::codec::JsonCodec;
-use ruststream::runtime::{RETRY_COUNT_HEADER, TypedPublisher};
+use ruststream::runtime::{PublishExt, RETRY_COUNT_HEADER, TypedPublisher};
 use ruststream::{
-    Broker, ConnectedBroker, Headers, IncomingMessage, OutgoingMessage, Positioned, Publisher,
-    Seekable, Seeker, Subscribe, Subscriber, TransactionalPublisher,
+    Broker, ConnectedBroker, Headers, IncomingMessage, OutgoingMessage, Partitioned, Positioned,
+    Publisher, Seekable, Seeker, Subscribe, Subscriber, TransactionalPublisher,
 };
 use ruststream_fred::{
     ConnectedRedisBroker, DEAD_LETTER_REASON_HEADER, DELIVERY_COUNT_HEADER, DelayedRetry,
     IDLE_MS_HEADER, RedisBroker, RedisError, RedisGroupPosition, RedisList, RedisListPublish,
-    RedisPubSub, RedisPubSubPublish, RedisStream, StreamStart,
+    RedisPubSub, RedisPubSubPublish, RedisPublishExt, RedisStream, StreamStart,
 };
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -322,6 +322,41 @@ async fn stream_drop_routes_to_dead_letter() {
 
     let headers = read_dead_letter_stream(&broker, &dlq).await;
     assert_eq!(headers.get_str(DEAD_LETTER_REASON_HEADER), Some("dropped"));
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// The partition key set on the publisher survives the `XADD` entry-field encoding, which is what
+/// the in-process broker cannot prove: headers travel as prefixed entry fields on a real stream.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stream_partition_key_survives_the_round_trip() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("partition_key");
+
+    let mut sub = broker
+        .subscribe(RedisStream::new(&key).group("workers"))
+        .await
+        .expect("subscribe");
+
+    broker
+        .publisher()
+        .partition_key("tenant-a")
+        .raw(b"payload")
+        .to(key.as_str())
+        .publish()
+        .await
+        .expect("publish");
+
+    let mut stream = Box::pin(sub.stream());
+    let msg = next(&mut stream).await.expect("delivery");
+    assert_eq!(
+        Partitioned::partition_key(&msg),
+        Some(b"tenant-a".as_slice())
+    );
+    msg.ack().await.expect("ack");
+    drop(stream);
     broker.shutdown().await.expect("shutdown");
 }
 

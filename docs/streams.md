@@ -125,6 +125,38 @@ and the retry-count header is incremented on each pass. An optional TTL on the Z
 abandoned queue, but it must exceed the longest scheduled delay or pending entries are dropped before
 they fire. Scores are wall-clock epoch milliseconds, so keep clocks synced (NTP).
 
+## Partition keys
+
+Running a subscription on several workers (`workers(n, by_key)`) keeps per-key ordering: deliveries
+sharing a partition key go to the same lane. Redis has no native partition, so the key travels as a
+header, and the sender sets it. `partition_key` puts it on the publisher rather than in the message,
+so one keyed handle serves every publish for that key:
+
+```rust
+use ruststream::runtime::PublishExt;
+use ruststream_fred::RedisPublishExt;
+
+let tenant = publisher.partition_key("tenant-a");
+tenant.message(&Order { id: 7 }).publish().await?;
+tenant.message(&Order { id: 8 }).publish().await?;
+```
+
+Keeping it off the message matters because the builder's headers position is filled once: a message
+declaring `#[outgoing(headers = ..)]` spends that position on its contract, so a key written into a
+header map by hand has nowhere to go. On the publisher the two compose:
+
+```rust
+publisher
+    .partition_key("tenant-a")
+    .message(&Order { id: 7 })
+    .with_headers(&OrderMeta { region: "eu".into() })
+    .publish()
+    .await?;
+```
+
+The step is available on all three transports' publishers, and the header name stays public as
+`PARTITION_KEY_HEADER` for code that reads it off a delivery.
+
 ## Capabilities
 
 Which of the framework's optional capability traits this broker implements natively. Streams
@@ -137,6 +169,6 @@ implements the most of the three transports; the notes name where Lists and Pub/
 | `TransactionalPublisher` | yes (Streams, standalone and sentinel) | The stream publisher buffers on the handle and commits it as one `MULTI` / `EXEC`. A cluster publisher rejects it, because a `MULTI` block cannot span hash slots. The List and Pub/Sub publishers have no transaction. See [Transactions](transactions.md). |
 | `OwnedTransactions` | yes (Streams, standalone and sentinel) | `publisher.transaction()` returns a buffer-owning value, so any number can be open on one handle; cluster is rejected for the same reason. |
 | `RequestReply` | no | Redis has no request-reply primitive: nothing on the wire carries a reply address or correlates a reply with its request. |
-| `Partitioned` | yes | All three transports read the key from the `redis-partition-key` header for the runtime's `workers(n, by_key)` lanes. The sender sets it. |
+| `Partitioned` | yes | All three transports read the key from the `redis-partition-key` header for the runtime's `workers(n, by_key)` lanes. The sender sets it, with [`partition_key`](#partition-keys). |
 | `Seekable` + `Positioned` | yes (Streams) | The group cursor moves with `XGROUP SETID`, and a delivery reports the position that redelivers it. See [Repositioning a group](#repositioning-a-group). A list is destructive and Pub/Sub keeps no history, so neither implements it. |
 | `DescribeServer` | yes | Reports the configured address (the first seed on cluster and sentinel). |
