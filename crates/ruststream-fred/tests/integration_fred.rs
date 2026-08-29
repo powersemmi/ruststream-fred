@@ -23,7 +23,7 @@ use futures::StreamExt;
 use ruststream::codec::JsonCodec;
 use ruststream::runtime::{PublishExt, RETRY_COUNT_HEADER, TypedPublisher};
 use ruststream::{
-    Broker, ConnectedBroker, Headers, IncomingMessage, OutgoingMessage, Partitioned, Positioned,
+    Broker, ConnectedBroker, HeaderMap, IncomingMessage, OutgoingMessage, Partitioned, Positioned,
     Publisher, Seekable, Seeker, Subscribe, Subscriber, TransactionalPublisher,
 };
 use ruststream_fred::{
@@ -82,7 +82,7 @@ async fn round_trip(broker: &ConnectedRedisBroker, key: &str) {
         .await
         .expect("subscribe");
 
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert("content-type", "application/json");
     broker
         .publisher()
@@ -278,7 +278,7 @@ async fn standalone_reclaim_picks_up_pending_entries() {
 }
 
 /// Reads and acks the single entry sitting in a dead-letter stream, from the beginning.
-async fn read_dead_letter_stream(broker: &ConnectedRedisBroker, key: &str) -> Headers {
+async fn read_dead_letter_stream(broker: &ConnectedRedisBroker, key: &str) -> HeaderMap {
     let mut sub = broker
         .subscribe(
             RedisStream::new(key)
@@ -737,7 +737,7 @@ async fn pubsub_classic_round_trip() {
 
     // Pub/Sub has no buffering and SUBSCRIBE registers asynchronously, so publish on a retry loop
     // until a delivery lands.
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert("correlation-id", "xyz-1");
 
     let mut got = None;
@@ -770,7 +770,7 @@ async fn list_codec_envelope_round_trips_headers() {
     let broker = standalone(url).await;
     let key = unique_key("list_codec");
 
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert("content-type", "application/json");
 
     // Codec on both ends: the wire value is a readable JSON envelope, headers and payload survive.

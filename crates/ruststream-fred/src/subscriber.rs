@@ -286,7 +286,7 @@ impl RedisSubscriber {
 }
 
 /// Injects a `u64`-valued well-known header into an entry's raw field map (under the `h:` prefix),
-/// so it surfaces as a [`Headers`](ruststream::Headers) entry on the delivered message.
+/// so it surfaces as a [`HeaderMap`](ruststream::HeaderMap) entry on the delivered message.
 fn insert_meta_header(fields: &mut HashMap<String, Vec<u8>>, name: &str, value: u64) {
     fields.insert(
         format!("{HEADER_PREFIX}{name}"),

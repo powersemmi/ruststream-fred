@@ -5,7 +5,7 @@
 //! adapter that offers the key as its [base headers](ruststream::Publisher::base_headers), so it
 //! sits underneath whatever the publish itself names.
 
-use ruststream::{Headers, OutgoingMessage, Publisher};
+use ruststream::{HeaderMap, OutgoingMessage, Publisher};
 
 use crate::list::RedisListPublisher;
 use crate::message::PARTITION_KEY_HEADER;
@@ -41,7 +41,7 @@ pub struct PartitionKeyed<'a, P: ?Sized> {
     inner: &'a P,
     // Built once at construction; the builder borrows it per publish. Do not move this back into
     // `publish`, which would clone a header map on the path every message takes.
-    base: Headers,
+    base: HeaderMap,
 }
 
 impl<P: ?Sized> PartitionKeyed<'_, P> {
@@ -60,7 +60,7 @@ impl<P: Publisher + ?Sized> Publisher for PartitionKeyed<'_, P> {
         self.inner.publish(msg).await
     }
 
-    fn base_headers(&self) -> Option<&Headers> {
+    fn base_headers(&self) -> Option<&HeaderMap> {
         Some(&self.base)
     }
 }
@@ -110,7 +110,7 @@ pub trait RedisPublishExt: Publisher {
     where
         K: AsRef<[u8]> + ?Sized,
     {
-        let mut base = Headers::new();
+        let mut base = HeaderMap::new();
         base.insert(PARTITION_KEY_HEADER, key.as_ref().to_vec());
         PartitionKeyed { inner: self, base }
     }

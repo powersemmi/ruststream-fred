@@ -7,7 +7,7 @@ use bytes::Bytes;
 use fred::clients::Pool;
 use fred::interfaces::StreamsInterface;
 use ruststream::runtime::RETRY_COUNT_HEADER;
-use ruststream::{AckError, Headers, IncomingMessage, Partitioned, Positioned};
+use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned, Positioned};
 
 use crate::convert::fields_for_publish;
 use crate::deadletter::{self, PoisonPolicy, REASON_DROPPED, REASON_MAX_DELIVERIES};
@@ -38,7 +38,7 @@ struct AckHandle {
 /// acks the original to drop it.
 pub struct RedisMessage {
     payload: Bytes,
-    headers: Headers,
+    headers: HeaderMap,
     ack: Option<AckHandle>,
     /// The parsed form of the entry id, kept beside the wire form so
     /// [`Positioned::position`] cannot fail. Both are derived from the same server-issued id.
@@ -71,7 +71,7 @@ impl RedisMessage {
         id: String,
         entry: EntryId,
         payload: Bytes,
-        headers: Headers,
+        headers: HeaderMap,
         policy: PoisonPolicy,
         delay: Option<DelayConfig>,
     ) -> Self {
@@ -134,7 +134,7 @@ impl IncomingMessage for RedisMessage {
         &self.payload
     }
 
-    fn headers(&self) -> &Headers {
+    fn headers(&self) -> &HeaderMap {
         &self.headers
     }
 
@@ -226,7 +226,7 @@ impl IncomingMessage for RedisMessage {
 }
 
 /// The next framework retry-count value (the current header plus one, or one when absent).
-fn next_retry_count(headers: &Headers) -> u64 {
+fn next_retry_count(headers: &HeaderMap) -> u64 {
     headers
         .get_str(RETRY_COUNT_HEADER)
         .and_then(|v| v.parse::<u64>().ok())
@@ -240,7 +240,11 @@ fn broker_err(err: fred::error::Error) -> AckError {
 
 /// Re-appends a copy of the message to the tail of its stream (the at-least-once retry). Runs before
 /// the caller's `XACK` so a crash leaves a duplicate rather than a loss.
-async fn republish(handle: &AckHandle, payload: &[u8], headers: &Headers) -> Result<(), AckError> {
+async fn republish(
+    handle: &AckHandle,
+    payload: &[u8],
+    headers: &HeaderMap,
+) -> Result<(), AckError> {
     let fields = fields_for_publish(payload, headers);
     let _: String = handle
         .pool
@@ -284,7 +288,7 @@ mod tests {
             id.to_owned(),
             id.parse().expect("valid entry id"),
             Bytes::from_static(b"{}"),
-            Headers::new(),
+            HeaderMap::new(),
             PoisonPolicy::default(),
             None,
         )

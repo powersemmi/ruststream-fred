@@ -12,7 +12,7 @@
 //! # What is exposed
 //!
 //! Only genuinely-native metadata that is not already reachable off the payload or
-//! [`Headers`](ruststream::Headers) is surfaced here:
+//! [`HeaderMap`](ruststream::HeaderMap) is surfaced here:
 //!
 //! * [`StreamContext`] (Redis Streams) - the stream entry id and the consumer group. The native
 //!   reclaim delivery-count and idle time stay header-surfaced

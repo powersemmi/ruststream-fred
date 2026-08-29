@@ -24,7 +24,7 @@ use bytes::Bytes;
 use fred::clients::Pool;
 use fred::interfaces::{KeysInterface, SortedSetsInterface, StreamsInterface};
 use ruststream::runtime::RETRY_COUNT_HEADER;
-use ruststream::{AckError, Headers};
+use ruststream::{AckError, HeaderMap};
 
 use crate::convert::fields_for_publish;
 use crate::envelope::{frame, unframe};
@@ -114,7 +114,7 @@ fn ttl_millis(ttl: Duration) -> i64 {
 /// Packs an entry for a ZSET member: a length-prefixed delivery id (a uniqueness salt, so two
 /// byte-identical payloads do not collide into one member) followed by the lossless header/payload
 /// frame. The id is not reused on redelivery; the sweep re-`XADD`s under a fresh id.
-fn encode_member(id: &str, payload: &[u8], headers: &Headers) -> Vec<u8> {
+fn encode_member(id: &str, payload: &[u8], headers: &HeaderMap) -> Vec<u8> {
     let body = frame(None, payload, headers);
     let id = id.as_bytes();
     let id_len = u32::try_from(id.len()).unwrap_or(u32::MAX);
@@ -126,13 +126,13 @@ fn encode_member(id: &str, payload: &[u8], headers: &Headers) -> Vec<u8> {
 }
 
 /// Reverses [`encode_member`], dropping the id salt and returning the payload and headers.
-fn decode_member(member: &[u8]) -> Option<(Bytes, Headers)> {
+fn decode_member(member: &[u8]) -> Option<(Bytes, HeaderMap)> {
     let id_len = u32::from_be_bytes(member.get(0..4)?.try_into().ok()?) as usize;
     let body = member.get(4usize.checked_add(id_len)?..)?;
     Some(unframe(None, body))
 }
 
-fn next_retry_count(headers: &Headers) -> u64 {
+fn next_retry_count(headers: &HeaderMap) -> u64 {
     headers
         .get_str(RETRY_COUNT_HEADER)
         .and_then(|v| v.parse::<u64>().ok())
@@ -152,7 +152,7 @@ pub(crate) async fn schedule(
     cfg: &DelayConfig,
     id: &str,
     payload: &[u8],
-    headers: &Headers,
+    headers: &HeaderMap,
     delay: Duration,
 ) -> Result<(), AckError> {
     let fire_at = now_ms().saturating_add(delay_millis(delay));
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn member_round_trips_payload_and_headers() {
-        let mut headers = Headers::new();
+        let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/json");
         headers.insert(RETRY_COUNT_HEADER, "2");
 
@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn distinct_ids_yield_distinct_members_for_equal_payloads() {
-        let headers = Headers::new();
+        let headers = HeaderMap::new();
         let a = encode_member("1-0", b"dup", &headers);
         let b = encode_member("2-0", b"dup", &headers);
         assert_ne!(
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn next_retry_count_starts_at_one_and_increments() {
-        let mut headers = Headers::new();
+        let mut headers = HeaderMap::new();
         assert_eq!(next_retry_count(&headers), 1);
         headers.insert(RETRY_COUNT_HEADER, "4");
         assert_eq!(next_retry_count(&headers), 5);

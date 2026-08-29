@@ -9,7 +9,7 @@ use std::task::Poll;
 
 use futures::Stream;
 use ruststream::{
-    AckError, BatchSubscriber, Headers, IncomingMessage, Partitioned, Subscriber,
+    AckError, BatchSubscriber, HeaderMap, IncomingMessage, Partitioned, Subscriber,
     testing::Coordinator,
 };
 
@@ -162,11 +162,11 @@ impl IncomingMessage for RedisTestMessage {
             .unwrap_or_default()
     }
 
-    fn headers(&self) -> &Headers {
-        static EMPTY: OnceLock<Headers> = OnceLock::new();
+    fn headers(&self) -> &HeaderMap {
+        static EMPTY: OnceLock<HeaderMap> = OnceLock::new();
         self.delivery
             .as_ref()
-            .map_or_else(|| EMPTY.get_or_init(Headers::new), |d| &d.headers)
+            .map_or_else(|| EMPTY.get_or_init(HeaderMap::new), |d| &d.headers)
     }
 
     // The stub broker mirrors the real one here too, so a keyed-lane test in-process behaves the

@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use ruststream::{
-    DefaultPublish, Headers, OutgoingMessage, OwnedTransactions, PairError, PublishPolicy,
+    DefaultPublish, HeaderMap, OutgoingMessage, OwnedTransactions, PairError, PublishPolicy,
     Publisher, Transaction, TransactionalPublisher,
 };
 use tracing::warn;
@@ -19,7 +19,7 @@ use crate::{
 };
 
 /// One buffered publish (key, payload, headers), held while a transaction is open.
-type Buffered = (String, Bytes, Headers);
+type Buffered = (String, Bytes, HeaderMap);
 
 /// The publish policy of the in-process broker, mirroring [`RedisPublish`](crate::RedisPublish).
 ///

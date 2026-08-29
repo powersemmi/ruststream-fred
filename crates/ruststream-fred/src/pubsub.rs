@@ -24,7 +24,7 @@ use futures::Stream;
 use futures::stream::unfold;
 use ruststream::codec::Codec;
 use ruststream::{
-    AckError, Headers, IncomingMessage, OutgoingMessage, PairError, Partitioned, PublishPolicy,
+    AckError, HeaderMap, IncomingMessage, OutgoingMessage, PairError, Partitioned, PublishPolicy,
     Publisher, SubscriptionSource,
 };
 use tokio::sync::broadcast::{Receiver, error::RecvError};
@@ -285,7 +285,7 @@ pub struct RedisPubSubMessage {
     /// Whether this delivery arrived through a `PSUBSCRIBE` pattern match (vs an exact subscribe).
     pattern: bool,
     payload: Bytes,
-    headers: Headers,
+    headers: HeaderMap,
 }
 
 impl Debug for RedisPubSubMessage {
@@ -321,7 +321,7 @@ impl IncomingMessage for RedisPubSubMessage {
         &self.payload
     }
 
-    fn headers(&self) -> &Headers {
+    fn headers(&self) -> &HeaderMap {
         &self.headers
     }
 
@@ -466,7 +466,7 @@ mod tests {
             channel: "events".to_owned(),
             pattern: false,
             payload: Bytes::from_static(b"{}"),
-            headers: Headers::new(),
+            headers: HeaderMap::new(),
         };
         let cx = PubSubContext::build(&exact);
         assert_eq!(cx.channel(), "events");
@@ -476,7 +476,7 @@ mod tests {
             channel: "events.user".to_owned(),
             pattern: true,
             payload: Bytes::from_static(b"{}"),
-            headers: Headers::new(),
+            headers: HeaderMap::new(),
         };
         assert!(PubSubContext::build(&matched).from_pattern());
     }

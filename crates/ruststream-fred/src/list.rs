@@ -33,7 +33,7 @@ use futures::stream::unfold;
 use ruststream::codec::Codec;
 use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::{
-    AckError, Headers, IncomingMessage, PairError, Partitioned, PublishPolicy, SubscriptionSource,
+    AckError, HeaderMap, IncomingMessage, PairError, Partitioned, PublishPolicy, SubscriptionSource,
 };
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
@@ -487,7 +487,7 @@ struct RecoveryHandle {
 /// removes the entry from the processing list and `nack` either returns it or drops it.
 pub struct RedisListMessage {
     payload: Bytes,
-    headers: Headers,
+    headers: HeaderMap,
     ack: Option<ListAck>,
 }
 
@@ -505,7 +505,7 @@ impl IncomingMessage for RedisListMessage {
         &self.payload
     }
 
-    fn headers(&self) -> &Headers {
+    fn headers(&self) -> &HeaderMap {
         &self.headers
     }
 
@@ -555,7 +555,7 @@ fn ack_broker(err: fred::error::Error) -> AckError {
 }
 
 /// The next framework retry-count value (the current envelope header plus one, or one when absent).
-fn next_retry_count(headers: &Headers) -> u64 {
+fn next_retry_count(headers: &HeaderMap) -> u64 {
     headers
         .get_str(RETRY_COUNT_HEADER)
         .and_then(|v| v.parse::<u64>().ok())
@@ -574,7 +574,7 @@ async fn lpush(pool: &Pool, key: &str, body: Vec<u8>) -> Result<(), AckError> {
 async fn list_dead_letter(
     handle: &ListAck,
     payload: &[u8],
-    headers: &Headers,
+    headers: &HeaderMap,
     reason: &'static str,
 ) -> Result<(), AckError> {
     if let Some(dlq) = handle.policy.dead_letter_key() {

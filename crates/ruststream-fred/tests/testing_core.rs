@@ -17,7 +17,7 @@ use ruststream::runtime::{AppInfo, HandlerResult, PublishExt, RustStream};
 use ruststream::subscriber;
 use ruststream::testing::TestApp;
 use ruststream::{
-    BatchSubscriber, Broker, ConnectedBroker, DescribeServer, Headers, IncomingMessage, Outgoing,
+    BatchSubscriber, Broker, ConnectedBroker, DescribeServer, HeaderMap, IncomingMessage, Outgoing,
     OutgoingMessage, OwnedTransactions, Partitioned, Publisher, RawMessage, Subscriber,
     Transaction, TransactionalPublisher, testing::expect_published,
 };
@@ -162,7 +162,7 @@ async fn headers_are_propagated_to_subscribers() {
     let mut subscriber = broker.subscribe("orders").await.expect("subscribe");
     let publisher = broker.publisher();
 
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert("content-type", "application/json");
     headers.insert("correlation-id", "abc-1");
     let outgoing = OutgoingMessage::new("orders", b"{}").with_headers(headers);
@@ -234,7 +234,7 @@ async fn partition_key_header_is_surfaced() {
     let broker = connected().await;
     let mut sub = broker.subscribe("events").await.expect("subscribe");
 
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert(PARTITION_KEY_HEADER, "tenant-a");
 
     broker
@@ -350,7 +350,7 @@ async fn partition_key_step_survives_unrelated_call_site_headers() {
     let mut sub = broker.subscribe("keyed.map").await.expect("subscribe");
     let publisher = broker.publisher();
 
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert("trace-id", "abc");
 
     publisher
@@ -380,7 +380,7 @@ async fn call_site_partition_key_overrides_the_step() {
     let mut sub = broker.subscribe("keyed.override").await.expect("subscribe");
     let publisher = broker.publisher();
 
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert(PARTITION_KEY_HEADER, "call-site");
 
     publisher
