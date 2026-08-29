@@ -4,6 +4,7 @@
 //! delivery. Dropping the subscriber unregisters its subscription from the underlying
 //! [`router::KeyRouter`], so handlers stop receiving messages as soon as their task finishes.
 
+use std::future::{Future, ready};
 use std::sync::{Arc, OnceLock};
 use std::task::Poll;
 
@@ -175,12 +176,12 @@ impl IncomingMessage for RedisTestMessage {
         Partitioned::partition_key(self)
     }
 
-    async fn ack(mut self) -> Result<(), AckError> {
+    fn ack(mut self) -> impl Future<Output = Result<(), AckError>> {
         self.delivery.take();
-        Ok(())
+        ready(Ok(()))
     }
 
-    async fn nack(mut self, requeue: bool) -> Result<(), AckError> {
+    fn nack(mut self, requeue: bool) -> impl Future<Output = Result<(), AckError>> {
         let delivery = self
             .delivery
             .take()
@@ -195,7 +196,7 @@ impl IncomingMessage for RedisTestMessage {
                 coordinator.enqueued();
             }
         }
-        Ok(())
+        ready(Ok(()))
     }
 }
 
