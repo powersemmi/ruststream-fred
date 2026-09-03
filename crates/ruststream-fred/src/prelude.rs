@@ -11,12 +11,12 @@
 //!
 //! let orders = RedisStream::new("orders").group("workers");
 //! let broker = RedisBroker::standalone("redis://localhost:6379");
-//! let replies = TypedPublisher::new(RedisPublish);
+//! let replies = TypedPublisher::new(stream::Publish);
 //! let _ = (orders, broker, replies);
 //! ```
 //!
-//! A service on a single form globs that form's prelude instead, which carries only that form's
-//! types and the capabilities it has.
+//! A service on a single form globs that form's prelude instead, which carries `Publish` under the
+//! uniform mount-site name and only the capabilities that form has.
 
 pub use ruststream::prelude::*;
 
@@ -35,7 +35,9 @@ pub use crate::{
     RedisPublishExt, RedisStream, StreamStart,
 };
 
-// The three form modules, for the types a mixed file reaches for by path.
+// The policies keep their prefixed names here, and there is no bare `Publish`: this glob spans all
+// three forms, so the one mount-site word would name three colliding types. A mixed file globs
+// this prelude and writes `stream::Publish` beside `pubsub::Publish` through these modules.
 pub use crate::{list, pubsub, stream};
 
 #[cfg(any(

@@ -21,11 +21,20 @@ use crate::deadletter::PoisonPolicy;
 use crate::delay::{DelayConfig, DelayedRetry};
 use crate::{error::RedisError, subscriber::RedisSubscriber};
 
+/// This form's publish policy, [`RedisPublish`](crate::RedisPublish), under the mount-site name
+/// every form gives its own.
+pub use crate::publisher::RedisPublish as Publish;
+
+/// The same policy under the transactional mount-site name: a stream publisher buffers on the
+/// handle and owns transactions as it is, so the plain policy *is* the transactional one and
+/// there is no second type to transition to.
+pub use crate::publisher::RedisPublish as TransactionalPublish;
+
 /// The core prelude plus everything a Redis Streams service writes.
 ///
 /// The broker, the [`RedisStream`] descriptor and its options, the group seek types with the
-/// delivery and page contexts that carry them, this form's [`RedisPublish`](crate::RedisPublish)
-/// policy, and the transaction, position and seek capabilities.
+/// delivery and page contexts that carry them, this form's [`Publish`] policy, and the
+/// transaction, position and seek capabilities.
 ///
 /// # Examples
 ///
@@ -34,13 +43,17 @@ use crate::{error::RedisError, subscriber::RedisSubscriber};
 ///
 /// let orders = RedisStream::new("orders").group("workers");
 /// let broker = RedisBroker::standalone("redis://localhost:6379");
-/// let replies = TypedPublisher::new(RedisPublish).transactional();
+/// let replies = TypedPublisher::new(TransactionalPublish).transactional();
 /// let _ = (orders, broker, replies);
 /// ```
 ///
-/// The policy keeps its prefixed name here: the bare words `Publish` and `TransactionalPublish`
-/// name the core's slot capability traits, which this glob carries, and a re-export shadowing one
-/// of them would break a service's `impl Publish` bound with nothing to point at.
+/// Two vocabularies that do not mix. A handler body imports `ruststream::prelude::*` and bounds an
+/// injected slot with the broker capability trait it needs (`Out<impl Publisher>`, `Out<impl
+/// TransactionalPublisher>`); a routes file globs this prelude and names the policy by its
+/// mount-site word, the same word on every form.
+///
+/// A file that also globs another form's prelude sees an ambiguous `Publish`; use
+/// [`crate::prelude`] and write `stream::Publish` there.
 pub mod prelude {
     pub use ruststream::prelude::*;
 
@@ -48,8 +61,7 @@ pub mod prelude {
         OwnedTransactions, Positioned, Seeker, Transaction, TransactionalPublisher,
     };
 
-    pub use super::{RedisStream, StreamStart};
-    pub use crate::RedisPublish;
+    pub use super::{Publish, RedisStream, StreamStart, TransactionalPublish};
     // `keys` arrives as the module, not as a glob: its members are short words a service also uses
     // for its own types, and `Ctx<keys::SeekHandle>` reads as what it is at the use site.
     pub use crate::context::{StreamBatchContext, StreamContext, keys};

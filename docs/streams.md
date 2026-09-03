@@ -1,11 +1,15 @@
 # Redis Streams
 
 A service on this form globs `ruststream_fred::stream::prelude::*`, which carries the descriptor,
-the seek types with the contexts that carry them, and this form's `RedisPublish` policy.
+the seek types with the contexts that carry them, and this form's publish policy as `Publish` -
+plus `TransactionalPublish`, the same policy under the transactional name, since a stream
+publisher buffers on the handle and owns transactions as it is.
 
-Every prelude of this crate globs the core prelude, so the bare words `Publish` and
-`TransactionalPublish` keep naming the core's slot capability traits: the publish policies are
-exported under their prefixed names and never shadow them.
+Two vocabularies, kept apart. A handler file imports `ruststream::prelude::*` and bounds an
+injected publisher with the broker capability trait it needs (`Out<impl Publisher>`, `Out<impl
+TransactionalPublisher>`); a routes file globs the mode prelude above and names the policy by its
+mount-site word, the same word on every form, so moving a handler between forms changes the
+descriptor and not the mount.
 
 A `#[subscriber("key")]` handler binds to a Redis stream key. Because Redis Streams always read
 through a consumer group, the bare-string form needs a broker-wide default group

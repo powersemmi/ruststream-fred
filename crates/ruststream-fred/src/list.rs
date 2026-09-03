@@ -43,8 +43,12 @@ use crate::envelope::{SharedEnvelope, frame, unframe};
 use crate::recovery::{self, RecoveryConfig};
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
 
-/// The core prelude, the broker, the [`RedisList`] descriptor and this form's
-/// [`RedisListPublish`] policy. A list carries no core capability traits.
+/// This form's publish policy, [`RedisListPublish`], under the mount-site name every form gives
+/// its own. Its options, the framing codec and the key TTL, still chain off it.
+pub use crate::list::RedisListPublish as Publish;
+
+/// The core prelude, the broker, the [`RedisList`] descriptor and this form's [`Publish`] policy.
+/// A list carries no core capability traits.
 ///
 /// # Examples
 ///
@@ -53,17 +57,20 @@ use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
 ///
 /// let jobs = RedisList::new("jobs").reliable();
 /// let broker = RedisBroker::standalone("redis://localhost:6379");
-/// let replies = TypedPublisher::new(RedisListPublish::new());
+/// let replies = TypedPublisher::new(Publish::default());
 /// let _ = (jobs, broker, replies);
 /// ```
 ///
-/// The policy keeps its prefixed name here: the bare words `Publish` and `TransactionalPublish`
-/// name the core's slot capability traits, which this glob carries, and a re-export shadowing one
-/// of them would break a service's `impl Publish` bound with nothing to point at.
+/// Two vocabularies that do not mix. A handler body imports `ruststream::prelude::*` and bounds an
+/// injected slot with the broker capability trait it needs (`Out<impl Publisher>`); a routes file
+/// globs this prelude and names the policy by its mount-site word, the same word on every form.
+///
+/// A file that also globs another form's prelude sees an ambiguous `Publish`; use
+/// [`crate::prelude`] and write `list::Publish` there.
 pub mod prelude {
     pub use ruststream::prelude::*;
 
-    pub use super::{RedisList, RedisListPublish};
+    pub use super::{Publish, RedisList};
     pub use crate::{PARTITION_KEY_HEADER, RedisBroker, RedisPublishExt};
 
     #[cfg(any(

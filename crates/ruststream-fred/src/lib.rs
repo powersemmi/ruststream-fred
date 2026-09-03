@@ -38,9 +38,9 @@ mod subscriber;
 pub mod context;
 pub mod prelude;
 
-// The three transport forms. Each is public for its own `prelude`, which carries that form's
-// types and nothing else; the types themselves stay re-exported at the crate root as well, for a
-// file that mixes forms.
+// The three transport forms. Each is public for its own `prelude` and its `Publish` alias, so a
+// mount site names the policy by the same word whichever form it is on; the types they hold stay
+// re-exported at the crate root as well, for a file that mixes forms.
 pub mod list;
 pub mod pubsub;
 pub mod stream;

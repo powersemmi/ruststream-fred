@@ -45,7 +45,7 @@ fn app() -> impl App {
         // form's is on standalone and sentinel: the batch's replies are buffered and committed as
         // one MULTI / EXEC block.
         b.include(process)
-            .publisher(TypedPublisher::new(RedisPublish).transactional());
+            .publisher(TypedPublisher::new(TransactionalPublish).transactional());
         // --8<-- [end:mount]
 
         // --8<-- [start:owned]
@@ -53,7 +53,7 @@ fn app() -> impl App {
         // several can be open on one publisher at once and settling one never touches another.
         // `after_startup` is where a service makes its first publishes, once the broker is
         // connected.
-        b.after_startup(RedisPublish, async move |publisher| {
+        b.after_startup(TransactionalPublish, async move |publisher| {
             let mut seed = publisher.transaction().await?;
             seed.publish(OutgoingMessage::new("processed", br#"{"id":0}"#.as_slice()))
                 .await?;

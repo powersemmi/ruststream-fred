@@ -1,7 +1,7 @@
 # Redis Lists (work queue)
 
 A service on this form globs `ruststream_fred::list::prelude::*`, which carries the descriptor and
-this form's `RedisListPublish` policy.
+this form's publish policy as `Publish`.
 
 A list is a competing-consumers queue: a producer `LPUSH`es, consumers pop from the right, and each
 entry goes to exactly one consumer (no fan-out, no replay). Simple mode is at-most-once (`BRPOP`, no

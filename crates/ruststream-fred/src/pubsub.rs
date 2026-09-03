@@ -34,11 +34,14 @@ use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::envelope::{SharedEnvelope, frame, unframe};
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
 
+/// This form's publish policy, [`RedisPubSubPublish`], under the mount-site name every form gives
+/// its own. Its options, the delivery mode and the framing codec, still chain off it.
+pub use crate::pubsub::RedisPubSubPublish as Publish;
+
 /// The core prelude plus everything a Redis Pub/Sub service writes.
 ///
-/// The broker, the [`RedisPubSub`] descriptor with its [`PubSubMode`], this form's
-/// [`RedisPubSubPublish`] policy, and its per-delivery context. Pub/Sub carries no core capability
-/// traits.
+/// The broker, the [`RedisPubSub`] descriptor with its [`PubSubMode`], this form's [`Publish`]
+/// policy, and its per-delivery context. Pub/Sub carries no core capability traits.
 ///
 /// # Examples
 ///
@@ -47,17 +50,20 @@ use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
 ///
 /// let events = RedisPubSub::new("events").mode(PubSubMode::Sharded);
 /// let broker = RedisBroker::standalone("redis://localhost:6379");
-/// let replies = TypedPublisher::new(RedisPubSubPublish::new().mode(PubSubMode::Sharded));
+/// let replies = TypedPublisher::new(Publish::new().mode(PubSubMode::Sharded));
 /// let _ = (events, broker, replies);
 /// ```
 ///
-/// The policy keeps its prefixed name here: the bare words `Publish` and `TransactionalPublish`
-/// name the core's slot capability traits, which this glob carries, and a re-export shadowing one
-/// of them would break a service's `impl Publish` bound with nothing to point at.
+/// Two vocabularies that do not mix. A handler body imports `ruststream::prelude::*` and bounds an
+/// injected slot with the broker capability trait it needs (`Out<impl Publisher>`); a routes file
+/// globs this prelude and names the policy by its mount-site word, the same word on every form.
+///
+/// A file that also globs another form's prelude sees an ambiguous `Publish`; use
+/// [`crate::prelude`] and write `pubsub::Publish` there.
 pub mod prelude {
     pub use ruststream::prelude::*;
 
-    pub use super::{PubSubMode, RedisPubSub, RedisPubSubPublish};
+    pub use super::{PubSubMode, Publish, RedisPubSub};
     // `keys` arrives as the module, not as a glob: its members are short words a service also uses
     // for its own types, and `Ctx<keys::Channel>` reads as what it is at the use site.
     pub use crate::context::{PubSubContext, keys};
