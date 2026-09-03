@@ -27,18 +27,18 @@ struct Job {
 // --8<-- [start:simple]
 // Simple at-most-once work queue: BRPOP, no ack.
 #[subscriber(RedisList::new("jobs"))]
-async fn run_job(job: &Job) -> HandlerResult {
+async fn run_job(job: &Job) -> HandlerOutcome {
     println!("running job {}", job.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:simple]
 
 // --8<-- [start:reliable]
 // Reliable at-least-once work queue: the job moves to a processing list and is removed on ack.
 #[subscriber(RedisList::new("jobs.reliable").reliable())]
-async fn run_reliable_job(job: &Job) -> HandlerResult {
+async fn run_reliable_job(job: &Job) -> HandlerOutcome {
     println!("running reliable job {}", job.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:reliable]
 
@@ -52,9 +52,9 @@ async fn run_reliable_job(job: &Job) -> HandlerResult {
         .min_idle(Duration::from_secs(30))
         .recovery_zset("jobs.recoverable.inflight")
 )]
-async fn run_recoverable_job(job: &Job) -> HandlerResult {
+async fn run_recoverable_job(job: &Job) -> HandlerOutcome {
     println!("running recoverable job {}", job.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:recovery]
 

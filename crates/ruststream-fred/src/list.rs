@@ -43,12 +43,8 @@ use crate::envelope::{SharedEnvelope, frame, unframe};
 use crate::recovery::{self, RecoveryConfig};
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
 
-/// This form's publish policy, [`RedisListPublish`], under the name every
-/// form gives its own. Its options, the framing codec and the key TTL, still chain off it.
-pub use crate::list::RedisListPublish as Publish;
-
-/// The core prelude, the broker, the [`RedisList`] descriptor and this form's [`Publish`] policy.
-/// A list carries no core capability traits.
+/// The core prelude, the broker, the [`RedisList`] descriptor and this form's
+/// [`RedisListPublish`] policy. A list carries no core capability traits.
 ///
 /// # Examples
 ///
@@ -57,16 +53,17 @@ pub use crate::list::RedisListPublish as Publish;
 ///
 /// let jobs = RedisList::new("jobs").reliable();
 /// let broker = RedisBroker::standalone("redis://localhost:6379");
-/// let replies = TypedPublisher::new(Publish::new());
+/// let replies = TypedPublisher::new(RedisListPublish::new());
 /// let _ = (jobs, broker, replies);
 /// ```
 ///
-/// A file that also globs another form's prelude sees an ambiguous `Publish`; use
-/// [`crate::prelude`] and write `list::Publish` there.
+/// The policy keeps its prefixed name here: the bare words `Publish` and `TransactionalPublish`
+/// name the core's slot capability traits, which this glob carries, and a re-export shadowing one
+/// of them would break a service's `impl Publish` bound with nothing to point at.
 pub mod prelude {
     pub use ruststream::prelude::*;
 
-    pub use super::{Publish, RedisList};
+    pub use super::{RedisList, RedisListPublish};
     pub use crate::{PARTITION_KEY_HEADER, RedisBroker, RedisPublishExt};
 
     #[cfg(any(

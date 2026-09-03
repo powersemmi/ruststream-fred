@@ -1,6 +1,6 @@
 //! Durable delayed retry backed by a Redis sorted-set (ZSET) delay queue.
 //!
-//! `retry_after(delay)` (a handler returning [`HandlerResult::retry_after`], or a delivery
+//! `retry_after(delay)` (a handler returning [`HandlerOutcome::retry_after`], or a delivery
 //! `nack_after`-ed) asks the broker to redeliver a message no sooner than `delay` from now. Redis
 //! Streams have no native per-message delay, so without this the runtime falls back to its
 //! broker-agnostic deferred re-publish, which is at-most-once over the delay window (a process
@@ -16,7 +16,7 @@
 //! Scores are wall-clock epoch milliseconds taken on the publishing process, so deployments should
 //! keep clocks reasonably synced (NTP) - the same assumption any wall-clock delay queue makes.
 //!
-//! [`HandlerResult::retry_after`]: ruststream::runtime::HandlerResult::retry_after
+//! [`HandlerOutcome::retry_after`]: ruststream::runtime::HandlerOutcome::retry_after
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

@@ -38,11 +38,11 @@ async fn on_event(event: &Event) -> Event {
 // --8<-- [start:sharded]
 // Sharded subscription (`SSUBSCRIBE`): on a cluster this stays slot-local and scales. It belongs on
 // a cluster broker (below), and pairs with a sharded publish policy
-// (`Publish::new().mode(Sharded)`).
+// (`RedisPubSubPublish::new().mode(Sharded)`).
 #[subscriber(RedisPubSub::new("events").mode(PubSubMode::Sharded))]
-async fn on_event_sharded(event: &Event) -> HandlerResult {
+async fn on_event_sharded(event: &Event) -> HandlerOutcome {
     println!("sharded event: {}", event.kind);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:sharded]
 
@@ -57,7 +57,7 @@ fn app() -> impl App {
             // stream publisher (XADD). The policy is pure declaration: the runtime pairs it with
             // the connected broker at startup.
             b.include(on_event)
-                .publisher(TypedPublisher::new(Publish::new()));
+                .publisher(TypedPublisher::new(RedisPubSubPublish::new()));
         })
         .with_broker(RedisBroker::cluster(["redis://localhost:7000"]), |b| {
             b.include(on_event_sharded);

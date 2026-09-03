@@ -1,6 +1,7 @@
 //! Delivered-message wrapper that implements [`IncomingMessage`].
 
 use std::fmt::{Debug, Formatter};
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -12,7 +13,7 @@ use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned, Positioned};
 use crate::convert::fields_for_publish;
 use crate::deadletter::{self, PoisonPolicy, REASON_DROPPED, REASON_MAX_DELIVERIES};
 use crate::delay::{self, DelayConfig};
-use crate::seek::{EntryId, RedisGroupPosition};
+use crate::seek::{EntryId, RedisGroupPosition, RedisGroupSeeker};
 
 /// The well-known header key for per-message routing / partitioning.
 ///
@@ -46,6 +47,9 @@ pub struct RedisMessage {
     policy: PoisonPolicy,
     /// Set when the subscription opted into a durable ZSET delay queue; makes `nack_after` native.
     delay: Option<DelayConfig>,
+    /// The subscription's reposition handle, minted once when it opened. Shared rather than
+    /// rebuilt, so carrying it costs one reference-count bump per delivery.
+    seeker: Arc<RedisGroupSeeker>,
 }
 
 impl Debug for RedisMessage {
@@ -74,6 +78,7 @@ impl RedisMessage {
         headers: HeaderMap,
         policy: PoisonPolicy,
         delay: Option<DelayConfig>,
+        seeker: Arc<RedisGroupSeeker>,
     ) -> Self {
         Self {
             payload,
@@ -87,6 +92,7 @@ impl RedisMessage {
             entry,
             policy,
             delay,
+            seeker,
         }
     }
 
@@ -106,6 +112,11 @@ impl RedisMessage {
     #[must_use]
     pub fn group(&self) -> Option<&str> {
         self.ack.as_ref().map(|a| a.group.as_str())
+    }
+
+    /// The subscription's reposition handle, for the per-delivery context to carry.
+    pub(crate) fn seeker(&self) -> &RedisGroupSeeker {
+        &self.seeker
     }
 }
 
@@ -269,11 +280,14 @@ async fn xack(handle: &AckHandle) -> Result<(), AckError> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicU64;
+
     use super::*;
-    use crate::context::StreamContext;
+    use crate::context::keys::{ConsumerGroup, EntryId as EntryIdKey, Position, SeekHandle};
+    use crate::context::{StreamBatchContext, StreamContext};
     use fred::clients::Pool;
     use fred::types::config::Config;
-    use ruststream::BuildContext;
+    use ruststream::{BuildBatchContext, BuildContext, Field};
 
     /// An unconnected pool (just client structs); `Pool::new` opens no sockets.
     fn offline_pool() -> Pool {
@@ -281,8 +295,15 @@ mod tests {
     }
 
     fn delivery(id: &str) -> RedisMessage {
+        let pool = offline_pool();
+        let seeker = Arc::new(RedisGroupSeeker::new(
+            pool.clone(),
+            "orders",
+            "workers",
+            Arc::new(AtomicU64::new(0)),
+        ));
         RedisMessage::new(
-            offline_pool(),
+            pool,
             "orders".to_owned(),
             "workers".to_owned(),
             id.to_owned(),
@@ -291,14 +312,36 @@ mod tests {
             HeaderMap::new(),
             PoisonPolicy::default(),
             None,
+            seeker,
         )
     }
 
     #[test]
-    fn build_context_reads_entry_id_and_group() {
+    fn build_context_reads_the_native_fields() {
         let cx = StreamContext::build(&delivery("1700000000000-0"));
-        assert_eq!(cx.entry_id(), Some("1700000000000-0"));
-        assert_eq!(cx.consumer_group(), Some("workers"));
+        assert_eq!(EntryIdKey.get(&cx), EntryId::new(1_700_000_000_000, 0));
+        assert_eq!(ConsumerGroup.get(&cx), "workers");
+        assert_eq!(SeekHandle.get(&cx).key(), "orders");
+    }
+
+    // The seek key is what a handler repositions through, so the context has to hand back the
+    // subscription's own handle rather than one rebuilt off the delivery.
+    #[test]
+    fn build_context_carries_the_position_that_redelivers() {
+        let cx = StreamContext::build(&delivery("1700000000000-4"));
+        assert_eq!(
+            Position.get(&cx),
+            RedisGroupPosition::after(EntryId::new(1_700_000_000_000, 3))
+        );
+    }
+
+    // A page spans many deliveries, so its context carries only what the subscription shares: the
+    // group and its cursor handle, never one delivery's entry id or position.
+    #[test]
+    fn build_batch_context_carries_only_subscription_scoped_fields() {
+        let cx = StreamBatchContext::build(&delivery("1700000000000-0"));
+        assert_eq!(ConsumerGroup.get(&cx), "workers");
+        assert_eq!(SeekHandle.get(&cx).group(), "workers");
     }
 
     // The group cursor is exclusive, so the position that redelivers an entry sits one id below

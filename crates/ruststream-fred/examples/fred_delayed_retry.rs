@@ -29,13 +29,13 @@ struct Order {
         .group("workers")
         .delayed_retry(DelayedRetry::DurableZset { key: "orders.delayed".to_owned(), ttl: None })
 )]
-async fn handle_order(order: &Order) -> HandlerResult {
+async fn handle_order(order: &Order) -> HandlerOutcome {
     if order.id == 0 {
         // Park the message in the ZSET for 30s instead of blocking the worker or busy-requeuing.
-        return HandlerResult::retry_after(Duration::from_secs(30));
+        return HandlerOutcome::retry_after(Duration::from_secs(30));
     }
     println!("processed order {}", order.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:handler]
 

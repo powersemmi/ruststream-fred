@@ -23,8 +23,9 @@ use futures::StreamExt;
 use ruststream::codec::JsonCodec;
 use ruststream::runtime::{PublishExt, RETRY_COUNT_HEADER, TypedPublisher};
 use ruststream::{
-    Broker, ConnectedBroker, HeaderMap, IncomingMessage, OutgoingMessage, Partitioned, Positioned,
-    Publisher, Seekable, Seeker, Subscribe, Subscriber, TransactionalPublisher,
+    Broker, ConnectedBroker, HeaderMap, IncomingMessage, Outgoing, OutgoingMessage, Partitioned,
+    Positioned, Publisher, Seekable, Seeker, Serialized, Subscribe, Subscriber,
+    TransactionalPublisher,
 };
 use ruststream_fred::{
     ConnectedRedisBroker, DEAD_LETTER_REASON_HEADER, DELIVERY_COUNT_HEADER, DelayedRetry,
@@ -40,6 +41,11 @@ const SENTINEL_SERVICE: &str = "mymaster";
 fn env(key: &str) -> Option<String> {
     std::env::var(key).ok()
 }
+
+/// An opaque payload: the partition-key case asserts on the header the keyed handle contributes,
+/// not on what a codec would make of the body, so the bytes leave as they are.
+#[derive(Outgoing, Serialized)]
+struct Payload(Vec<u8>);
 
 /// A per-process-unique stream key so repeated runs against the same Redis stay isolated.
 fn unique_key(base: &str) -> String {
@@ -343,7 +349,7 @@ async fn stream_partition_key_survives_the_round_trip() {
     broker
         .publisher()
         .partition_key("tenant-a")
-        .raw(b"payload")
+        .message(&Payload(b"payload".to_vec()))
         .to(key.as_str())
         .publish()
         .await

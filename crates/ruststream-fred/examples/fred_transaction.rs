@@ -25,11 +25,12 @@ struct Order {
 
 // --8<-- [start:batch]
 // A batch-publishing handler: each reply in the returned Vec is published to `processed`, all
-// committed atomically when the transactional publisher commits.
-#[subscriber(batch("orders"), publish("processed"))]
-async fn process(orders: &[Order]) -> Result<Vec<Order>, HandlerResult> {
+// committed atomically when the transactional publisher commits. The page shape is read off the
+// signature - a slice payload is what makes this a batch handler.
+#[subscriber("orders", publish("processed"))]
+async fn process(orders: &[Order]) -> Result<Vec<Order>, HandlerOutcome> {
     if orders.is_empty() {
-        return Err(HandlerResult::drop());
+        return Err(HandlerOutcome::drop());
     }
     Ok(orders.iter().map(|o| Order { id: o.id }).collect())
 }
@@ -44,7 +45,7 @@ fn app() -> impl App {
         // form's is on standalone and sentinel: the batch's replies are buffered and committed as
         // one MULTI / EXEC block.
         b.include(process)
-            .publisher(TypedPublisher::new(Publish).transactional());
+            .publisher(TypedPublisher::new(RedisPublish).transactional());
         // --8<-- [end:mount]
 
         // --8<-- [start:owned]
@@ -52,7 +53,7 @@ fn app() -> impl App {
         // several can be open on one publisher at once and settling one never touches another.
         // `after_startup` is where a service makes its first publishes, once the broker is
         // connected.
-        b.after_startup(Publish, async move |publisher| {
+        b.after_startup(RedisPublish, async move |publisher| {
             let mut seed = publisher.transaction().await?;
             seed.publish(OutgoingMessage::new("processed", br#"{"id":0}"#.as_slice()))
                 .await?;

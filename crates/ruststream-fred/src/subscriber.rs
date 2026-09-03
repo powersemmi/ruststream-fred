@@ -63,6 +63,9 @@ pub struct RedisSubscriber {
     /// The generation the buffered entries were selected under. A mismatch means a seek moved the
     /// cursor after they were chosen, so they belong to the position the group left.
     buffer_generation: u64,
+    /// Minted once, when the subscription opens, and handed to every delivery so its context can
+    /// carry the handle without building one per message.
+    seeker: Arc<RedisGroupSeeker>,
 }
 
 impl Debug for RedisSubscriber {
@@ -92,6 +95,13 @@ impl RedisSubscriber {
         policy: PoisonPolicy,
         delay: Option<DelayConfig>,
     ) -> Self {
+        let generation = Arc::new(AtomicU64::new(0));
+        let seeker = Arc::new(RedisGroupSeeker::new(
+            pool.clone(),
+            key.as_str(),
+            group.as_str(),
+            Arc::clone(&generation),
+        ));
         Self {
             pool,
             key,
@@ -104,8 +114,9 @@ impl RedisSubscriber {
             delay,
             cursor: RECLAIM_START.to_owned(),
             buffer: VecDeque::new(),
-            generation: Arc::new(AtomicU64::new(0)),
+            generation,
             buffer_generation: 0,
+            seeker,
         }
     }
 
@@ -133,6 +144,7 @@ impl RedisSubscriber {
             headers,
             self.policy.clone(),
             self.delay.clone(),
+            Arc::clone(&self.seeker),
         ))
     }
 
@@ -327,12 +339,7 @@ impl Seekable for RedisSubscriber {
     type Seeker = RedisGroupSeeker;
 
     fn seeker(&self) -> RedisGroupSeeker {
-        RedisGroupSeeker::new(
-            self.pool.clone(),
-            self.key.clone(),
-            self.group.clone(),
-            Arc::clone(&self.generation),
-        )
+        (*self.seeker).clone()
     }
 }
 

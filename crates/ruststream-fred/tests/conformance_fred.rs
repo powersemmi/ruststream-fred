@@ -58,11 +58,13 @@ async fn passes_transactions() {
     let Some(url) = redis_url() else {
         return;
     };
-    capabilities::transactions(
+    // Boxed for the same reason as the seeking suite below: the suite's future is large enough
+    // that clippy rejects holding it on the stack.
+    Box::pin(capabilities::transactions(
         || RedisBroker::standalone(url.clone()),
         |key| RedisStream::new(key).group("conformance"),
         |connected| connected.publisher(),
-    )
+    ))
     .await;
 }
 

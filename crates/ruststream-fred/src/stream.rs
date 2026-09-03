@@ -21,12 +21,11 @@ use crate::deadletter::PoisonPolicy;
 use crate::delay::{DelayConfig, DelayedRetry};
 use crate::{error::RedisError, subscriber::RedisSubscriber};
 
-/// This form's publish policy, [`RedisPublish`](crate::RedisPublish), under the name every form
-/// gives its own. Mode transitions such as `.transactional()` still chain off it.
-pub use crate::publisher::RedisPublish as Publish;
-
-/// The core prelude, the broker, the [`RedisStream`] descriptor and its options, the group seek
-/// types, this form's [`Publish`] policy, and the transaction, position and seek capabilities.
+/// The core prelude plus everything a Redis Streams service writes.
+///
+/// The broker, the [`RedisStream`] descriptor and its options, the group seek types with the
+/// delivery and page contexts that carry them, this form's [`RedisPublish`](crate::RedisPublish)
+/// policy, and the transaction, position and seek capabilities.
 ///
 /// # Examples
 ///
@@ -35,12 +34,13 @@ pub use crate::publisher::RedisPublish as Publish;
 ///
 /// let orders = RedisStream::new("orders").group("workers");
 /// let broker = RedisBroker::standalone("redis://localhost:6379");
-/// let replies = TypedPublisher::new(Publish).transactional();
+/// let replies = TypedPublisher::new(RedisPublish).transactional();
 /// let _ = (orders, broker, replies);
 /// ```
 ///
-/// A file that also globs another form's prelude sees an ambiguous `Publish`; use
-/// [`crate::prelude`] and write `stream::Publish` there.
+/// The policy keeps its prefixed name here: the bare words `Publish` and `TransactionalPublish`
+/// name the core's slot capability traits, which this glob carries, and a re-export shadowing one
+/// of them would break a service's `impl Publish` bound with nothing to point at.
 pub mod prelude {
     pub use ruststream::prelude::*;
 
@@ -48,7 +48,11 @@ pub mod prelude {
         OwnedTransactions, Positioned, Seeker, Transaction, TransactionalPublisher,
     };
 
-    pub use super::{Publish, RedisStream, StreamStart};
+    pub use super::{RedisStream, StreamStart};
+    pub use crate::RedisPublish;
+    // `keys` arrives as the module, not as a glob: its members are short words a service also uses
+    // for its own types, and `Ctx<keys::SeekHandle>` reads as what it is at the use site.
+    pub use crate::context::{StreamBatchContext, StreamContext, keys};
     pub use crate::{
         DelayedRetry, PARTITION_KEY_HEADER, RedisBroker, RedisGroupPosition, RedisGroupSeeker,
         RedisPublishExt,

@@ -13,12 +13,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
-use ruststream::runtime::{AppInfo, HandlerResult, PublishExt, RustStream};
+use ruststream::runtime::{AppInfo, HandlerOutcome, PublishExt, RustStream};
 use ruststream::subscriber;
 use ruststream::testing::TestApp;
 use ruststream::{
     BatchSubscriber, Broker, ConnectedBroker, DescribeServer, HeaderMap, IncomingMessage, Outgoing,
-    OutgoingMessage, OwnedTransactions, Partitioned, Publisher, RawMessage, Subscriber,
+    OutgoingMessage, OwnedTransactions, Partitioned, Publisher, RawMessage, Serialized, Subscriber,
     Transaction, TransactionalPublisher, testing::expect_published,
 };
 use ruststream_fred::{
@@ -73,6 +73,11 @@ struct KeyedOrder {
 struct OrderMeta {
     region: String,
 }
+
+/// An opaque payload for the partition-key cases: they assert on the header the keyed handle
+/// contributes, not on what a codec would make of the body, so the bytes leave as they are.
+#[derive(Outgoing, Serialized)]
+struct Payload(Vec<u8>);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pub_sub_round_trip_through_broker_traits() {
@@ -291,7 +296,7 @@ async fn partition_key_step_carries_the_header() {
 
     publisher
         .partition_key("tenant-a")
-        .raw(b"payload")
+        .message(&Payload(b"payload".to_vec()))
         .to("keyed.plain")
         .publish()
         .await
@@ -355,7 +360,7 @@ async fn partition_key_step_survives_unrelated_call_site_headers() {
 
     publisher
         .partition_key("tenant-b")
-        .raw(b"payload")
+        .message(&Payload(b"payload".to_vec()))
         .with_headers(headers)
         .to("keyed.map")
         .publish()
@@ -385,7 +390,7 @@ async fn call_site_partition_key_overrides_the_step() {
 
     publisher
         .partition_key("handle")
-        .raw(b"payload")
+        .message(&Payload(b"payload".to_vec()))
         .with_headers(headers)
         .to("keyed.override")
         .publish()
@@ -624,9 +629,9 @@ struct Order {
 }
 
 #[subscriber(RedisStream::new("orders").group("workers"))]
-async fn ack_order(order: &Order) -> HandlerResult {
+async fn ack_order(order: &Order) -> HandlerOutcome {
     let _ = order;
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 
 /// Counts how many times the retry handler ran, so the test can wire it as typed app state.
@@ -634,14 +639,14 @@ async fn ack_order(order: &Order) -> HandlerResult {
 struct Attempts(Arc<AtomicUsize>);
 
 #[subscriber(RedisStream::new("retry").group("workers"))]
-async fn retry_then_ack(order: &Order, ctx: &mut Context<'_, (), Attempts>) -> HandlerResult {
+async fn retry_then_ack(order: &Order, ctx: &mut Context<'_, (), Attempts>) -> HandlerOutcome {
     let _ = order;
     // Requeue once, then acknowledge: exercises the `nack(requeue = true)` -> `enqueued` re-count
     // balanced against the delivery's `Drop` -> `consumed` decrement.
     if ctx.state().0.fetch_add(1, Ordering::SeqCst) == 0 {
-        HandlerResult::retry()
+        HandlerOutcome::retry()
     } else {
-        HandlerResult::Ack
+        HandlerOutcome::ack()
     }
 }
 
@@ -664,7 +669,7 @@ async fn test_app_drives_redis_test_broker_to_quiescence() {
         .subscriber("orders")
         .assert_called_once()
         .with(&Order { id: 1 })
-        .settled(HandlerResult::Ack);
+        .settled(HandlerOutcome::ack());
 
     tb.shutdown().await.expect("shutdown");
 }
@@ -688,7 +693,7 @@ async fn test_app_requeue_stays_balanced() {
     tb.broker::<RedisTestBroker>()
         .subscriber("retry")
         .assert_called(2)
-        .settled(HandlerResult::Ack);
+        .settled(HandlerOutcome::ack());
 
     tb.shutdown().await.expect("shutdown");
 }

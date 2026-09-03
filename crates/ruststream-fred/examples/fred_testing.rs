@@ -61,17 +61,17 @@ impl PaymentRepository {
 async fn process_payment(
     payment: &Payment,
     ctx: &mut Context<'_, (), PaymentRepository>,
-) -> HandlerResult {
+) -> HandlerOutcome {
     if payment.amount == 0 {
         // Invalid message: do not requeue, drop it.
-        return HandlerResult::drop();
+        return HandlerOutcome::drop();
     }
 
     // The handler names its app state as the third `Context` generic; `ctx.state()` borrows the
     // typed `PaymentRepository` directly, with no lookup or downcast.
     ctx.state().save(payment.clone()).await;
 
-    HandlerResult::ack()
+    HandlerOutcome::ack()
 }
 // --8<-- [end:business-handler]
 
@@ -80,9 +80,9 @@ async fn process_payment(
     RedisStream::new("events")
         .group("workers")
 )]
-async fn handle_stream_event(payment: &Payment) -> HandlerResult {
+async fn handle_stream_event(payment: &Payment) -> HandlerOutcome {
     println!("stream event {}", payment.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:stream-handler]
 
@@ -91,17 +91,17 @@ async fn handle_stream_event(payment: &Payment) -> HandlerResult {
     RedisList::new("jobs")
         .reliable()
 )]
-async fn handle_list_job(payment: &Payment) -> HandlerResult {
+async fn handle_list_job(payment: &Payment) -> HandlerOutcome {
     println!("list job {}", payment.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:list-handler]
 
 // --8<-- [start:pubsub-handler]
 #[subscriber(RedisPubSub::new("notifications"))]
-async fn handle_pubsub_notification(payment: &Payment) -> HandlerResult {
+async fn handle_pubsub_notification(payment: &Payment) -> HandlerOutcome {
     println!("pubsub notification {}", payment.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:pubsub-handler]
 
@@ -176,7 +176,7 @@ async fn test_stream_delivery() -> Result<(), Box<dyn std::error::Error>> {
     tb.broker::<RedisTestBroker>()
         .subscriber("events")
         .assert_called_once()
-        .settled(HandlerResult::Ack);
+        .settled(HandlerOutcome::ack());
 
     tb.shutdown().await?;
     // --8<-- [end:stream-test]
@@ -198,7 +198,7 @@ async fn test_list_delivery() -> Result<(), Box<dyn std::error::Error>> {
     tb.broker::<RedisTestBroker>()
         .subscriber("jobs")
         .assert_called_once()
-        .settled(HandlerResult::Ack);
+        .settled(HandlerOutcome::ack());
 
     tb.shutdown().await?;
     // --8<-- [end:list-test]
@@ -220,7 +220,7 @@ async fn test_pubsub_delivery() -> Result<(), Box<dyn std::error::Error>> {
     tb.broker::<RedisTestBroker>()
         .subscriber("notifications")
         .assert_called_once()
-        .settled(HandlerResult::Ack);
+        .settled(HandlerOutcome::ack());
 
     tb.shutdown().await?;
     // --8<-- [end:pubsub-test]

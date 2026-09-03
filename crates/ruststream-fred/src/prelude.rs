@@ -1,5 +1,8 @@
-//! The core prelude, the broker, all three descriptors and publish policies, the seek types, and
-//! the [`crate::stream`], [`crate::list`] and [`crate::pubsub`] modules.
+//! The core prelude plus everything a service mixing all three Redis forms writes.
+//!
+//! The broker, all three descriptors and publish policies, the seek types, the per-delivery and
+//! page contexts with their [`keys`], and the [`crate::stream`], [`crate::list`] and
+//! [`crate::pubsub`] modules.
 //!
 //! # Examples
 //!
@@ -8,12 +11,12 @@
 //!
 //! let orders = RedisStream::new("orders").group("workers");
 //! let broker = RedisBroker::standalone("redis://localhost:6379");
-//! let replies = TypedPublisher::new(stream::Publish);
+//! let replies = TypedPublisher::new(RedisPublish);
 //! let _ = (orders, broker, replies);
 //! ```
 //!
-//! A service on a single form globs that form's prelude instead, which carries `Publish` under the
-//! uniform name and only the capabilities that form has.
+//! A service on a single form globs that form's prelude instead, which carries only that form's
+//! types and the capabilities it has.
 
 pub use ruststream::prelude::*;
 
@@ -22,13 +25,17 @@ pub use ruststream::prelude::*;
 // ambiguous (E0034).
 pub use ruststream::{OwnedTransactions, Positioned, Seeker, Transaction, TransactionalPublisher};
 
+// `keys` arrives as the module, not as a glob: its members are short words a service also uses for
+// its own types, and `Ctx<keys::SeekHandle>` reads as what it is at the use site.
+pub use crate::context::{PubSubContext, StreamBatchContext, StreamContext, keys};
+
 pub use crate::{
     DelayedRetry, PARTITION_KEY_HEADER, PubSubMode, RedisBroker, RedisGroupPosition,
     RedisGroupSeeker, RedisList, RedisListPublish, RedisPubSub, RedisPubSubPublish, RedisPublish,
     RedisPublishExt, RedisStream, StreamStart,
 };
 
-// No bare `Publish` at crate level: the word belongs to a form, and a mixed file needs all three.
+// The three form modules, for the types a mixed file reaches for by path.
 pub use crate::{list, pubsub, stream};
 
 #[cfg(any(

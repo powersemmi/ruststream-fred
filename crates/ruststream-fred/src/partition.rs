@@ -24,14 +24,18 @@ use crate::pubsub::RedisPubSubPublisher;
 ///
 /// ```no_run
 /// use ruststream::runtime::PublishExt;
-/// use ruststream::{Broker, Publisher};
+/// use ruststream::{Broker, Outgoing, Publisher, Serialized};
 /// use ruststream_fred::{RedisBroker, RedisPublishExt};
+///
+/// // The entry is already a serialized document, so it declares its own wire and no codec runs.
+/// #[derive(Outgoing, Serialized)]
+/// struct Entry(Vec<u8>);
 ///
 /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// let connected = RedisBroker::standalone("redis://localhost:6379").connect().await?;
 /// let keyed = connected.publisher();
 /// let keyed = keyed.partition_key("tenant-a");
-/// keyed.raw(b"{}").to("orders").publish().await?;
+/// keyed.message(&Entry(b"{}".to_vec())).to("orders").publish().await?;
 /// # Ok(())
 /// # }
 /// ```
