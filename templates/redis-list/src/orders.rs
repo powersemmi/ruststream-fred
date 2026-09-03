@@ -20,9 +20,9 @@ pub struct Job {
 }
 
 /// Runs each job popped off the `jobs` queue. A simple list cannot ack, so this is a consume-only
-/// handler: it does its work and returns `Ack` to mark the entry handled.
+/// handler: it does its work and acks to mark the entry handled.
 #[subscriber(RedisList::new("jobs"))]
-pub async fn run_job(job: &Job) -> HandlerResult {
+pub async fn run_job(job: &Job) -> HandlerOutcome {
     println!("running job {} ({})", job.id, job.task);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }

@@ -45,9 +45,10 @@
   buffer-owning value, so any number can be open concurrently). Both commit their buffer as one
   `MULTI` / `EXEC` block, so subscribers see the whole batch or none of it.
 - **Repositioning a group.** The streams subscriber implements the `Seekable` capability: a
-  `start_at(..)` clause opens a subscription at a chosen point and a `Seek` parameter moves the
-  cursor from a handler. A Redis cursor belongs to the consumer group, so a seek repositions every
-  consumer of that group, a scope the `RedisGroupPosition` / `RedisGroupSeeker` names carry.
+  `start_at(..)` clause opens a subscription at a chosen point, and the delivery's own typed context
+  carries the group's seeker under a `SeekHandle` key, so a handler moves the cursor while the
+  service runs. A Redis cursor belongs to the consumer group, so a seek repositions every consumer
+  of that group, a scope the `RedisGroupPosition` / `RedisGroupSeeker` names carry.
 - **Acknowledgement via the republish-retry model.** `ack` is `XACK`; `nack(requeue = true)`
   re-appends a copy to the stream then acks the original (at-least-once); `nack(requeue = false)`
   acks to drop.

@@ -40,10 +40,10 @@ pub async fn confirm(order: &Order) -> Confirmation {
     }
 }
 
-/// Logs cancellations read through the same group. No reply, so it returns a plain `HandlerResult`;
-/// `Ack` triggers the `XACK`.
+/// Logs cancellations read through the same group. No reply, so it returns a plain
+/// `HandlerOutcome`; an ack triggers the `XACK`.
 #[subscriber(RedisStream::new("cancellations").group("workers"))]
-pub async fn on_cancel(order: &Order) -> HandlerResult {
+pub async fn on_cancel(order: &Order) -> HandlerOutcome {
     println!("order {} ({}) cancelled", order.id, order.item);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }

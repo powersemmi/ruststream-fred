@@ -1,7 +1,11 @@
 # Redis Streams
 
 A service on this form globs `ruststream_fred::stream::prelude::*`, which carries the descriptor,
-the seek types and this form's publish policy as `Publish`.
+the seek types with the contexts that carry them, and this form's `RedisPublish` policy.
+
+Every prelude of this crate globs the core prelude, so the bare words `Publish` and
+`TransactionalPublish` keep naming the core's slot capability traits: the publish policies are
+exported under their prefixed names and never shadow them.
 
 A `#[subscriber("key")]` handler binds to a Redis stream key. Because Redis Streams always read
 through a consumer group, the bare-string form needs a broker-wide default group
@@ -46,6 +50,29 @@ The recovery handler on the same group, reclaiming entries idle for over 30 seco
 --8<-- "crates/ruststream-fred/examples/fred_reclaim.rs:reclaim"
 ```
 
+## Native delivery fields
+
+Metadata the transport carries but a payload does not is read by compile-time key off the typed
+context, with no hashing, boxing or downcasting. A handler names `StreamContext` as its context type
+(or lets a `Ctx<K>` parameter project it), a page body names `StreamBatchContext`, and a key the
+subscription's transport does not carry is a compile error rather than a runtime miss.
+
+| Key | Value | On |
+| --- | --- | --- |
+| `keys::EntryId` | `EntryId`, the parsed `<milliseconds>-<sequence>` id this delivery was read at | delivery |
+| `keys::Position` | `RedisGroupPosition`, the cursor that redelivers this entry | delivery |
+| `keys::ConsumerGroup` | the group the subscription reads through | delivery and page |
+| `keys::SeekHandle` | `RedisGroupSeeker`, the group's reposition handle | delivery and page |
+
+A page spans many deliveries, so only subscription-scoped fields sit on `StreamBatchContext`: an
+entry id or a position belongs to one delivery and rides the page's own elements instead. The two
+are separate types, so a page body asking for a per-delivery key does not compile.
+
+The reclaim path's native delivery count and idle time are not duplicated here: they arrive as the
+`DELIVERY_COUNT_HEADER` / `IDLE_MS_HEADER` headers, where every transport reads them the same way.
+Pub/Sub has its own `PubSubContext` (the matched channel, and whether it came through a pattern);
+lists carry nothing native beyond payload and headers and stay on the `()` default.
+
 ## Repositioning a group
 
 A stream keeps its entries until it is trimmed, so a group can be moved back over history or forward
@@ -72,16 +99,25 @@ A `start_at(..)` clause seeks the subscription before its first delivery, on eve
 --8<-- "crates/ruststream-fred/examples/fred_seek.rs:start-at"
 ```
 
-A `Seek` parameter injects the subscription's own seeker, so a handler can move the group while the
-service runs:
+While the service runs, the handle comes off the delivery's own context: `StreamContext` carries the
+group's seeker under the `keys::SeekHandle` key, so a handler binds it as a `Ctx` parameter and
+nothing is attached at the mount site.
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_seek.rs:seek-param"
 ```
 
-A delivery also reports its own position (`Positioned::position`), and seeking to it delivers that
-message again followed by the entries after it - the id is decremented automatically, since the
-cursor is exclusive.
+A delivery also reports its own position (`Positioned::position`, and the same value under the
+`keys::Position` key), and seeking to it delivers that message again followed by the entries after
+it - the id is decremented automatically, since the cursor is exclusive.
+
+A page body repositions the same group one level up. The seeker is subscription-scoped, so it rides
+the batch context `StreamBatchContext` under that same key, while the entry a page reacts to is read
+off the page's own elements:
+
+```rust
+--8<-- "crates/ruststream-fred/examples/fred_seek.rs:batch"
+```
 
 What a seek does not touch:
 
@@ -109,7 +145,7 @@ Settlement follows the republish-retry model:
 
 ## Delayed retry
 
-A handler can ask for a delayed redelivery (`HandlerResult::retry_after(delay)`), for example to back
+A handler can ask for a delayed redelivery (`HandlerOutcome::retry_after(delay)`), for example to back
 off a transient failure. Redis Streams have no native per-message delay, so by default the runtime
 falls back to an in-process timer that re-publishes the message after the delay - at-most-once over
 that window, since a crash before the timer fires loses the deferred copy.
@@ -173,5 +209,5 @@ implements the most of the three transports; the notes name where Lists and Pub/
 | `OwnedTransactions` | yes (Streams, standalone and sentinel) | `publisher.transaction()` returns a buffer-owning value, so any number can be open on one handle; cluster is rejected for the same reason. |
 | `RequestReply` | no | Redis has no request-reply primitive: nothing on the wire carries a reply address or correlates a reply with its request. |
 | `Partitioned` | yes | All three transports read the key from the `redis-partition-key` header for the runtime's `workers(n, by_key)` lanes. The sender sets it, with [`partition_key`](#partition-keys). |
-| `Seekable` + `Positioned` | yes (Streams) | The group cursor moves with `XGROUP SETID`, and a delivery reports the position that redelivers it. See [Repositioning a group](#repositioning-a-group). A list is destructive and Pub/Sub keeps no history, so neither implements it. |
+| `Seekable` + `Positioned` | yes (Streams) | The group cursor moves with `XGROUP SETID`, and a delivery reports the position that redelivers it. Handlers reach the handle through the `keys::SeekHandle` context key; see [Repositioning a group](#repositioning-a-group). A list is destructive and Pub/Sub keeps no history, so neither implements it. |
 | `DescribeServer` | yes | Reports the configured address (the first seed on cluster and sentinel). |

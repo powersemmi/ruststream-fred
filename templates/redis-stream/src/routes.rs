@@ -22,7 +22,7 @@ use crate::orders;
 /// reply, so its `include` stands alone. The router is a consuming builder, so the calls chain;
 /// the registration list is opaque, hence `impl RouterDef`.
 pub fn orders() -> impl RouterDef<RedisBroker> {
-    let confirmations = TypedPublisher::new(Publish);
+    let confirmations = TypedPublisher::new(RedisPublish);
 
     Router::new()
         .include(orders::confirm)

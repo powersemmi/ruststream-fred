@@ -11,7 +11,8 @@ buffer.
 buffer, and `abort` discards it. Clones of a handle share the same open transaction.
 
 The idiomatic way to use it is a batch-publishing handler wired with a `.transactional()` publisher:
-every reply of one batch is committed together.
+every reply of one batch is committed together. The page shape is read off the signature - a slice
+payload is what makes a handler a batch handler - so nothing in the attribute says it.
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_transaction.rs:batch"
