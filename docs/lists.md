@@ -24,9 +24,10 @@ runtime pairs it with the connected broker, or call
 as Pub/Sub: a lossless binary frame by default, or a readable codec-serialized envelope when a codec
 is set on both ends (`.codec(JsonCodec)`).
 
-A pop returns one entry, so a page handler on a list is served by pages the subscriber assembles on
-the client; it still names its size with `batch(n)` at the mount site and never sees a longer page.
-`block(..)` chains after the size, as it does on a stream (see [Pages](streams.md#pages)).
+A pop returns one entry, so a batch handler on a list is served by batches the subscriber assembles
+on the client; it still names its size with `batch(n)` at the mount site and never sees a longer
+batch. `block(..)` chains after the size, as it does on a stream (see
+[Batches](streams.md#batches)).
 
 ## Orphan recovery
 

@@ -25,14 +25,14 @@ sharded Pub/Sub on a cluster at the same time - each handler mounts on its own b
 --8<-- "crates/ruststream-fred/examples/fred_pubsub.rs:app"
 ```
 
-To publish, chain `.publisher(..)` on the include site with a `RedisPubSubPublish` policy (add
-`.mode(PubSubMode::Sharded)` to match a sharded subscriber). The classic handler above uses the macro
-`publish("audit")` form, so its return value goes out through that Pub/Sub policy - not the default
-stream publisher.
+To publish, chain `.out(Reply, ..)` on the include site with a `RedisPubSubPublish` policy (add
+`.mode(PubSubMode::Sharded)` to match a sharded subscriber). `Reply` is the position the policy binds
+to - the value the handler returns. The classic handler above uses the macro `publish("audit")` form,
+so its return value goes out through that Pub/Sub policy - not the default stream publisher.
 
-Pub/Sub delivers one message at a time, so a page handler here is served by pages the subscriber
+Pub/Sub delivers one message at a time, so a batch handler here is served by batches the subscriber
 assembles on the client; it still names its size with `batch(n)` at the mount site and never sees a
-longer page (see [Pages](streams.md#pages)).
+longer batch (see [Batches](streams.md#batches)).
 
 Headers travel in a frame around the payload: a lossless binary frame by default, or - when you set a
 codec on both the publisher and the subscriber (`.codec(JsonCodec)`) - a readable codec-serialized

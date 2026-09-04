@@ -54,44 +54,44 @@ The recovery handler on the same group, reclaiming entries idle for over 30 seco
 --8<-- "crates/ruststream-fred/examples/fred_reclaim.rs:reclaim"
 ```
 
-## Pages
+## Batches
 
-A slice payload is what makes a handler a page handler - nothing in the attribute says it - and its
-mount site names one number, the page size:
+A slice payload is what makes a handler a batch handler - nothing in the attribute says it - and its
+mount site names one number, the batch size:
 
 ```rust
---8<-- "crates/ruststream-fred/examples/fred_seek.rs:page-mount"
+--8<-- "crates/ruststream-fred/examples/fred_seek.rs:batch-mount"
 ```
 
-`batch(n)` is mandatory on a page handler and rejected on a single-message one, so the size is
-always written where the page is mounted. On a stream it is the `COUNT` of the `XREADGROUP` (or
-`XAUTOCLAIM`) that fetches the page: the server sends at most that many entries and the page a
+`batch(n)` is mandatory on a batch handler and rejected on a single-message one, so the size is
+always written where the batch is mounted. On a stream it is the `COUNT` of the `XREADGROUP` (or
+`XAUTOCLAIM`) that fetches the batch: the server sends at most that many entries and the batch a
 handler sees is the read that produced it - nothing is split or merged on the way.
 
 Everything else about how a read forms stays Redis's own vocabulary and chains after the size,
 through `RedisSubscribeExt` (in the form preludes): `block(..)` is how long that read waits for
 entries. A descriptor written in the attribute may name it too; the mount site wins.
 
-Lists and Pub/Sub pop one entry at a time, so their subscribers assemble pages on the client and
+Lists and Pub/Sub pop one entry at a time, so their subscribers assemble batches on the client and
 honour the same size. Nothing at a mount site says which of the two happened, which is the point.
 
 ## Native delivery fields
 
 Metadata the transport carries but a payload does not is read by compile-time key off the typed
 context, with no hashing, boxing or downcasting. A handler names `StreamContext` as its context type
-(or lets a `Ctx<K>` parameter project it), a page body names `StreamBatchContext`, and a key the
+(or lets a `Ctx<K>` parameter project it), a batch body names `StreamBatchContext`, and a key the
 subscription's transport does not carry is a compile error rather than a runtime miss.
 
 | Key | Value | On |
 | --- | --- | --- |
 | `keys::EntryId` | `EntryId`, the parsed `<milliseconds>-<sequence>` id this delivery was read at | delivery |
 | `keys::Position` | `RedisGroupPosition`, the cursor that redelivers this entry | delivery |
-| `keys::ConsumerGroup` | the group the subscription reads through | delivery and page |
-| `keys::SeekHandle` | `RedisGroupSeeker`, the group's reposition handle | delivery and page |
+| `keys::ConsumerGroup` | the group the subscription reads through | delivery and batch |
+| `keys::SeekHandle` | `RedisGroupSeeker`, the group's reposition handle | delivery and batch |
 
-A page spans many deliveries, so only subscription-scoped fields sit on `StreamBatchContext`: an
-entry id or a position belongs to one delivery and rides the page's own elements instead. The two
-are separate types, so a page body asking for a per-delivery key does not compile.
+A batch spans many deliveries, so only subscription-scoped fields sit on `StreamBatchContext`: an
+entry id or a position belongs to one delivery and rides the batch's own elements instead. The two
+are separate types, so a batch body asking for a per-delivery key does not compile.
 
 The reclaim path's native delivery count and idle time are not duplicated here: they arrive as the
 `DELIVERY_COUNT_HEADER` / `IDLE_MS_HEADER` headers, where every transport reads them the same way.
@@ -136,9 +136,9 @@ A delivery also reports its own position (`Positioned::position`, and the same v
 `keys::Position` key), and seeking to it delivers that message again followed by the entries after
 it - the id is decremented automatically, since the cursor is exclusive.
 
-A page body repositions the same group one level up. The seeker is subscription-scoped, so it rides
-the batch context `StreamBatchContext` under that same key, while the entry a page reacts to is read
-off the page's own elements:
+A batch body repositions the same group one level up. The seeker is subscription-scoped, so it rides
+the batch context `StreamBatchContext` under that same key, while the entry a batch reacts to is read
+off the batch's own elements:
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_seek.rs:batch"
@@ -229,7 +229,7 @@ implements the most of the three transports; the notes name where Lists and Pub/
 | Capability | Native | Notes |
 | --- | --- | --- |
 | `Subscribe` | yes | Subscribes by stream key through a consumer group (the bare-string form needs `default_group`). Lists and Pub/Sub subscribe through their own descriptors. |
-| `BatchSubscriber` | yes, on all three | On Streams natively: the mount site's `batch(n)` is the `COUNT` of the `XREADGROUP` / `XAUTOCLAIM` that fetches the page, and a page is one non-empty read, never empty. Lists and Pub/Sub pop one entry at a time, so their subscribers assemble pages on the client and honour the same size. See [Pages](#pages). |
+| `BatchSubscriber` | yes, on all three | On Streams natively: the mount site's `batch(n)` is the `COUNT` of the `XREADGROUP` / `XAUTOCLAIM` that fetches the batch, and a batch is one non-empty read, never empty. Lists and Pub/Sub pop one entry at a time, so their subscribers assemble batches on the client and honour the same size. See [Batches](#batches). |
 | `TransactionalPublisher` | yes (Streams, standalone and sentinel) | The stream publisher buffers on the handle and commits it as one `MULTI` / `EXEC`. A cluster publisher rejects it, because a `MULTI` block cannot span hash slots. The List and Pub/Sub publishers have no transaction. See [Transactions](transactions.md). |
 | `OwnedTransactions` | yes (Streams, standalone and sentinel) | `publisher.transaction()` returns a buffer-owning value, so any number can be open on one handle; cluster is rejected for the same reason. |
 | `RequestReply` | no | Redis has no request-reply primitive: nothing on the wire carries a reply address or correlates a reply with its request. |

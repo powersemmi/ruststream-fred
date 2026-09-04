@@ -26,10 +26,10 @@
 - **Redis Streams with consumer groups.** Subscribe through a group off the fresh tail
   (`RedisStream::new`), or reclaim a crashed consumer's pending entries (`RedisStream::reclaim`).
   Payload and headers round-trip as stream entry fields.
-- **Pages on every transport.** A page handler names its size where it is mounted
+- **Batches on every transport.** A batch handler names its size where it is mounted
   (`batch(nonzero!(n))`); on streams that number is the `COUNT` of the `XREADGROUP` that fetches the
-  page, and the list and Pub/Sub subscribers assemble pages of the same size on the client. Redis's
-  own read options, `block(..)` among them, chain after it.
+  batch, and the list and Pub/Sub subscribers assemble batches of the same size on the client.
+  Redis's own read options, `block(..)` among them, chain after it.
 - **Standalone, cluster, and sentinel.** One crate, named constructors pick the topology:
   `RedisBroker::standalone`, `::cluster`, `::sentinel`.
 - **Authentication and TLS on every topology.** `.credentials` / `.password` set the auth fields
