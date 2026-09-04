@@ -34,9 +34,9 @@ type RawStreams = Vec<(String, Vec<(String, Vec<(String, Vec<u8>)>)>)>;
 /// Cursor a fresh reclaim scan starts from (the whole pending list).
 const RECLAIM_START: &str = "0-0";
 
-/// `COUNT` for a read on the single-message path, where the framework names no page size: a read
+/// `COUNT` for a read on the single-message path, where the framework names no batch size: a read
 /// that fetched one entry per round trip would spend a round trip per message, so the loop
-/// prefetches and drains the buffer between reads. Pages take their own `COUNT` from the size the
+/// prefetches and drains the buffer between reads. Batches take their own `COUNT` from the size the
 /// mount site asked for instead.
 const PREFETCH: u64 = 64;
 
@@ -358,9 +358,9 @@ impl Seekable for RedisSubscriber {
 impl BatchSubscriber for RedisSubscriber {
     type Batch = Vec<RedisMessage>;
 
-    /// Yields one page per non-empty read, native all the way down: `size` is the `COUNT` of the
+    /// Yields one batch per non-empty read, native all the way down: `size` is the `COUNT` of the
     /// `XREADGROUP` (or `XAUTOCLAIM`) that fetches it, so the server never sends more than the
-    /// page holds. Never yields an empty page.
+    /// batch holds. Never yields an empty batch.
     ///
     /// # Cancel safety
     ///
@@ -377,7 +377,7 @@ impl BatchSubscriber for RedisSubscriber {
                 if !s.buffer.is_empty() {
                     // Move the entries out first so `s.message` can borrow `s` without overlapping
                     // a live mutable borrow of `s.buffer`. The read already capped itself at
-                    // `count`; the split is what keeps a page within `size` when a re-entered
+                    // `count`; the split is what keeps a batch within `size` when a re-entered
                     // subscription asks for a smaller one than the buffered read used.
                     let tail = s.buffer.split_off(size.get().min(s.buffer.len()));
                     let entries = std::mem::replace(&mut s.buffer, tail);

@@ -214,8 +214,8 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisPubSu
 /// A Pub/Sub subscription backed by a dedicated `fred` client, so its message stream and channel
 /// state are isolated from other subscribers and from the publishing pool.
 ///
-/// Pub/Sub delivers one message at a time, so the pages a [`BatchSubscriber`] hands out are
-/// assembled on the client by the core's [`BufferedSubscriber`]: it fills a page up to the size
+/// Pub/Sub delivers one message at a time, so the batches a [`BatchSubscriber`] hands out are
+/// assembled on the client by the core's [`BufferedSubscriber`]: it fills a batch up to the size
 /// the mount site asked for and closes a partial one on its own deadline.
 pub struct RedisPubSubSubscriber(BufferedSubscriber<PubSubWire>);
 
@@ -255,11 +255,11 @@ impl ruststream::Subscriber for RedisPubSubSubscriber {
 impl BatchSubscriber for RedisPubSubSubscriber {
     type Batch = Vec<RedisPubSubMessage>;
 
-    /// Yields pages of at most `size` deliveries, assembled as they arrive.
+    /// Yields batches of at most `size` deliveries, assembled as they arrive.
     ///
     /// # Cancel safety
     ///
-    /// Same as [`Subscriber::stream`](ruststream::Subscriber::stream). A page abandoned mid-fill
+    /// Same as [`Subscriber::stream`](ruststream::Subscriber::stream). A batch abandoned mid-fill
     /// loses the deliveries it holds, as any Pub/Sub delivery nobody is polling for is lost.
     fn batches(
         &mut self,

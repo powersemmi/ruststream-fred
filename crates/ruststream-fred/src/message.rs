@@ -335,7 +335,7 @@ mod tests {
         );
     }
 
-    // A page spans many deliveries, so its context carries only what the subscription shares: the
+    // A batch spans many deliveries, so its context carries only what the subscription shares: the
     // group and its cursor handle, never one delivery's entry id or position.
     #[test]
     fn build_batch_context_carries_only_subscription_scoped_fields() {

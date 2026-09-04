@@ -25,7 +25,7 @@ struct Order {
 
 // --8<-- [start:batch]
 // A batch-publishing handler: each reply in the returned Vec is published to `processed`, all
-// committed atomically when the transactional publisher commits. The page shape is read off the
+// committed atomically when the transactional publisher commits. The batch shape is read off the
 // signature - a slice payload is what makes this a batch handler.
 #[subscriber("orders", publish("processed"))]
 async fn process(orders: &[Order]) -> Result<Vec<Order>, HandlerOutcome> {
@@ -41,17 +41,14 @@ fn app() -> impl App {
     let broker = RedisBroker::standalone("redis://localhost:6379").default_group("workers");
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         // --8<-- [start:mount]
-        // The page size is the one number the framework hands the subscriber: here it becomes the
-        // `XREADGROUP COUNT` of the read that fetches the page. .transactional() requires the
-        // policy's live form to be transactional, which the stream form's is on standalone and
-        // sentinel: the page's replies are buffered and committed as one MULTI / EXEC block.
-        b.include(
-            process
-                .batch(nonzero!(32))
-                .publisher(TransactionalPublish)
-                .transactional()
-                .build(),
-        );
+        // The batch size is the one number the framework hands the subscriber: here it becomes
+        // the `XREADGROUP COUNT` of the read that fetches the batch. `.out(Reply, ..)` names the
+        // policy the handler's returned value is published through, and .transactional() requires
+        // that policy's live form to be transactional, which the stream form's is on standalone
+        // and sentinel: the batch's replies are buffered and committed as one MULTI / EXEC block.
+        b.include(process.batch(nonzero!(32)))
+            .out(Reply, TransactionalPublish)
+            .transactional();
         // --8<-- [end:mount]
 
         // --8<-- [start:owned]

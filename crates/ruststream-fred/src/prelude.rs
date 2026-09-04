@@ -1,7 +1,7 @@
 //! The core prelude plus everything a service mixing all three Redis forms writes.
 //!
 //! The broker, all three descriptors and publish policies, the seek types, the per-delivery and
-//! page contexts with their [`keys`], and the [`crate::stream`], [`crate::list`] and
+//! batch contexts with their [`keys`], and the [`crate::stream`], [`crate::list`] and
 //! [`crate::pubsub`] modules.
 //!
 //! # Examples

@@ -1,8 +1,16 @@
 //! Redis subscription options at the mount site.
 //!
-//! The framework passes exactly one number down to a broker's subscriber: the page size, named by
+//! The framework passes exactly one number down to a broker's subscriber: the batch size, named by
 //! the core's own `batch(n)` step. Everything else about how a read forms is this crate's
 //! vocabulary, and [`RedisSubscribeExt`] is where it chains - after the size, on the same line.
+//!
+//! There is deliberately no publisher-side twin over the core's `MapPublisher` hook. A subscription
+//! needs one because its source is written inside `#[subscriber(..)]`, so a mount site has no other
+//! way to reach `block(..)`; a publish policy is constructed in the `.out(marker, policy)` call
+//! itself, where every option it carries (`RedisPubSubPublish::mode`, `RedisListPublish::ttl`) is
+//! already one chain away. A twin would be a second spelling for the same setting, and its
+//! envelope-framing method would be shadowed by the chain's own `.codec(..)`, which encodes the
+//! reply rather than the frame around it.
 
 use std::time::Duration;
 

@@ -1,14 +1,14 @@
 //! Typed per-delivery context exposing native Redis metadata, one struct per transport, plus the
-//! subscription-scoped page context the batch forms read.
+//! subscription-scoped batch context the batch forms read.
 //!
 //! A handler reads native Redis metadata for the message it is processing by compile-time
 //! [`Field`] key, with no hashing, boxing, or downcasting. The runtime builds the context value
 //! once per delivery (via [`BuildContext`]) from the concrete broker message; the handler reads a
 //! field with `ctx.context(key)`, or binds one as a parameter with the core `Ctx<K>` extractor.
 //!
-//! A batch handler gets one context per page instead ([`BuildBatchContext`]), carrying only what
-//! the whole *subscription* shares. Per-delivery data has no place there, since a page spans many
-//! deliveries: an entry id or a position rides the page's own elements.
+//! A batch handler gets one context per batch instead ([`BuildBatchContext`]), carrying only what
+//! the whole *subscription* shares. Per-delivery data has no place there, since a batch spans many
+//! deliveries: an entry id or a position rides the batch's own elements.
 //!
 //! This is purely additive. A handler that declares the default `()` context is unaffected: the
 //! blanket `impl BuildContext<M> for ()` still applies, so opting in costs nothing to those who do
@@ -132,13 +132,13 @@ impl BuildContext<RedisMessage> for StreamContext {
     }
 }
 
-/// Page context for a batched Redis Streams subscription: what the whole subscription shares.
+/// Batch context for a batched Redis Streams subscription: what the whole subscription shares.
 ///
-/// The runtime builds one per dispatched page from the page's first delivery, and a page body
+/// The runtime builds one per dispatched batch from the batch's first delivery, and a batch body
 /// reads it by [`keys`] key with `ctx.context(..)`. Per-delivery data (the entry id, the position
-/// that redelivers one entry) has no place here, because a page spans many deliveries: it rides
-/// the page's own elements instead, read off each element's typed header contract. Keeping this a
-/// separate type from [`StreamContext`] is what rejects a page body asking for per-delivery fields
+/// that redelivers one entry) has no place here, because a batch spans many deliveries: it rides
+/// the batch's own elements instead, read off each element's typed header contract. Keeping this a
+/// separate type from [`StreamContext`] is what rejects a batch body asking for per-delivery fields
 /// at compile time.
 ///
 /// # Examples
@@ -153,13 +153,13 @@ impl BuildContext<RedisMessage> for StreamContext {
 /// # #[derive(serde::Deserialize)]
 /// # struct Order { id: u64 }
 ///
-/// /// A page that saw the poison marker rewinds the group once the page is settled.
+/// /// A batch that saw the poison marker rewinds the group once the batch is settled.
 /// #[subscriber(RedisStream::new("orders").group("workers"))]
 /// async fn work(
-///     page: &[Order],
+///     batch: &[Order],
 ///     ctx: &mut Context<'_, StreamBatchContext>,
 /// ) -> HandlerOutcome {
-///     if page.iter().any(|order| order.id == 0)
+///     if batch.iter().any(|order| order.id == 0)
 ///         && ctx
 ///             .context(keys::SeekHandle)
 ///             .seek(RedisGroupPosition::beginning())
@@ -178,7 +178,7 @@ pub struct StreamBatchContext {
 }
 
 impl StreamBatchContext {
-    /// The consumer group every delivery of this page was read through.
+    /// The consumer group every delivery of this batch was read through.
     #[must_use]
     pub fn consumer_group(&self) -> &str {
         self.seeker.group()
@@ -247,7 +247,7 @@ impl BuildContext<RedisPubSubMessage> for PubSubContext {
 /// Each key is a zero-sized selector implementing [`Field`] only for the context types that carry
 /// its field, so applying a key to the wrong transport's context is a compile error. A key that
 /// also implements [`ContextField`](ruststream::ContextField) can be bound as a `Ctx<K>` handler
-/// parameter; those read the per-delivery context, so a page body reaches its own fields through
+/// parameter; those read the per-delivery context, so a batch body reaches its own fields through
 /// `ctx.context(..)` instead.
 pub mod keys {
     use ruststream::ContextField;
@@ -300,11 +300,11 @@ pub mod keys {
         }
     }
 
-    /// Reads the group's reposition handle off a stream context, per delivery or per page.
+    /// Reads the group's reposition handle off a stream context, per delivery or per batch.
     ///
     /// The handle is subscription-scoped (resolved once, when the subscription opens), which is
     /// why it is the one field both context types carry. As a `Ctx<SeekHandle>` parameter it binds
-    /// the per-delivery context; a page body reads it with `ctx.context(SeekHandle)` off
+    /// the per-delivery context; a batch body reads it with `ctx.context(SeekHandle)` off
     /// [`StreamBatchContext`].
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
     pub struct SeekHandle;
@@ -331,7 +331,7 @@ pub mod keys {
         }
     }
 
-    /// Reads the consumer group off a stream context, per delivery or per page.
+    /// Reads the consumer group off a stream context, per delivery or per batch.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
     pub struct ConsumerGroup;
 

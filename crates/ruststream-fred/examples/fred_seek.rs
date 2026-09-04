@@ -61,10 +61,10 @@ async fn handle(order: &Order, Ctx(seeker): Ctx<keys::SeekHandle>) -> HandlerOut
 // --8<-- [end:seek-param]
 
 // --8<-- [start:batch]
-// A page repositions the same group one level up: the handle is subscription-scoped, so it rides
-// the batch context, while the entry a page reacts to is read off the page's own elements.
+// A batch repositions the same group one level up: the handle is subscription-scoped, so it rides
+// the batch context, while the entry a batch reacts to is read off the batch's own elements.
 #[subscriber(RedisStream::new("orders.bulk").group("bulk"))]
-async fn handle_page(
+async fn handle_batch(
     orders: &[Order],
     ctx: &mut Context<'_, StreamBatchContext>,
 ) -> HandlerOutcome {
@@ -93,16 +93,16 @@ fn app() -> impl App {
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
             b.include(handle);
-            // --8<-- [start:page-mount]
-            // A page names its size, which becomes the `XREADGROUP COUNT` of the read that fetches
-            // it, so the server never sends more than one page holds. Redis's own read options
-            // chain after that, in that order.
+            // --8<-- [start:batch-mount]
+            // A batch names its size, which becomes the `XREADGROUP COUNT` of the read that
+            // fetches it, so the server never sends more than one batch holds. Redis's own read
+            // options chain after that, in that order.
             b.include(
-                handle_page
+                handle_batch
                     .batch(nonzero!(16))
                     .block(Duration::from_secs(2)),
             );
-            // --8<-- [end:page-mount]
+            // --8<-- [end:batch-mount]
             b.include(replay);
         },
     )

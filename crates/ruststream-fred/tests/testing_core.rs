@@ -421,7 +421,7 @@ async fn batch_drains_in_publish_order() {
     }
 
     // Opened smaller than the run, so the assertion below reads the contract rather than the
-    // publish count: a page never carries more than the size the subscription named.
+    // publish count: a batch never carries more than the size the subscription named.
     let mut batches = Box::pin(sub.batches(nonzero!(3)));
     let batch = tokio::time::timeout(WAIT, batches.next())
         .await
@@ -430,7 +430,7 @@ async fn batch_drains_in_publish_order() {
         .expect("ok batch");
 
     assert!(!batch.is_empty(), "batch must contain at least one message");
-    assert!(batch.len() <= 3, "a page must not exceed its size");
+    assert!(batch.len() <= 3, "a batch must not exceed its size");
     for (i, msg) in batch.into_iter().enumerate() {
         assert_eq!(msg.payload(), &[u8::try_from(i).expect("count fits u8")]);
         msg.ack().await.ok();

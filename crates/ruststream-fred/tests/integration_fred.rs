@@ -833,17 +833,17 @@ async fn list_simple_round_trip() {
 // the stream and Pub/Sub forms; it lives here because the suite names one fixed subject and on
 // Redis a list and a stream under one name are the same key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn list_pages_are_capped_at_the_size_they_opened_with() {
+async fn list_batches_are_capped_at_the_size_they_opened_with() {
     const COUNT: u8 = 10;
-    // Smaller than the run, so a page that ignored its size would be caught by the assertion
+    // Smaller than the run, so a batch that ignored its size would be caught by the assertion
     // rather than by luck of timing.
-    const PAGE: NonZeroUsize = NonZeroUsize::new(3).unwrap();
+    const BATCH: NonZeroUsize = NonZeroUsize::new(3).unwrap();
 
     let Some(url) = env("REDIS_TEST_URL") else {
         return;
     };
     let broker = standalone(url).await;
-    let key = unique_key("list_pages");
+    let key = unique_key("list_batches");
 
     let publisher = broker.list_publisher(RedisListPublish::new());
     for i in 0..COUNT {
@@ -857,22 +857,22 @@ async fn list_pages_are_capped_at_the_size_they_opened_with() {
         .subscribe_list(RedisList::new(&key).block(Duration::from_millis(50)))
         .await
         .expect("subscribe list");
-    let mut pages = Box::pin(sub.batches(PAGE));
+    let mut batches = Box::pin(sub.batches(BATCH));
     let mut received = Vec::new();
     while received.len() < usize::from(COUNT) {
-        let page = next(&mut pages).await.expect("page ok");
-        assert!(!page.is_empty(), "a yielded page must not be empty");
+        let batch = next(&mut batches).await.expect("batch ok");
+        assert!(!batch.is_empty(), "a yielded batch must not be empty");
         assert!(
-            page.len() <= PAGE.get(),
-            "a page must never carry more than its size: got {}",
-            page.len(),
+            batch.len() <= BATCH.get(),
+            "a batch must never carry more than its size: got {}",
+            batch.len(),
         );
-        received.extend(page.iter().map(|msg| msg.payload().to_vec()));
+        received.extend(batch.iter().map(|msg| msg.payload().to_vec()));
     }
     let expected: Vec<Vec<u8>> = (0..COUNT).map(|i| vec![i]).collect();
-    assert_eq!(received, expected, "pages must preserve the queue order");
+    assert_eq!(received, expected, "batches must preserve the queue order");
 
-    drop(pages);
+    drop(batches);
     broker.shutdown().await.expect("shutdown");
 }
 

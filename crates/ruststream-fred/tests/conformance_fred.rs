@@ -52,12 +52,12 @@ async fn passes_batches() {
     .await;
 }
 
-// The same suite over a transport with no native pages of its own: Pub/Sub assembles its pages on
-// the client, and what it owes is what the stream owes - a page never longer than the size the
-// subscription opened with, and publish order preserved across pages.
+// The same suite over a transport with no native batches of its own: Pub/Sub assembles its
+// batches on the client, and what it owes is what the stream owes - a batch never longer than the
+// size the subscription opened with, and publish order preserved across batches.
 //
 // The list transport takes the same delegation and is checked the same way by
-// `list_pages_are_capped_at_the_size_they_opened_with` in the integration tests instead: the suite
+// `list_batches_are_capped_at_the_size_they_opened_with` in the integration tests instead: the suite
 // names one fixed subject, and on Redis a list and a stream under one name are the same key.
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

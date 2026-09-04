@@ -178,7 +178,7 @@ impl RedisList {
 
     /// How long one blocking pop waits before looping. Defaults to 5 seconds.
     ///
-    /// Also reachable at the mount site, after the page size, through
+    /// Also reachable at the mount site, after the batch size, through
     /// [`RedisSubscribeExt`](crate::RedisSubscribeExt).
     pub const fn block(mut self, block: Duration) -> Self {
         self.block = Some(block);
@@ -339,8 +339,8 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisList 
 
 /// A list-backed work-queue subscription.
 ///
-/// A pop returns one entry, so the pages a [`BatchSubscriber`] hands out are assembled on the
-/// client by the core's [`BufferedSubscriber`]: it fills a page up to the size the mount site
+/// A pop returns one entry, so the batches a [`BatchSubscriber`] hands out are assembled on the
+/// client by the core's [`BufferedSubscriber`]: it fills a batch up to the size the mount site
 /// asked for and closes a partial one on its own deadline.
 pub struct RedisListSubscriber(BufferedSubscriber<ListWire>);
 
@@ -396,12 +396,12 @@ impl ruststream::Subscriber for RedisListSubscriber {
 impl BatchSubscriber for RedisListSubscriber {
     type Batch = Vec<RedisListMessage>;
 
-    /// Yields pages of at most `size` entries, assembled from consecutive pops.
+    /// Yields batches of at most `size` entries, assembled from consecutive pops.
     ///
     /// # Cancel safety
     ///
     /// Same as [`Subscriber::stream`](ruststream::Subscriber::stream). Dropping the stream while a
-    /// page is filling abandons the entries it holds unsettled; in reliable mode they stay on the
+    /// batch is filling abandons the entries it holds unsettled; in reliable mode they stay on the
     /// processing list until recovered.
     fn batches(
         &mut self,

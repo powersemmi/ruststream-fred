@@ -13,19 +13,19 @@ use crate::orders;
 /// Builds the orders router: a publishing handler (replies to the `confirmations` stream via `XADD`)
 /// plus a plain one.
 ///
-/// Every handler form mounts through `include`; a reply publisher is attached to the registration
-/// it belongs to by chaining `publisher`, and the attachment closes with `build`, which commits it
-/// back into the router.
+/// Every handler form mounts through `include`; a publish policy is bound to the position it
+/// serves by chaining `out`, and the registration closes with `build`, which commits it back into
+/// the router.
 ///
-/// `confirm` needs a publisher for its reply, so its `include` names this form's `Publish` policy
-/// and the reply leaves under the default codec. The policy holds no connection, so the router needs
-/// no broker handle: the runtime pairs it once the broker is connected. `on_cancel` has no reply, so
-/// its `include` stands alone. The router is a consuming builder, so the calls chain; the
-/// registration list is opaque, hence `impl RouterDef`.
+/// `confirm` needs a publisher for its reply, so its `include` binds this form's `Publish` policy
+/// at the `Reply` position and the reply leaves under the default codec. The policy holds no
+/// connection, so the router needs no broker handle: the runtime pairs it once the broker is
+/// connected. `on_cancel` has no reply, so its `include` stands alone. The router is a consuming
+/// builder, so the calls chain; the registration list is opaque, hence `impl RouterDef`.
 pub fn orders() -> impl RouterDef<RedisBroker> {
     Router::new()
         .include(orders::confirm)
-        .publisher(Publish)
+        .out(Reply, Publish)
         .build()
         .include(orders::on_cancel)
 }

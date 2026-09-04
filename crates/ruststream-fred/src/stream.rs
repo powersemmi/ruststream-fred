@@ -33,7 +33,7 @@ pub use crate::publisher::RedisPublish as TransactionalPublish;
 /// The core prelude plus everything a Redis Streams service writes.
 ///
 /// The broker, the [`RedisStream`] descriptor and its options, the group seek types with the
-/// delivery and page contexts that carry them, this form's [`Publish`] policy, and the
+/// delivery and batch contexts that carry them, this form's [`Publish`] policy, and the
 /// transaction, position and seek capabilities.
 ///
 /// # Examples
@@ -202,7 +202,7 @@ impl RedisStream {
     /// is the `XREADGROUP` server-side block; in reclaim mode `XAUTOCLAIM` does not block, so this is
     /// the poll interval slept between scans that find nothing to reclaim.
     ///
-    /// Also reachable at the mount site, after the page size, through
+    /// Also reachable at the mount site, after the batch size, through
     /// [`RedisSubscribeExt`](crate::RedisSubscribeExt).
     pub const fn block(mut self, block: Duration) -> Self {
         self.block = Some(block);
