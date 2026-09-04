@@ -41,11 +41,17 @@ fn app() -> impl App {
     let broker = RedisBroker::standalone("redis://localhost:6379").default_group("workers");
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         // --8<-- [start:mount]
-        // .transactional() requires the policy's live form to be transactional, which the stream
-        // form's is on standalone and sentinel: the batch's replies are buffered and committed as
-        // one MULTI / EXEC block.
-        b.include(process)
-            .publisher(TypedPublisher::new(TransactionalPublish).transactional());
+        // The page size is the one number the framework hands the subscriber: here it becomes the
+        // `XREADGROUP COUNT` of the read that fetches the page. .transactional() requires the
+        // policy's live form to be transactional, which the stream form's is on standalone and
+        // sentinel: the page's replies are buffered and committed as one MULTI / EXEC block.
+        b.include(
+            process
+                .batch(nonzero!(32))
+                .publisher(TransactionalPublish)
+                .transactional()
+                .build(),
+        );
         // --8<-- [end:mount]
 
         // --8<-- [start:owned]

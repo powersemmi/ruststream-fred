@@ -56,8 +56,7 @@ fn app() -> impl App {
             // `publish("audit")` sends through this Pub/Sub policy (PUBLISH), not the default
             // stream publisher (XADD). The policy is pure declaration: the runtime pairs it with
             // the connected broker at startup.
-            b.include(on_event)
-                .publisher(TypedPublisher::new(Publish::default()));
+            b.include(on_event).publisher(Publish::default());
         })
         .with_broker(RedisBroker::cluster(["redis://localhost:7000"]), |b| {
             b.include(on_event_sharded);

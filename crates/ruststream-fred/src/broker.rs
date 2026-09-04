@@ -562,7 +562,6 @@ impl ConnectedRedisBroker {
             def.key().to_owned(),
             group,
             consumer,
-            def.count_or_default(),
             def.block_or_default(),
             def.mode(),
             def.poison_policy(),

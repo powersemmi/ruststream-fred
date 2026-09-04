@@ -14,18 +14,18 @@ use crate::orders;
 /// plus a plain one.
 ///
 /// Every handler form mounts through `include`; a reply publisher is attached to the registration
-/// it belongs to by chaining `publisher`, which also commits it back into the router.
+/// it belongs to by chaining `publisher`, and the attachment closes with `build`, which commits it
+/// back into the router.
 ///
-/// `confirm` needs a publisher for its reply; `TypedPublisher::new` pairs the stream publish policy
-/// with the default codec, reused to decode the order. The policy holds no connection, so the router
-/// needs no broker handle: the runtime pairs it once the broker is connected. `on_cancel` has no
-/// reply, so its `include` stands alone. The router is a consuming builder, so the calls chain;
-/// the registration list is opaque, hence `impl RouterDef`.
+/// `confirm` needs a publisher for its reply, so its `include` names this form's `Publish` policy
+/// and the reply leaves under the default codec. The policy holds no connection, so the router needs
+/// no broker handle: the runtime pairs it once the broker is connected. `on_cancel` has no reply, so
+/// its `include` stands alone. The router is a consuming builder, so the calls chain; the
+/// registration list is opaque, hence `impl RouterDef`.
 pub fn orders() -> impl RouterDef<RedisBroker> {
-    let confirmations = TypedPublisher::new(Publish);
-
     Router::new()
         .include(orders::confirm)
-        .publisher(confirmations)
+        .publisher(Publish)
+        .build()
         .include(orders::on_cancel)
 }

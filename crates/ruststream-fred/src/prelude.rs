@@ -11,7 +11,7 @@
 //!
 //! let orders = RedisStream::new("orders").group("workers");
 //! let broker = RedisBroker::standalone("redis://localhost:6379");
-//! let replies = TypedPublisher::new(stream::Publish);
+//! let replies: stream::Publish = stream::Publish;
 //! let _ = (orders, broker, replies);
 //! ```
 //!
@@ -32,7 +32,7 @@ pub use crate::context::{PubSubContext, StreamBatchContext, StreamContext, keys}
 pub use crate::{
     DelayedRetry, PARTITION_KEY_HEADER, PubSubMode, RedisBroker, RedisGroupPosition,
     RedisGroupSeeker, RedisList, RedisListPublish, RedisPubSub, RedisPubSubPublish, RedisPublish,
-    RedisPublishExt, RedisStream, StreamStart,
+    RedisPublishExt, RedisStream, RedisSubscribeExt, StreamStart,
 };
 
 // The policies keep their prefixed names here, and there is no bare `Publish`: this glob spans all

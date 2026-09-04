@@ -31,6 +31,7 @@ mod partition;
 mod publisher;
 mod recovery;
 mod seek;
+mod settings;
 mod subscriber;
 
 // These modules carry their own `//!` summaries. A second doc fragment here would be written in
@@ -60,6 +61,7 @@ pub use pubsub::{
     RedisPubSubSubscriber,
 };
 pub use seek::{EntryId, RedisGroupPosition, RedisGroupSeeker};
+pub use settings::RedisSubscribeExt;
 pub use stream::{RedisStream, StreamStart};
 pub use subscriber::RedisSubscriber;
 

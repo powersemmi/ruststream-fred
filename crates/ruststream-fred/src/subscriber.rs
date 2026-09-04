@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Formatter};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -33,6 +34,12 @@ type RawStreams = Vec<(String, Vec<(String, Vec<(String, Vec<u8>)>)>)>;
 /// Cursor a fresh reclaim scan starts from (the whole pending list).
 const RECLAIM_START: &str = "0-0";
 
+/// `COUNT` for a read on the single-message path, where the framework names no page size: a read
+/// that fetched one entry per round trip would spend a round trip per message, so the loop
+/// prefetches and drains the buffer between reads. Pages take their own `COUNT` from the size the
+/// mount site asked for instead.
+const PREFETCH: u64 = 64;
+
 fn duration_to_millis(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
@@ -46,7 +53,6 @@ pub struct RedisSubscriber {
     key: String,
     group: String,
     consumer: String,
-    count: u64,
     block: Duration,
     mode: ReadMode,
     policy: PoisonPolicy,
@@ -89,7 +95,6 @@ impl RedisSubscriber {
         key: String,
         group: String,
         consumer: String,
-        count: u64,
         block: Duration,
         mode: ReadMode,
         policy: PoisonPolicy,
@@ -107,7 +112,6 @@ impl RedisSubscriber {
             key,
             group,
             consumer,
-            count,
             block,
             mode,
             policy,
@@ -158,9 +162,9 @@ impl RedisSubscriber {
         }
     }
 
-    /// Fetches the next batch of entries into the buffer. A read that timed out with nothing
-    /// pending leaves the buffer empty (the caller loops and reads again).
-    async fn fetch(&mut self) -> Result<(), RedisError> {
+    /// Fetches up to `count` entries into the buffer. A read that timed out with nothing pending
+    /// leaves the buffer empty (the caller loops and reads again).
+    async fn fetch(&mut self, count: u64) -> Result<(), RedisError> {
         // Replay any due delayed-retry entries before reading, so they re-enter the stream and get
         // delivered through the normal read path. Granularity is the read block interval.
         if let Some(cfg) = &self.delay {
@@ -171,8 +175,8 @@ impl RedisSubscriber {
         // whatever comes back.
         let selected_at = self.generation.load(Ordering::Acquire);
         let entries = match self.mode.clone() {
-            ReadMode::Fresh => self.fetch_fresh().await?,
-            ReadMode::Reclaim { min_idle } => self.fetch_reclaim(min_idle).await?,
+            ReadMode::Fresh => self.fetch_fresh(count).await?,
+            ReadMode::Reclaim { min_idle } => self.fetch_reclaim(min_idle, count).await?,
         };
         if selected_at != self.generation.load(Ordering::Acquire) {
             // A seek overtook this read; drop its entries and let the caller read again.
@@ -183,13 +187,13 @@ impl RedisSubscriber {
         Ok(())
     }
 
-    async fn fetch_fresh(&self) -> Result<Vec<Entry>, RedisError> {
+    async fn fetch_fresh(&self, count: u64) -> Result<Vec<Entry>, RedisError> {
         let resp: RawStreams = self
             .pool
             .xreadgroup(
                 self.group.as_str(),
                 self.consumer.as_str(),
-                Some(self.count),
+                Some(count),
                 Some(duration_to_millis(self.block)),
                 false,
                 self.key.as_str(),
@@ -208,7 +212,11 @@ impl RedisSubscriber {
             .collect())
     }
 
-    async fn fetch_reclaim(&mut self, min_idle: Duration) -> Result<Vec<Entry>, RedisError> {
+    async fn fetch_reclaim(
+        &mut self,
+        min_idle: Duration,
+        count: u64,
+    ) -> Result<Vec<Entry>, RedisError> {
         let (cursor, entries): (String, Vec<XReadValue<String, String, Vec<u8>>>) = self
             .pool
             .xautoclaim_values(
@@ -217,7 +225,7 @@ impl RedisSubscriber {
                 self.consumer.as_str(),
                 duration_to_millis(min_idle),
                 self.cursor.as_str(),
-                Some(self.count),
+                Some(count),
                 false,
             )
             .await
@@ -232,13 +240,17 @@ impl RedisSubscriber {
         if !self.policy.is_active() {
             return Ok(entries);
         }
-        self.enrich_reclaimed(entries).await
+        self.enrich_reclaimed(entries, count).await
     }
 
     /// Annotates reclaimed entries with their native delivery count and idle time, and dead-letters
     /// (or drops) any that have exceeded `max_deliveries` instead of redelivering them.
-    async fn enrich_reclaimed(&self, entries: Vec<Entry>) -> Result<Vec<Entry>, RedisError> {
-        let meta = self.pending_meta().await?;
+    async fn enrich_reclaimed(
+        &self,
+        entries: Vec<Entry>,
+        limit: u64,
+    ) -> Result<Vec<Entry>, RedisError> {
+        let meta = self.pending_meta(limit).await?;
         let mut out = Vec::with_capacity(entries.len());
         for (id, mut fields) in entries {
             let (idle, count) = meta.get(&id).copied().unwrap_or((0, 0));
@@ -255,13 +267,13 @@ impl RedisSubscriber {
 
     /// Maps each of this consumer's pending entry IDs to its `(idle_ms, delivery_count)` via
     /// extended `XPENDING`, which - unlike `XAUTOCLAIM` - reports the native delivery count.
-    async fn pending_meta(&self) -> Result<HashMap<String, (u64, u64)>, RedisError> {
+    async fn pending_meta(&self, limit: u64) -> Result<HashMap<String, (u64, u64)>, RedisError> {
         let rows: Vec<(String, String, u64, u64)> = self
             .pool
             .xpending(
                 self.key.as_str(),
                 self.group.as_str(),
-                (0_u64, "-", "+", self.count, self.consumer.as_str()),
+                (0_u64, "-", "+", limit, self.consumer.as_str()),
             )
             .await
             .map_err(RedisError::stream)?;
@@ -325,7 +337,7 @@ impl Subscriber for RedisSubscriber {
                     return Some((s.message(id, fields), s));
                 }
                 // An empty fetch (a blocking read that timed out) just loops and reads again.
-                if let Err(err) = s.fetch().await {
+                if let Err(err) = s.fetch(PREFETCH).await {
                     return Some((Err(err), s));
                 }
             }
@@ -346,28 +358,36 @@ impl Seekable for RedisSubscriber {
 impl BatchSubscriber for RedisSubscriber {
     type Batch = Vec<RedisMessage>;
 
-    /// Yields one batch per non-empty read (`XREADGROUP COUNT` / `XAUTOCLAIM`), up to
-    /// [`RedisStream::count`](crate::RedisStream::count) entries. Never yields an empty batch.
+    /// Yields one page per non-empty read, native all the way down: `size` is the `COUNT` of the
+    /// `XREADGROUP` (or `XAUTOCLAIM`) that fetches it, so the server never sends more than the
+    /// page holds. Never yields an empty page.
     ///
     /// # Cancel safety
     ///
     /// Same as [`Subscriber::stream`]: dropping the stream mid-read leaves fetched-but-unacked
     /// entries in the pending list.
-    fn batches(&mut self) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
-        unfold(self, |s| async move {
+    fn batches(
+        &mut self,
+        size: NonZeroUsize,
+    ) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
+        let count = u64::try_from(size.get()).unwrap_or(u64::MAX);
+        unfold(self, move |s| async move {
             loop {
                 s.discard_stale();
                 if !s.buffer.is_empty() {
-                    // Move the buffer out first so `s.message` can borrow `s` without overlapping
-                    // a live mutable borrow of `s.buffer`.
-                    let entries = std::mem::take(&mut s.buffer);
+                    // Move the entries out first so `s.message` can borrow `s` without overlapping
+                    // a live mutable borrow of `s.buffer`. The read already capped itself at
+                    // `count`; the split is what keeps a page within `size` when a re-entered
+                    // subscription asks for a smaller one than the buffered read used.
+                    let tail = s.buffer.split_off(size.get().min(s.buffer.len()));
+                    let entries = std::mem::replace(&mut s.buffer, tail);
                     let batch = entries
                         .into_iter()
                         .map(|(id, fields)| s.message(id, fields))
                         .collect::<Result<Vec<_>, _>>();
                     return Some((batch, s));
                 }
-                if let Err(err) = s.fetch().await {
+                if let Err(err) = s.fetch(count).await {
                     return Some((Err(err), s));
                 }
             }

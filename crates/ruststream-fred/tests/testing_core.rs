@@ -19,7 +19,7 @@ use ruststream::testing::TestApp;
 use ruststream::{
     BatchSubscriber, Broker, ConnectedBroker, DescribeServer, HeaderMap, IncomingMessage, Outgoing,
     OutgoingMessage, OwnedTransactions, Partitioned, Publisher, RawMessage, Serialized, Subscriber,
-    Transaction, TransactionalPublisher, testing::expect_published,
+    Transaction, TransactionalPublisher, nonzero, testing::expect_published,
 };
 use ruststream_fred::{
     PARTITION_KEY_HEADER, RedisError, RedisPublishExt, RedisStream,
@@ -420,7 +420,9 @@ async fn batch_drains_in_publish_order() {
             .expect("publish");
     }
 
-    let mut batches = Box::pin(sub.batches());
+    // Opened smaller than the run, so the assertion below reads the contract rather than the
+    // publish count: a page never carries more than the size the subscription named.
+    let mut batches = Box::pin(sub.batches(nonzero!(3)));
     let batch = tokio::time::timeout(WAIT, batches.next())
         .await
         .expect("batch within timeout")
@@ -428,7 +430,7 @@ async fn batch_drains_in_publish_order() {
         .expect("ok batch");
 
     assert!(!batch.is_empty(), "batch must contain at least one message");
-    assert!(batch.len() <= usize::from(count));
+    assert!(batch.len() <= 3, "a page must not exceed its size");
     for (i, msg) in batch.into_iter().enumerate() {
         assert_eq!(msg.payload(), &[u8::try_from(i).expect("count fits u8")]);
         msg.ack().await.ok();
@@ -449,7 +451,7 @@ async fn batches_can_be_reentered() {
         .await
         .expect("publish");
     {
-        let mut batches = Box::pin(sub.batches());
+        let mut batches = Box::pin(sub.batches(nonzero!(8)));
         let batch = tokio::time::timeout(WAIT, batches.next())
             .await
             .expect("batch within timeout")
@@ -468,7 +470,7 @@ async fn batches_can_be_reentered() {
         .publish(OutgoingMessage::new("batch.reenter", b"two"))
         .await
         .expect("publish");
-    let mut batches = Box::pin(sub.batches());
+    let mut batches = Box::pin(sub.batches(nonzero!(8)));
     let batch = tokio::time::timeout(WAIT, batches.next())
         .await
         .expect("batch within timeout")

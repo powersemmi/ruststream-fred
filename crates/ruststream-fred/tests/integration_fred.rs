@@ -14,6 +14,7 @@
 //! republish-on-nack path, `XAUTOCLAIM` reclaim, builder-set auth, the cluster / sentinel
 //! topologies, and the post-shutdown behaviour of a publisher that outlives the connection.
 
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -21,11 +22,11 @@ use fred::interfaces::{ClientLike, KeysInterface};
 use fred::types::InfoKind;
 use futures::StreamExt;
 use ruststream::codec::JsonCodec;
-use ruststream::runtime::{PublishExt, RETRY_COUNT_HEADER, TypedPublisher};
+use ruststream::runtime::{PublishExt, RETRY_COUNT_HEADER};
 use ruststream::{
-    Broker, ConnectedBroker, HeaderMap, IncomingMessage, Outgoing, OutgoingMessage, Partitioned,
-    Positioned, Publisher, Seekable, Seeker, Serialized, Subscribe, Subscriber,
-    TransactionalPublisher,
+    BatchSubscriber, Broker, ConnectedBroker, HeaderMap, IncomingMessage, Outgoing,
+    OutgoingMessage, Partitioned, Positioned, Publisher, Seekable, Seeker, Serialized, Subscribe,
+    Subscriber, TransactionalPublisher,
 };
 use ruststream_fred::{
     ConnectedRedisBroker, DEAD_LETTER_REASON_HEADER, DELIVERY_COUNT_HEADER, DelayedRetry,
@@ -827,6 +828,54 @@ async fn list_simple_round_trip() {
     broker.shutdown().await.expect("shutdown");
 }
 
+// A pop returns one entry, so the list subscriber gets `BatchSubscriber` by delegating to the
+// core's client-side buffer. This is the same check `conformance::capabilities::batches` makes for
+// the stream and Pub/Sub forms; it lives here because the suite names one fixed subject and on
+// Redis a list and a stream under one name are the same key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_pages_are_capped_at_the_size_they_opened_with() {
+    const COUNT: u8 = 10;
+    // Smaller than the run, so a page that ignored its size would be caught by the assertion
+    // rather than by luck of timing.
+    const PAGE: NonZeroUsize = NonZeroUsize::new(3).unwrap();
+
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("list_pages");
+
+    let publisher = broker.list_publisher(RedisListPublish::new());
+    for i in 0..COUNT {
+        publisher
+            .publish(OutgoingMessage::new(key.as_str(), &[i]))
+            .await
+            .expect("lpush");
+    }
+
+    let mut sub = broker
+        .subscribe_list(RedisList::new(&key).block(Duration::from_millis(50)))
+        .await
+        .expect("subscribe list");
+    let mut pages = Box::pin(sub.batches(PAGE));
+    let mut received = Vec::new();
+    while received.len() < usize::from(COUNT) {
+        let page = next(&mut pages).await.expect("page ok");
+        assert!(!page.is_empty(), "a yielded page must not be empty");
+        assert!(
+            page.len() <= PAGE.get(),
+            "a page must never carry more than its size: got {}",
+            page.len(),
+        );
+        received.extend(page.iter().map(|msg| msg.payload().to_vec()));
+    }
+    let expected: Vec<Vec<u8>> = (0..COUNT).map(|i| vec![i]).collect();
+    assert_eq!(received, expected, "pages must preserve the queue order");
+
+    drop(pages);
+    broker.shutdown().await.expect("shutdown");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_publisher_ttl_sets_key_expiry() {
     let Some(url) = env("REDIS_TEST_URL") else {
@@ -856,8 +905,7 @@ async fn list_publisher_ttl_sets_key_expiry() {
 // The owned transaction contract itself (independent buffers, visibility only on commit, order
 // within a buffer, abort, direct publish alongside) is covered by
 // `conformance::capabilities::owned_transactions` in `conformance_fred.rs`. What stays here is the
-// crate-specific typed sugar over that kind: the publisher's codec encodes each value into the
-// buffer.
+// crate-specific typed sugar over that kind: the buffer encodes each value with the default codec.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn typed_publisher_opens_owned_transactions() {
     let Some(url) = env("REDIS_TEST_URL") else {
@@ -871,8 +919,8 @@ async fn typed_publisher_opens_owned_transactions() {
         .await
         .expect("subscribe");
 
-    let publisher = TypedPublisher::new(broker.publisher());
-    let mut txn = publisher.transaction().await.expect("open typed txn");
+    let publisher = broker.publisher();
+    let mut txn = publisher.owned_transaction().await.expect("open typed txn");
     txn.publish(key.as_str(), &7_u32).await.expect("buffer 7");
 
     let mut stream = Box::pin(sub.stream());

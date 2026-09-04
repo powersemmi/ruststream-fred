@@ -16,6 +16,8 @@
 //! redis-cli XADD orders '*' _payload '{"id":0}'
 //! ```
 
+use std::time::Duration;
+
 use ruststream_fred::stream::prelude::*;
 use serde::Deserialize;
 
@@ -91,7 +93,16 @@ fn app() -> impl App {
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
             b.include(handle);
-            b.include(handle_page);
+            // --8<-- [start:page-mount]
+            // A page names its size, which becomes the `XREADGROUP COUNT` of the read that fetches
+            // it, so the server never sends more than one page holds. Redis's own read options
+            // chain after that, in that order.
+            b.include(
+                handle_page
+                    .batch(nonzero!(16))
+                    .block(Duration::from_secs(2)),
+            );
+            // --8<-- [end:page-mount]
             b.include(replay);
         },
     )

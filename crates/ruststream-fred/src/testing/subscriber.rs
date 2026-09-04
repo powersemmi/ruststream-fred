@@ -5,6 +5,7 @@
 //! [`router::KeyRouter`], so handlers stop receiving messages as soon as their task finishes.
 
 use std::future::{Future, ready};
+use std::num::NonZeroUsize;
 use std::sync::{Arc, OnceLock};
 use std::task::Poll;
 
@@ -200,16 +201,15 @@ impl IncomingMessage for RedisTestMessage {
     }
 }
 
-/// Max messages drained per batch on the testing subscriber (bounds one synchronous drain without
-/// blocking on more arrivals).
-const TEST_BATCH_LIMIT: usize = 256;
-
 impl BatchSubscriber for RedisTestSubscriber {
     type Batch = Vec<RedisTestMessage>;
 
-    /// Drains whatever is already buffered in the subscriber's channel (at least one, at most
-    /// `TEST_BATCH_LIMIT` messages). Blocks until the first message arrives.
-    fn batches(&mut self) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
+    /// Drains whatever is already buffered in the subscriber's channel, at least one message and
+    /// at most `size`. Blocks until the first message arrives.
+    fn batches(
+        &mut self,
+        size: NonZeroUsize,
+    ) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
         let requeue = self.requeue.clone();
         let coordinator = self.coordinator.clone();
         futures::stream::poll_fn(move |cx| {
@@ -221,7 +221,7 @@ impl BatchSubscriber for RedisTestSubscriber {
                 }
             };
             let mut batch = vec![first];
-            while batch.len() < TEST_BATCH_LIMIT {
+            while batch.len() < size.get() {
                 match self.rx.poll_recv(cx) {
                     Poll::Ready(Some(d)) => {
                         batch.push(RedisTestMessage::from_delivery(
