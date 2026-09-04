@@ -10,9 +10,10 @@ buffer.
 `begin_transaction` claims the handle's transaction and starts buffering, `commit` flushes the
 buffer, and `abort` discards it. Clones of a handle share the same open transaction.
 
-The idiomatic way to use it is a batch-publishing handler wired with a `.transactional()` publisher:
-every reply of one batch is committed together. The page shape is read off the signature - a slice
-payload is what makes a handler a batch handler - so nothing in the attribute says it.
+The idiomatic way to use it is a page-publishing handler wired with a `.transactional()` publisher:
+every reply of one page is committed together. The page shape is read off the signature - a slice
+payload is what makes a handler a page handler - so nothing in the attribute says it, and the mount
+site names the page size (see [Pages](streams.md#pages)).
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_transaction.rs:batch"
@@ -42,8 +43,8 @@ vanishing buffer is almost always a missing `commit`. A failed commit has still 
 transaction and its buffer is lost: recovery is redelivery of the inputs, not resubmission of the
 buffer.
 
-`TypedPublisher::transaction()` is the typed sugar over this kind: it encodes each value with the
-publisher's codec before buffering.
+`publisher.owned_transaction()` is the typed sugar over this kind: it encodes each value with the
+crate's default codec before buffering, so a call publishes a value rather than bytes.
 
 ## What Redis does and does not guarantee
 

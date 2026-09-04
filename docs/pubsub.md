@@ -30,6 +30,10 @@ To publish, chain `.publisher(..)` on the include site with a `RedisPubSubPublis
 `publish("audit")` form, so its return value goes out through that Pub/Sub policy - not the default
 stream publisher.
 
+Pub/Sub delivers one message at a time, so a page handler here is served by pages the subscriber
+assembles on the client; it still names its size with `batch(n)` at the mount site and never sees a
+longer page (see [Pages](streams.md#pages)).
+
 Headers travel in a frame around the payload: a lossless binary frame by default, or - when you set a
 codec on both the publisher and the subscriber (`.codec(JsonCodec)`) - a readable codec-serialized
 `{headers, payload}` envelope (so the wire value is legible JSON in tools like RedisInsight). A raw

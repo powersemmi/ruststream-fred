@@ -54,6 +54,27 @@ The recovery handler on the same group, reclaiming entries idle for over 30 seco
 --8<-- "crates/ruststream-fred/examples/fred_reclaim.rs:reclaim"
 ```
 
+## Pages
+
+A slice payload is what makes a handler a page handler - nothing in the attribute says it - and its
+mount site names one number, the page size:
+
+```rust
+--8<-- "crates/ruststream-fred/examples/fred_seek.rs:page-mount"
+```
+
+`batch(n)` is mandatory on a page handler and rejected on a single-message one, so the size is
+always written where the page is mounted. On a stream it is the `COUNT` of the `XREADGROUP` (or
+`XAUTOCLAIM`) that fetches the page: the server sends at most that many entries and the page a
+handler sees is the read that produced it - nothing is split or merged on the way.
+
+Everything else about how a read forms stays Redis's own vocabulary and chains after the size,
+through `RedisSubscribeExt` (in the form preludes): `block(..)` is how long that read waits for
+entries. A descriptor written in the attribute may name it too; the mount site wins.
+
+Lists and Pub/Sub pop one entry at a time, so their subscribers assemble pages on the client and
+honour the same size. Nothing at a mount site says which of the two happened, which is the point.
+
 ## Native delivery fields
 
 Metadata the transport carries but a payload does not is read by compile-time key off the typed
@@ -208,7 +229,7 @@ implements the most of the three transports; the notes name where Lists and Pub/
 | Capability | Native | Notes |
 | --- | --- | --- |
 | `Subscribe` | yes | Subscribes by stream key through a consumer group (the bare-string form needs `default_group`). Lists and Pub/Sub subscribe through their own descriptors. |
-| `BatchSubscriber` | yes (Streams) | One batch per non-empty `XREADGROUP` / `XAUTOCLAIM` read, up to `RedisStream::count` entries, never empty. The List and Pub/Sub subscribers deliver one message at a time. |
+| `BatchSubscriber` | yes, on all three | On Streams natively: the mount site's `batch(n)` is the `COUNT` of the `XREADGROUP` / `XAUTOCLAIM` that fetches the page, and a page is one non-empty read, never empty. Lists and Pub/Sub pop one entry at a time, so their subscribers assemble pages on the client and honour the same size. See [Pages](#pages). |
 | `TransactionalPublisher` | yes (Streams, standalone and sentinel) | The stream publisher buffers on the handle and commits it as one `MULTI` / `EXEC`. A cluster publisher rejects it, because a `MULTI` block cannot span hash slots. The List and Pub/Sub publishers have no transaction. See [Transactions](transactions.md). |
 | `OwnedTransactions` | yes (Streams, standalone and sentinel) | `publisher.transaction()` returns a buffer-owning value, so any number can be open on one handle; cluster is rejected for the same reason. |
 | `RequestReply` | no | Redis has no request-reply primitive: nothing on the wire carries a reply address or correlates a reply with its request. |

@@ -45,11 +45,11 @@ One crate, three named constructors. Each is synchronous and I/O-free; the conne
 
 ## Transport guides
 
-- [Redis Streams](streams.md) - consumer groups, fresh tail vs reclaim, repositioning, delayed
-  retry.
+- [Redis Streams](streams.md) - consumer groups, fresh tail vs reclaim, pages, repositioning,
+  delayed retry.
 - [Redis Lists](lists.md) - competing-consumers work queue, reliable mode, orphan recovery.
 - [Pub/Sub](pubsub.md) - classic and sharded broadcast.
 - [Dead-letter and poison cap](dead-letter.md) - bound infinite redelivery.
 - [Authentication and TLS](auth-tls.md) - credentials and TLS on every topology.
-- [Transactions](transactions.md) - batch publishing on standalone and sentinel.
+- [Transactions](transactions.md) - page publishing on standalone and sentinel.
 - [Testing](testing.md) - in-process handler-stub broker.
