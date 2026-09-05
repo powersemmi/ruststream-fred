@@ -1,11 +1,12 @@
 //! [`RedisTestPublisher`]: `Publisher` plus both transaction kinds on top of the in-memory router,
 //! and the [`RedisTestPublish`] policy it pairs from.
 
+use std::future::{Future, ready};
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use ruststream::{
-    DefaultPublish, Headers, OutgoingMessage, OwnedTransactions, PairError, PublishPolicy,
+    DefaultPublish, HeaderMap, OutgoingMessage, OwnedTransactions, PairError, PublishPolicy,
     Publisher, Transaction, TransactionalPublisher,
 };
 use tracing::warn;
@@ -19,7 +20,7 @@ use crate::{
 };
 
 /// One buffered publish (key, payload, headers), held while a transaction is open.
-type Buffered = (String, Bytes, Headers);
+type Buffered = (String, Bytes, HeaderMap);
 
 /// The publish policy of the in-process broker, mirroring [`RedisPublish`](crate::RedisPublish).
 ///
@@ -38,8 +39,11 @@ pub struct RedisTestPublish;
 impl PublishPolicy<ConnectedRedisTestBroker> for RedisTestPublish {
     type Live = RedisTestPublisher;
 
-    async fn pair(self, connected: &ConnectedRedisTestBroker) -> Result<Self::Live, PairError> {
-        Ok(connected.publisher())
+    fn pair(
+        self,
+        connected: &ConnectedRedisTestBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(connected.publisher()))
     }
 }
 
@@ -91,21 +95,23 @@ impl RedisTestPublisher {
 impl Publisher for RedisTestPublisher {
     type Error = RedisError;
 
-    async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
-        validate_publish_key(msg.name())?;
+    fn publish(&self, msg: OutgoingMessage<'_>) -> impl Future<Output = Result<(), Self::Error>> {
+        if let Err(err) = validate_publish_key(msg.name()) {
+            return ready(Err(err));
+        }
         let entry: Buffered = (
             msg.name().to_owned(),
             Bytes::copy_from_slice(msg.payload()),
             msg.headers().clone(),
         );
         if self.buffer_if_in_txn(&entry) {
-            return Ok(());
+            return ready(Ok(()));
         }
         let (key, payload, headers) = entry;
         self.state
             .router
             .publish(key, payload, headers, self.state.coordinator().as_ref());
-        Ok(())
+        ready(Ok(()))
     }
 }
 
@@ -114,47 +120,52 @@ impl TransactionalPublisher for RedisTestPublisher {
     ///
     /// Returns [`RedisError::TransactionBusy`] when a transaction is already open on this handle,
     /// leaving that one untouched.
-    async fn begin_transaction(&self) -> Result<(), Self::Error> {
-        let mut guard = self
-            .txn
-            .lock()
-            .expect("redis test publisher mutex poisoned");
-        if guard.is_some() {
-            return Err(RedisError::TransactionBusy);
+    fn begin_transaction(&self) -> impl Future<Output = Result<(), Self::Error>> {
+        {
+            let mut guard = self
+                .txn
+                .lock()
+                .expect("redis test publisher mutex poisoned");
+            if guard.is_some() {
+                return ready(Err(RedisError::TransactionBusy));
+            }
+            *guard = Some(Vec::new());
         }
-        *guard = Some(Vec::new());
-        drop(guard);
-        Ok(())
+        ready(Ok(()))
     }
 
     /// # Errors
     ///
     /// Returns [`RedisError::NoTransaction`] when no transaction is open on this handle.
-    async fn commit(&self) -> Result<(), Self::Error> {
+    fn commit(&self) -> impl Future<Output = Result<(), Self::Error>> {
         let buffered = self
             .txn
             .lock()
             .expect("redis test publisher mutex poisoned")
-            .take()
-            .ok_or(RedisError::NoTransaction)?;
+            .take();
+        let Some(buffered) = buffered else {
+            return ready(Err(RedisError::NoTransaction));
+        };
         for (key, payload, headers) in buffered {
             self.state
                 .router
                 .publish(key, payload, headers, self.state.coordinator().as_ref());
         }
-        Ok(())
+        ready(Ok(()))
     }
 
     /// # Errors
     ///
     /// Returns [`RedisError::NoTransaction`] when no transaction is open on this handle.
-    async fn abort(&self) -> Result<(), Self::Error> {
-        self.txn
-            .lock()
-            .expect("redis test publisher mutex poisoned")
-            .take()
-            .ok_or(RedisError::NoTransaction)
-            .map(|_| ())
+    fn abort(&self) -> impl Future<Output = Result<(), Self::Error>> {
+        ready(
+            self.txn
+                .lock()
+                .expect("redis test publisher mutex poisoned")
+                .take()
+                .ok_or(RedisError::NoTransaction)
+                .map(|_| ()),
+        )
     }
 }
 
@@ -164,12 +175,12 @@ impl TransactionalPublisher for RedisTestPublisher {
 impl OwnedTransactions for RedisTestPublisher {
     type Transaction = RedisTestTransaction;
 
-    async fn transaction(&self) -> Result<RedisTestTransaction, RedisError> {
-        Ok(RedisTestTransaction {
+    fn transaction(&self) -> impl Future<Output = Result<RedisTestTransaction, RedisError>> {
+        ready(Ok(RedisTestTransaction {
             state: Arc::clone(&self.state),
             buffered: Vec::new(),
             settled: false,
-        })
+        }))
     }
 }
 
@@ -231,17 +242,22 @@ impl Transaction for RedisTestTransaction {
     /// # Errors
     ///
     /// Returns [`RedisError::Publish`] when the stream key is empty, like the direct publish.
-    async fn publish(&mut self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
-        validate_publish_key(msg.name())?;
+    fn publish(
+        &mut self,
+        msg: OutgoingMessage<'_>,
+    ) -> impl Future<Output = Result<(), Self::Error>> {
+        if let Err(err) = validate_publish_key(msg.name()) {
+            return ready(Err(err));
+        }
         self.buffered.push((
             msg.name().to_owned(),
             Bytes::copy_from_slice(msg.payload()),
             msg.headers().clone(),
         ));
-        Ok(())
+        ready(Ok(()))
     }
 
-    async fn commit(mut self) -> Result<(), Self::Error> {
+    fn commit(mut self) -> impl Future<Output = Result<(), Self::Error>> {
         // Settled before the flush, as on the real publisher: a failed commit has still consumed
         // the transaction, so the drop warning must not fire.
         self.settled = true;
@@ -250,11 +266,11 @@ impl Transaction for RedisTestTransaction {
                 .router
                 .publish(key, payload, headers, self.state.coordinator().as_ref());
         }
-        Ok(())
+        ready(Ok(()))
     }
 
-    async fn abort(mut self) -> Result<(), Self::Error> {
+    fn abort(mut self) -> impl Future<Output = Result<(), Self::Error>> {
         self.settled = true;
-        Ok(())
+        ready(Ok(()))
     }
 }

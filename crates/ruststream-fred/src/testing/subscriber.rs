@@ -4,12 +4,14 @@
 //! delivery. Dropping the subscriber unregisters its subscription from the underlying
 //! [`router::KeyRouter`], so handlers stop receiving messages as soon as their task finishes.
 
+use std::future::{Future, ready};
+use std::num::NonZeroUsize;
 use std::sync::{Arc, OnceLock};
 use std::task::Poll;
 
 use futures::Stream;
 use ruststream::{
-    AckError, BatchSubscriber, Headers, IncomingMessage, Partitioned, Subscriber,
+    AckError, BatchSubscriber, HeaderMap, IncomingMessage, Partitioned, Subscriber,
     testing::Coordinator,
 };
 
@@ -162,19 +164,25 @@ impl IncomingMessage for RedisTestMessage {
             .unwrap_or_default()
     }
 
-    fn headers(&self) -> &Headers {
-        static EMPTY: OnceLock<Headers> = OnceLock::new();
+    fn headers(&self) -> &HeaderMap {
+        static EMPTY: OnceLock<HeaderMap> = OnceLock::new();
         self.delivery
             .as_ref()
-            .map_or_else(|| EMPTY.get_or_init(Headers::new), |d| &d.headers)
+            .map_or_else(|| EMPTY.get_or_init(HeaderMap::new), |d| &d.headers)
     }
 
-    async fn ack(mut self) -> Result<(), AckError> {
+    // The stub broker mirrors the real one here too, so a keyed-lane test in-process behaves the
+    // way the same service will against a live Redis.
+    fn partition_key(&self) -> Option<&[u8]> {
+        Partitioned::partition_key(self)
+    }
+
+    fn ack(mut self) -> impl Future<Output = Result<(), AckError>> {
         self.delivery.take();
-        Ok(())
+        ready(Ok(()))
     }
 
-    async fn nack(mut self, requeue: bool) -> Result<(), AckError> {
+    fn nack(mut self, requeue: bool) -> impl Future<Output = Result<(), AckError>> {
         let delivery = self
             .delivery
             .take()
@@ -189,20 +197,19 @@ impl IncomingMessage for RedisTestMessage {
                 coordinator.enqueued();
             }
         }
-        Ok(())
+        ready(Ok(()))
     }
 }
-
-/// Max messages drained per batch on the testing subscriber (bounds one synchronous drain without
-/// blocking on more arrivals).
-const TEST_BATCH_LIMIT: usize = 256;
 
 impl BatchSubscriber for RedisTestSubscriber {
     type Batch = Vec<RedisTestMessage>;
 
-    /// Drains whatever is already buffered in the subscriber's channel (at least one, at most
-    /// `TEST_BATCH_LIMIT` messages). Blocks until the first message arrives.
-    fn batches(&mut self) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
+    /// Drains whatever is already buffered in the subscriber's channel, at least one message and
+    /// at most `size`. Blocks until the first message arrives.
+    fn batches(
+        &mut self,
+        size: NonZeroUsize,
+    ) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
         let requeue = self.requeue.clone();
         let coordinator = self.coordinator.clone();
         futures::stream::poll_fn(move |cx| {
@@ -214,7 +221,7 @@ impl BatchSubscriber for RedisTestSubscriber {
                 }
             };
             let mut batch = vec![first];
-            while batch.len() < TEST_BATCH_LIMIT {
+            while batch.len() < size.get() {
                 match self.rx.poll_recv(cx) {
                     Poll::Ready(Some(d)) => {
                         batch.push(RedisTestMessage::from_delivery(

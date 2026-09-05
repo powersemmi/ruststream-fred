@@ -1,5 +1,8 @@
 # Redis Lists (work queue)
 
+A service on this form globs `ruststream_fred::list::prelude::*`, which carries the descriptor and
+this form's publish policy as `Publish`.
+
 A list is a competing-consumers queue: a producer `LPUSH`es, consumers pop from the right, and each
 entry goes to exactly one consumer (no fan-out, no replay). Simple mode is at-most-once (`BRPOP`, no
 ack):
@@ -20,6 +23,11 @@ runtime pairs it with the connected broker, or call
 `connected.list_publisher(RedisListPublish::new())` outside an app. Headers travel in the same frame
 as Pub/Sub: a lossless binary frame by default, or a readable codec-serialized envelope when a codec
 is set on both ends (`.codec(JsonCodec)`).
+
+A pop returns one entry, so a batch handler on a list is served by batches the subscriber assembles
+on the client; it still names its size with `batch(n)` at the mount site and never sees a longer
+batch. `block(..)` chains after the size, as it does on a stream (see
+[Batches](streams.md#batches)).
 
 ## Orphan recovery
 

@@ -5,6 +5,7 @@
 //! form owns the live `fred` pool, so subscriptions and publishers exist only once a connection
 //! does.
 
+use std::future::{Future, ready};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -561,7 +562,6 @@ impl ConnectedRedisBroker {
             def.key().to_owned(),
             group,
             consumer,
-            def.count_or_default(),
             def.block_or_default(),
             def.mode(),
             def.poison_policy(),
@@ -601,23 +601,35 @@ impl ConnectedRedisBroker {
     ///
     /// Returns [`RedisError::ShutDown`] when the connection was already torn down, or
     /// [`RedisError::InvalidOptions`] when `def` names a recovery ZSET without a `min_idle`.
-    #[allow(
-        clippy::unused_async,
-        reason = "async for parity with the other subscribe methods and the SubscriptionSource shape"
-    )]
-    pub async fn subscribe_list(&self, def: RedisList) -> Result<RedisListSubscriber, RedisError> {
-        let pool = self.core.pool()?;
-        let recovery = def.recovery_config()?;
-        Ok(RedisListSubscriber::new(
+    // Awaited like the other subscribe methods; the form differs only because this body is
+    // synchronous, so there is nothing to suspend on.
+    pub fn subscribe_list(
+        &self,
+        def: RedisList,
+    ) -> impl Future<Output = Result<RedisListSubscriber, RedisError>> {
+        let pool = match self.core.pool() {
+            Ok(pool) => pool,
+            Err(err) => return ready(Err(err)),
+        };
+        let recovery = match def.recovery_config() {
+            Ok(recovery) => recovery,
+            Err(err) => return ready(Err(err)),
+        };
+        let reliable = def.is_reliable();
+        let processing = def.processing_or_default();
+        let block = def.block_or_default();
+        let codec = def.codec_handle();
+        let poison = def.poison_policy();
+        ready(Ok(RedisListSubscriber::new(
             pool,
-            def.key().to_owned(),
-            def.is_reliable(),
-            def.processing_or_default(),
-            def.block_or_default(),
-            def.codec_handle(),
-            def.poison_policy(),
+            def.into_key(),
+            reliable,
+            processing,
+            block,
+            codec,
+            poison,
             recovery,
-        ))
+        )))
     }
 
     /// Returns a stream publisher (`XADD`) bound to this connection.

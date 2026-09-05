@@ -14,8 +14,7 @@
 mod orders;
 mod routes;
 
-use ruststream::runtime::{App, AppInfo, RustStream};
-use ruststream_fred::RedisBroker;
+use ruststream_fred::pubsub::prelude::*;
 
 /// Builds the service: one Redis broker with the events router mounted.
 #[ruststream::app]

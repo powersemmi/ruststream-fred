@@ -14,9 +14,8 @@
 //! cargo run --example fred_transaction --features macros,json -- run
 //! ```
 
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream, TypedPublisher};
-use ruststream::{OutgoingMessage, OwnedTransactions, Transaction, subscriber};
-use ruststream_fred::{RedisBroker, RedisPublish};
+use ruststream::OutgoingMessage;
+use ruststream_fred::stream::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -26,11 +25,12 @@ struct Order {
 
 // --8<-- [start:batch]
 // A batch-publishing handler: each reply in the returned Vec is published to `processed`, all
-// committed atomically when the transactional publisher commits.
-#[subscriber(batch("orders"), publish("processed"))]
-async fn process(orders: &[Order]) -> Result<Vec<Order>, HandlerResult> {
+// committed atomically when the transactional publisher commits. The batch shape is read off the
+// signature - a slice payload is what makes this a batch handler.
+#[subscriber("orders", publish("processed"))]
+async fn process(orders: &[Order]) -> Result<Vec<Order>, HandlerOutcome> {
     if orders.is_empty() {
-        return Err(HandlerResult::drop());
+        return Err(HandlerOutcome::drop());
     }
     Ok(orders.iter().map(|o| Order { id: o.id }).collect())
 }
@@ -41,11 +41,14 @@ fn app() -> impl App {
     let broker = RedisBroker::standalone("redis://localhost:6379").default_group("workers");
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         // --8<-- [start:mount]
-        // .transactional() requires the policy's live form to be transactional, which
-        // RedisPublish's is on standalone and sentinel: the batch's replies are buffered and
-        // committed as one MULTI / EXEC block.
-        b.include(process)
-            .publisher(TypedPublisher::new(RedisPublish).transactional());
+        // The batch size is the one number the framework hands the subscriber: here it becomes
+        // the `XREADGROUP COUNT` of the read that fetches the batch. `.out(Reply, ..)` names the
+        // policy the handler's returned value is published through, and .transactional() requires
+        // that policy's live form to be transactional, which the stream form's is on standalone
+        // and sentinel: the batch's replies are buffered and committed as one MULTI / EXEC block.
+        b.include(process.batch(nonzero!(32)))
+            .out(Reply, TransactionalPublish)
+            .transactional();
         // --8<-- [end:mount]
 
         // --8<-- [start:owned]
@@ -53,7 +56,7 @@ fn app() -> impl App {
         // several can be open on one publisher at once and settling one never touches another.
         // `after_startup` is where a service makes its first publishes, once the broker is
         // connected.
-        b.after_startup(RedisPublish, async move |publisher| {
+        b.after_startup(TransactionalPublish, async move |publisher| {
             let mut seed = publisher.transaction().await?;
             seed.publish(OutgoingMessage::new("processed", br#"{"id":0}"#.as_slice()))
                 .await?;

@@ -15,9 +15,7 @@
 //! redis-cli PUBLISH events '{"kind":"login"}'
 //! ```
 
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream, TypedPublisher};
-use ruststream::subscriber;
-use ruststream_fred::{PubSubMode, RedisBroker, RedisPubSub, RedisPubSubPublish};
+use ruststream_fred::pubsub::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -40,11 +38,11 @@ async fn on_event(event: &Event) -> Event {
 // --8<-- [start:sharded]
 // Sharded subscription (`SSUBSCRIBE`): on a cluster this stays slot-local and scales. It belongs on
 // a cluster broker (below), and pairs with a sharded publish policy
-// (`RedisPubSubPublish::new().mode(Sharded)`).
+// (`Publish::new().mode(Sharded)`).
 #[subscriber(RedisPubSub::new("events").mode(PubSubMode::Sharded))]
-async fn on_event_sharded(event: &Event) -> HandlerResult {
+async fn on_event_sharded(event: &Event) -> HandlerOutcome {
     println!("sharded event: {}", event.kind);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:sharded]
 
@@ -56,10 +54,10 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("events", "0.1.0"))
         .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
             // `publish("audit")` sends through this Pub/Sub policy (PUBLISH), not the default
-            // stream publisher (XADD). The policy is pure declaration: the runtime pairs it with
-            // the connected broker at startup.
-            b.include(on_event)
-                .publisher(TypedPublisher::new(RedisPubSubPublish::new()));
+            // stream publisher (XADD). `Reply` is the position the policy binds to - the value
+            // the handler returns - and the policy is pure declaration: the runtime pairs it
+            // with the connected broker at startup.
+            b.include(on_event).out(Reply, Publish::default());
         })
         .with_broker(RedisBroker::cluster(["redis://localhost:7000"]), |b| {
             b.include(on_event_sharded);

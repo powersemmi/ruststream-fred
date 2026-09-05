@@ -6,8 +6,8 @@ deliveries are durable and acknowledged. It also ships an in-memory test broker 
 feature.
 
 ```toml
-ruststream = { version = "0.6", features = ["macros"] }
-ruststream-fred = "0.6"
+ruststream = { version = "0.7", features = ["macros"] }
+ruststream-fred = "0.7"
 serde = { version = "1", features = ["derive"] }
 ```
 
@@ -45,8 +45,8 @@ One crate, three named constructors. Each is synchronous and I/O-free; the conne
 
 ## Transport guides
 
-- [Redis Streams](streams.md) - consumer groups, fresh tail vs reclaim, repositioning, delayed
-  retry.
+- [Redis Streams](streams.md) - consumer groups, fresh tail vs reclaim, batches, repositioning,
+  delayed retry.
 - [Redis Lists](lists.md) - competing-consumers work queue, reliable mode, orphan recovery.
 - [Pub/Sub](pubsub.md) - classic and sharded broadcast.
 - [Dead-letter and poison cap](dead-letter.md) - bound infinite redelivery.

@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use ruststream::conformance::{capabilities, harness};
 use ruststream_fred::testing::RedisTestBroker;
-use ruststream_fred::{RedisBroker, RedisStream};
+use ruststream_fred::{RedisBroker, RedisPubSub, RedisPubSubPublish, RedisStream};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redis_test_broker_passes_conformance_suite() {
@@ -52,17 +52,40 @@ async fn passes_batches() {
     .await;
 }
 
+// The same suite over a transport with no native batches of its own: Pub/Sub assembles its
+// batches on the client, and what it owes is what the stream owes - a batch never longer than the
+// size the subscription opened with, and publish order preserved across batches.
+//
+// The list transport takes the same delegation and is checked the same way by
+// `list_batches_are_capped_at_the_size_they_opened_with` in the integration tests instead: the suite
+// names one fixed subject, and on Redis a list and a stream under one name are the same key.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passes_pubsub_batches() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    capabilities::batches(
+        || RedisBroker::standalone(url.clone()),
+        |channel| RedisPubSub::new(channel),
+        |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
+    )
+    .await;
+}
+
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn passes_transactions() {
     let Some(url) = redis_url() else {
         return;
     };
-    capabilities::transactions(
+    // Boxed for the same reason as the seeking suite below: the suite's future is large enough
+    // that clippy rejects holding it on the stack.
+    Box::pin(capabilities::transactions(
         || RedisBroker::standalone(url.clone()),
         |key| RedisStream::new(key).group("conformance"),
         |connected| connected.publisher(),
-    )
+    ))
     .await;
 }
 

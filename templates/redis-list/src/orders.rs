@@ -6,9 +6,7 @@
 //! at-most-once `BRPOP` with no acknowledgement; switch to `RedisList::new("jobs").reliable()` for
 //! at-least-once delivery where the entry is removed only on `Ack`.
 
-use ruststream::runtime::HandlerResult;
-use ruststream::subscriber;
-use ruststream_fred::RedisList;
+use ruststream_fred::list::prelude::*;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -22,9 +20,9 @@ pub struct Job {
 }
 
 /// Runs each job popped off the `jobs` queue. A simple list cannot ack, so this is a consume-only
-/// handler: it does its work and returns `Ack` to mark the entry handled.
+/// handler: it does its work and acks to mark the entry handled.
 #[subscriber(RedisList::new("jobs"))]
-pub async fn run_job(job: &Job) -> HandlerResult {
+pub async fn run_job(job: &Job) -> HandlerOutcome {
     println!("running job {} ({})", job.id, job.task);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }

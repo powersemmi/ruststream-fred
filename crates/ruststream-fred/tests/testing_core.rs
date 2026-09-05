@@ -13,16 +13,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
-use ruststream::runtime::{AppInfo, HandlerResult, RustStream};
+use ruststream::runtime::{AppInfo, HandlerOutcome, PublishExt, RustStream};
 use ruststream::subscriber;
 use ruststream::testing::TestApp;
 use ruststream::{
-    BatchSubscriber, Broker, ConnectedBroker, DescribeServer, Headers, IncomingMessage,
-    OutgoingMessage, OwnedTransactions, Partitioned, Publisher, RawMessage, Subscriber,
-    Transaction, TransactionalPublisher, testing::expect_published,
+    BatchSubscriber, Broker, ConnectedBroker, DescribeServer, HeaderMap, IncomingMessage, Outgoing,
+    OutgoingMessage, OwnedTransactions, Partitioned, Publisher, RawMessage, Serialized, Subscriber,
+    Transaction, TransactionalPublisher, nonzero, testing::expect_published,
 };
 use ruststream_fred::{
-    PARTITION_KEY_HEADER, RedisError, RedisStream,
+    PARTITION_KEY_HEADER, RedisError, RedisPublishExt, RedisStream,
     testing::{ConnectedRedisTestBroker, RedisTestBroker, RedisTestMessage},
 };
 use serde::{Deserialize, Serialize};
@@ -48,6 +48,36 @@ where
     msg.ack().await.expect("ack");
     payload
 }
+
+/// The undrained counterpart of [`next_payload`], for cases that assert on headers before settling.
+async fn next_message<S>(stream: &mut S) -> RedisTestMessage
+where
+    S: Stream<Item = Result<RedisTestMessage, RedisError>> + Unpin,
+{
+    tokio::time::timeout(WAIT, stream.next())
+        .await
+        .expect("delivery within timeout")
+        .expect("stream has next")
+        .expect("delivery ok")
+}
+
+/// A message declaring a header contract: the shape whose publish leaves the builder's headers
+/// position occupied, so the partition key has to ride elsewhere.
+#[derive(Outgoing, Serialize, Deserialize)]
+#[outgoing(name = "orders.keyed", headers = OrderMeta)]
+struct KeyedOrder {
+    id: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct OrderMeta {
+    region: String,
+}
+
+/// An opaque payload for the partition-key cases: they assert on the header the keyed handle
+/// contributes, not on what a codec would make of the body, so the bytes leave as they are.
+#[derive(Outgoing, Serialized)]
+struct Payload(Vec<u8>);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pub_sub_round_trip_through_broker_traits() {
@@ -137,7 +167,7 @@ async fn headers_are_propagated_to_subscribers() {
     let mut subscriber = broker.subscribe("orders").await.expect("subscribe");
     let publisher = broker.publisher();
 
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert("content-type", "application/json");
     headers.insert("correlation-id", "abc-1");
     let outgoing = OutgoingMessage::new("orders", b"{}").with_headers(headers);
@@ -209,7 +239,7 @@ async fn partition_key_header_is_surfaced() {
     let broker = connected().await;
     let mut sub = broker.subscribe("events").await.expect("subscribe");
 
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert(PARTITION_KEY_HEADER, "tenant-a");
 
     broker
@@ -256,6 +286,126 @@ async fn partition_key_absent_yields_none() {
     broker.shutdown().await.expect("shutdown");
 }
 
+/// The adapter is the publish-side counterpart of `Partitioned`: what it carries is what the
+/// delivery reports, with no hand-built header map at the call site.
+#[tokio::test]
+async fn partition_key_step_carries_the_header() {
+    let broker = connected().await;
+    let mut sub = broker.subscribe("keyed.plain").await.expect("subscribe");
+    let publisher = broker.publisher();
+
+    publisher
+        .partition_key("tenant-a")
+        .message(&Payload(b"payload".to_vec()))
+        .to("keyed.plain")
+        .publish()
+        .await
+        .expect("publish");
+
+    let msg = next_message(&mut Box::pin(sub.stream())).await;
+    assert_eq!(
+        Partitioned::partition_key(&msg),
+        Some(b"tenant-a".as_slice())
+    );
+    // The runtime's keyed lanes read the key through `IncomingMessage`, not through the
+    // capability, so the two have to agree or `workers(n, by_key)` sees nothing.
+    assert_eq!(
+        IncomingMessage::partition_key(&msg),
+        Some(b"tenant-a".as_slice())
+    );
+    msg.ack().await.ok();
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// The reason the step exists: a message declaring a header contract fills the builder's single
+/// headers position with that contract, so a partition key has nowhere else to go. Travelling
+/// beneath it as base headers, the key composes with the contract instead of competing for it.
+#[tokio::test]
+async fn partition_key_step_composes_with_a_header_contract() {
+    let broker = connected().await;
+    let mut sub = broker.subscribe("orders.keyed").await.expect("subscribe");
+    let publisher = broker.publisher();
+
+    publisher
+        .partition_key("tenant-a")
+        .message(&KeyedOrder { id: 7 })
+        .with_headers(&OrderMeta {
+            region: "eu".into(),
+        })
+        .publish()
+        .await
+        .expect("publish");
+
+    let msg = next_message(&mut Box::pin(sub.stream())).await;
+    assert_eq!(
+        Partitioned::partition_key(&msg),
+        Some(b"tenant-a".as_slice())
+    );
+    // The contract travelled untouched next to the key.
+    assert_eq!(msg.headers().get_str("region"), Some("eu"));
+    msg.ack().await.ok();
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// The handle's key sits under the call's headers, not over them, so naming unrelated headers at
+/// the call site leaves the key in place and the call's own entries untouched.
+#[tokio::test]
+async fn partition_key_step_survives_unrelated_call_site_headers() {
+    let broker = connected().await;
+    let mut sub = broker.subscribe("keyed.map").await.expect("subscribe");
+    let publisher = broker.publisher();
+
+    let mut headers = HeaderMap::new();
+    headers.insert("trace-id", "abc");
+
+    publisher
+        .partition_key("tenant-b")
+        .message(&Payload(b"payload".to_vec()))
+        .with_headers(headers)
+        .to("keyed.map")
+        .publish()
+        .await
+        .expect("publish");
+
+    let msg = next_message(&mut Box::pin(sub.stream())).await;
+    assert_eq!(msg.headers().get_str("trace-id"), Some("abc"));
+    assert_eq!(
+        Partitioned::partition_key(&msg),
+        Some(b"tenant-b".as_slice())
+    );
+    msg.ack().await.ok();
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// Call site wins: the handle serves many publishes, a call names one message, so a partition key
+/// written into the publish's own headers overrides the one the handle carries.
+#[tokio::test]
+async fn call_site_partition_key_overrides_the_step() {
+    let broker = connected().await;
+    let mut sub = broker.subscribe("keyed.override").await.expect("subscribe");
+    let publisher = broker.publisher();
+
+    let mut headers = HeaderMap::new();
+    headers.insert(PARTITION_KEY_HEADER, "call-site");
+
+    publisher
+        .partition_key("handle")
+        .message(&Payload(b"payload".to_vec()))
+        .with_headers(headers)
+        .to("keyed.override")
+        .publish()
+        .await
+        .expect("publish");
+
+    let msg = next_message(&mut Box::pin(sub.stream())).await;
+    assert_eq!(
+        Partitioned::partition_key(&msg),
+        Some(b"call-site".as_slice())
+    );
+    msg.ack().await.ok();
+    broker.shutdown().await.expect("shutdown");
+}
+
 #[tokio::test]
 async fn batch_drains_in_publish_order() {
     let broker = connected().await;
@@ -270,7 +420,9 @@ async fn batch_drains_in_publish_order() {
             .expect("publish");
     }
 
-    let mut batches = Box::pin(sub.batches());
+    // Opened smaller than the run, so the assertion below reads the contract rather than the
+    // publish count: a batch never carries more than the size the subscription named.
+    let mut batches = Box::pin(sub.batches(nonzero!(3)));
     let batch = tokio::time::timeout(WAIT, batches.next())
         .await
         .expect("batch within timeout")
@@ -278,7 +430,7 @@ async fn batch_drains_in_publish_order() {
         .expect("ok batch");
 
     assert!(!batch.is_empty(), "batch must contain at least one message");
-    assert!(batch.len() <= usize::from(count));
+    assert!(batch.len() <= 3, "a batch must not exceed its size");
     for (i, msg) in batch.into_iter().enumerate() {
         assert_eq!(msg.payload(), &[u8::try_from(i).expect("count fits u8")]);
         msg.ack().await.ok();
@@ -299,7 +451,7 @@ async fn batches_can_be_reentered() {
         .await
         .expect("publish");
     {
-        let mut batches = Box::pin(sub.batches());
+        let mut batches = Box::pin(sub.batches(nonzero!(8)));
         let batch = tokio::time::timeout(WAIT, batches.next())
             .await
             .expect("batch within timeout")
@@ -318,7 +470,7 @@ async fn batches_can_be_reentered() {
         .publish(OutgoingMessage::new("batch.reenter", b"two"))
         .await
         .expect("publish");
-    let mut batches = Box::pin(sub.batches());
+    let mut batches = Box::pin(sub.batches(nonzero!(8)));
     let batch = tokio::time::timeout(WAIT, batches.next())
         .await
         .expect("batch within timeout")
@@ -479,9 +631,9 @@ struct Order {
 }
 
 #[subscriber(RedisStream::new("orders").group("workers"))]
-async fn ack_order(order: &Order) -> HandlerResult {
+async fn ack_order(order: &Order) -> HandlerOutcome {
     let _ = order;
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 
 /// Counts how many times the retry handler ran, so the test can wire it as typed app state.
@@ -489,14 +641,14 @@ async fn ack_order(order: &Order) -> HandlerResult {
 struct Attempts(Arc<AtomicUsize>);
 
 #[subscriber(RedisStream::new("retry").group("workers"))]
-async fn retry_then_ack(order: &Order, ctx: &mut Context<'_, (), Attempts>) -> HandlerResult {
+async fn retry_then_ack(order: &Order, ctx: &mut Context<'_, (), Attempts>) -> HandlerOutcome {
     let _ = order;
     // Requeue once, then acknowledge: exercises the `nack(requeue = true)` -> `enqueued` re-count
     // balanced against the delivery's `Drop` -> `consumed` decrement.
     if ctx.state().0.fetch_add(1, Ordering::SeqCst) == 0 {
-        HandlerResult::retry()
+        HandlerOutcome::retry()
     } else {
-        HandlerResult::Ack
+        HandlerOutcome::ack()
     }
 }
 
@@ -519,7 +671,7 @@ async fn test_app_drives_redis_test_broker_to_quiescence() {
         .subscriber("orders")
         .assert_called_once()
         .with(&Order { id: 1 })
-        .settled(HandlerResult::Ack);
+        .settled(HandlerOutcome::ack());
 
     tb.shutdown().await.expect("shutdown");
 }
@@ -543,7 +695,7 @@ async fn test_app_requeue_stays_balanced() {
     tb.broker::<RedisTestBroker>()
         .subscriber("retry")
         .assert_called(2)
-        .settled(HandlerResult::Ack);
+        .settled(HandlerOutcome::ack());
 
     tb.shutdown().await.expect("shutdown");
 }

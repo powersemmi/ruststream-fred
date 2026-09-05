@@ -9,7 +9,7 @@ tests and `docker-compose.test.yml`).
 
 ```toml
 [dev-dependencies]
-ruststream-fred = { version = "0.6", features = ["testing"] }
+ruststream-fred = { version = "0.7", features = ["testing"] }
 ```
 
 ## Unit-testing a handler

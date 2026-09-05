@@ -1,6 +1,6 @@
 //! Repositioning a Redis consumer group: a `start_at(..)` clause opens a subscription at a chosen
-//! point in the stream, and a `Seek` handler parameter moves the group's cursor while the service
-//! runs.
+//! point in the stream, and the delivery's own context carries the handle that moves the group's
+//! cursor while the service runs.
 //!
 //! Both act on the consumer group's cursor, which every consumer of that group shares: a seek
 //! replays (or skips) for the whole worker pool, not just for the handler that asked.
@@ -16,9 +16,9 @@
 //! redis-cli XADD orders '*' _payload '{"id":0}'
 //! ```
 
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream, Seek};
-use ruststream::{Seeker, subscriber};
-use ruststream_fred::{RedisBroker, RedisGroupPosition, RedisGroupSeeker, RedisStream};
+use std::time::Duration;
+
+use ruststream_fred::stream::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -34,29 +34,57 @@ struct Order {
     RedisStream::new("audit").group("auditors"),
     start_at(RedisGroupPosition::beginning())
 )]
-async fn replay(order: &Order) -> HandlerResult {
+async fn replay(order: &Order) -> HandlerOutcome {
     println!("audit: replayed order {}", order.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:start-at]
 
 // --8<-- [start:seek-param]
 // The worker owns its group's cursor: on the producer's poison marker it skips the group forward
 // to the tail instead of grinding through the bad region. Every consumer of `workers` resumes
-// there, which is the point - the region is bad for all of them.
+// there, which is the point - the region is bad for all of them. The handle is a context field:
+// the `SeekHandle` key reads it off the delivery's own context, so nothing is attached at the
+// mount site.
 #[subscriber(RedisStream::new("orders").group("workers"))]
-async fn handle(order: &Order, Seek(seeker): Seek<RedisGroupSeeker>) -> HandlerResult {
+async fn handle(order: &Order, Ctx(seeker): Ctx<keys::SeekHandle>) -> HandlerOutcome {
     if order.id == 0 {
         if seeker.seek(RedisGroupPosition::end()).await.is_err() {
-            return HandlerResult::retry();
+            return HandlerOutcome::retry();
         }
         println!("orders: skipped the poison region");
-        return HandlerResult::Ack;
+        return HandlerOutcome::ack();
     }
     println!("orders: processed {}", order.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:seek-param]
+
+// --8<-- [start:batch]
+// A batch repositions the same group one level up: the handle is subscription-scoped, so it rides
+// the batch context, while the entry a batch reacts to is read off the batch's own elements.
+#[subscriber(RedisStream::new("orders.bulk").group("bulk"))]
+async fn handle_batch(
+    orders: &[Order],
+    ctx: &mut Context<'_, StreamBatchContext>,
+) -> HandlerOutcome {
+    if orders.iter().any(|order| order.id == 0) {
+        println!(
+            "orders.bulk: rewinding group {}",
+            ctx.context(keys::ConsumerGroup)
+        );
+        if ctx
+            .context(keys::SeekHandle)
+            .seek(RedisGroupPosition::beginning())
+            .await
+            .is_err()
+        {
+            return HandlerOutcome::retry();
+        }
+    }
+    HandlerOutcome::ack()
+}
+// --8<-- [end:batch]
 
 // --8<-- [start:app]
 #[ruststream::app]
@@ -65,6 +93,16 @@ fn app() -> impl App {
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
             b.include(handle);
+            // --8<-- [start:batch-mount]
+            // A batch names its size, which becomes the `XREADGROUP COUNT` of the read that
+            // fetches it, so the server never sends more than one batch holds. Redis's own read
+            // options chain after that, in that order.
+            b.include(
+                handle_batch
+                    .batch(nonzero!(16))
+                    .block(Duration::from_secs(2)),
+            );
+            // --8<-- [end:batch-mount]
             b.include(replay);
         },
     )

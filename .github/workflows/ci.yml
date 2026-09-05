@@ -20,36 +20,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        toolchain: [stable, msrv]
+        # The floor, what users build with, and the early warning. Releases in between add
+        # nothing: what fails on a later one fails on the floor too. Keep the floor in step with
+        # `rust-version` in the workspace manifest.
+        toolchain: [stable, beta, "1.88"]
+    # Installing a toolchain does not select it: `rust-toolchain.toml` outranks the rustup
+    # default the install action sets. RUSTUP_TOOLCHAIN outranks the file.
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
           path: ruststream-fred
 
-      - uses: actions/checkout@v7
-        with:
-          repository: powersemmi/ruststream
-          persist-credentials: false
-          path: ruststream
-
-      # The MSRV leg follows `rust-version` in Cargo.toml, so an MSRV bump is a one-line change.
-      - name: Resolve toolchain
-        id: toolchain
-        working-directory: ruststream-fred
-        env:
-          TOOLCHAIN: ${{ matrix.toolchain }}
-        run: |
-          if [ "$TOOLCHAIN" = "msrv" ]; then
-            TOOLCHAIN="$(sed -n 's/^rust-version *= *"\(.*\)"/\1/p' Cargo.toml)"
-            test -n "$TOOLCHAIN"
-          fi
-          echo "toolchain=$TOOLCHAIN" >> "$GITHUB_OUTPUT"
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{ steps.toolchain.outputs.toolchain }}
+          toolchain: ${{ matrix.toolchain }}
           components: rustfmt, clippy
 
       - name: Cache cargo
@@ -67,6 +55,14 @@ jobs:
         working-directory: ruststream-fred
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+      # Advisory, not a gate: surfaces a lint added by the next clippy release six weeks
+      # before it turns the build red.
+      - name: cargo clippy (beta, advisory)
+        if: matrix.toolchain == 'beta'
+        continue-on-error: true
+        working-directory: ruststream-fred
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
       - name: cargo check (no default features)
         working-directory: ruststream-fred
         run: cargo check --workspace --no-default-features
@@ -75,9 +71,11 @@ jobs:
         working-directory: ruststream-fred
         run: cargo check --workspace --all-targets --all-features
 
+      # --no-fail-fast: a failing target must not hide failures in the targets behind it;
+      # the log then lists every red test, not just the first binary's.
       - name: cargo test (handler-stub only, no live broker)
         working-directory: ruststream-fred
-        run: cargo test --workspace --all-features
+        run: cargo test --workspace --all-features --no-fail-fast
 
       # The crate-root missing_docs deny covers item docs; this gate catches what rustc
       # cannot: broken intra-doc links and redundant targets only rustdoc resolves.
@@ -88,6 +86,105 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --all-features --no-deps
 
+  features:
+    name: Each feature alone
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          path: ruststream-fred
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ruststream-fred
+
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@v2.86.5
+        with:
+          tool: cargo-hack
+
+      # Every feature here is additive and each one gates real API (the TLS backends, the
+      # sentinel and dynamic-credential surfaces, the test broker), so a missing `cfg` on an
+      # item or its import only shows up when that feature is the only one on.
+      # --no-dev-deps: a dev-dependency in scope masks a missing feature gate in the library.
+      - name: cargo hack check (each feature)
+        working-directory: ruststream-fred
+        run: cargo hack check --workspace --each-feature --no-dev-deps
+
+  minimal-versions:
+    name: Minimal versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          path: ruststream-fred
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install nightly (resolver only)
+        uses: dtolnay/rust-toolchain@nightly
+
+      # The floor, for the build step below. Keep the version in step with
+      # `rust-version` in the workspace manifest.
+      - name: Install the MSRV toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ruststream-fred
+
+      # The full flag rather than -Z direct-minimal-versions: the narrow one leaves the assembled
+      # graph unverified, and that is what a user builds. It costs the pinning list below.
+      - name: Resolve minimal versions
+        working-directory: ruststream-fred
+        run: cargo +nightly update -Z minimal-versions
+
+      # Every pin here is a bound a third-party manifest declares more loosely than the code behind
+      # it actually needs, so minimal resolution picks a version that does not compile. Each was
+      # established by bisecting the failure, and each names the crate at fault so it can be dropped
+      # when that crate tightens its own floor. A bound this repo declares itself is raised in the
+      # manifest instead of pinned here. Order matters for the openssl pair only.
+      - name: Pin dependencies whose declared bounds are too loose
+        working-directory: ruststream-fred
+        run: |
+          # serde <= 1.0.102 declares `serde_derive = "1.0"` instead of pinning it in lockstep, so
+          # minimal resolution pairs it with a serde_derive built on syn 0.11, which panics on a
+          # modern struct. Those releases also lack `BorrowedStrDeserializer` and the i128 methods
+          # that `ruststream`'s typed_headers uses. 1.0.103 is the first lockstep release.
+          cargo update -p serde --precise 1.0.103
+          # tracing-attributes declares `syn = "1"` but calls `LitInt::base10_parse`, which syn
+          # 1.0.0 does not have. Disambiguated by version because syn 2 and 3 are in the graph too.
+          cargo update -p syn@1.0.0 --precise 1.0.4
+          # fred declares `tokio-stream = "0.1"` but uses `tokio_stream::wrappers`, added in 0.1.1.
+          cargo update -p tokio-stream --precise 0.1.1
+          # native-tls' floor selects an openssl that predates OpenSSL 3.x and binds FFI symbols
+          # since removed, so it cannot build against the runner's headers. 0.10.38 is the first
+          # OpenSSL-3-capable release.
+          cargo update -p openssl --precise 0.10.38
+          # Must follow the openssl pin, which drags openssl-sys up to 0.9.117 on its own. Earlier
+          # openssl-sys build scripts reject a system OpenSSL 3.x outright.
+          cargo update -p openssl-sys --precise 0.9.72
+
+      # Minimum dependencies on the minimum compiler: the worst case a user can assemble.
+      # Resolution above needs nightly, so only this step drops to the floor.
+      - name: Build and test against minimal versions
+        working-directory: ruststream-fred
+        env:
+          RUSTUP_TOOLCHAIN: "1.88"
+        run: |
+          cargo check --locked --workspace --all-targets --all-features
+          cargo test --locked --workspace --all-features --no-fail-fast
+
   broker-integration:
     name: "Broker integration (Redis: standalone, cluster, sentinel)"
     runs-on: ubuntu-latest
@@ -96,12 +193,6 @@ jobs:
         with:
           persist-credentials: false
           path: ruststream-fred
-
-      - uses: actions/checkout@v7
-        with:
-          repository: powersemmi/ruststream
-          persist-credentials: false
-          path: ruststream
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -149,7 +240,7 @@ jobs:
           path: ruststream-fred
 
       # The rendered scaffolds pin `ruststream` (and depend on this crate), so the cross-repo
-      # sibling checkout must be present to patch them at the local checkouts. Mirror the rust job.
+      # sibling checkout must be present to patch them at the local checkouts.
       - uses: actions/checkout@v7
         with:
           repository: powersemmi/ruststream
@@ -171,9 +262,9 @@ jobs:
 
       # The template-contract drift check: render each Redis scaffold and compile it, so an API
       # change that breaks a template fails here, not a user's first `cargo build`. Compile-only,
-      # with no live Redis. The rendered projects pin `ruststream` / `ruststream-fred` by version;
-      # until the 0.5 line is published, patch both at the sibling checkouts so the scaffolds build
-      # against the local crates (the same layout the rust job uses).
+      # with no live Redis. The rendered projects pin `ruststream` / `ruststream-fred` by version,
+      # so patch both at the local checkouts to test the code in this PR rather than the last
+      # release. No --locked: a fresh scaffold has no lock file, which is what a user starts from.
       - name: Render and check the Redis templates
         run: |
           for tpl in redis-stream redis-pubsub redis-list; do
@@ -181,6 +272,10 @@ jobs:
             mkdir -p "$dest"
             cargo generate --path "ruststream-fred/templates/$tpl" \
               --name smoke --destination "$dest" --vcs none
+            # The scaffold manifest is checked in as `Cargo.toml.liquid` so that cargo's git-source
+            # package discovery never parses its placeholder name. Assert that cargo-generate did
+            # drop the suffix, otherwise the append below would quietly write a manifest of its own.
+            test -f "$dest/smoke/Cargo.toml"
             {
               echo ""
               echo "[patch.crates-io]"
@@ -198,15 +293,6 @@ jobs:
         with:
           persist-credentials: false
           path: ruststream-fred
-
-      # cargo-deny resolves the whole dependency graph, so the cross-repo `ruststream`
-      # path dependency must be present. Mirror the rust job's sibling layout and run the
-      # tool natively (the Docker action only mounts this workspace, not the sibling).
-      - uses: actions/checkout@v7
-        with:
-          repository: powersemmi/ruststream
-          persist-credentials: false
-          path: ruststream
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

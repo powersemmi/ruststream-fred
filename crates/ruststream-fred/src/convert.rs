@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use bytes::Bytes;
-use ruststream::Headers;
+use ruststream::HeaderMap;
 
 /// Field holding the message body.
 pub(crate) const PAYLOAD_FIELD: &str = "_payload";
@@ -15,7 +15,7 @@ pub(crate) const PAYLOAD_FIELD: &str = "_payload";
 pub(crate) const HEADER_PREFIX: &str = "h:";
 
 /// Builds the `XADD` field list for a payload and its headers.
-pub(crate) fn fields_for_publish(payload: &[u8], headers: &Headers) -> Vec<(String, Vec<u8>)> {
+pub(crate) fn fields_for_publish(payload: &[u8], headers: &HeaderMap) -> Vec<(String, Vec<u8>)> {
     let mut fields = Vec::with_capacity(1 + headers.len());
     fields.push((PAYLOAD_FIELD.to_owned(), payload.to_vec()));
     for (name, value) in headers.iter() {
@@ -28,9 +28,9 @@ pub(crate) fn fields_for_publish(payload: &[u8], headers: &Headers) -> Vec<(Stri
 ///
 /// Unknown fields (neither the reserved body nor a `h:`-prefixed header) are ignored so a newer
 /// producer can add fields without breaking an older consumer.
-pub(crate) fn parts_from_fields(fields: HashMap<String, Vec<u8>>) -> (Bytes, Headers) {
+pub(crate) fn parts_from_fields(fields: HashMap<String, Vec<u8>>) -> (Bytes, HeaderMap) {
     let mut payload = Bytes::new();
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     for (key, value) in fields {
         if key == PAYLOAD_FIELD {
             payload = Bytes::from(value);
@@ -47,7 +47,7 @@ mod tests {
 
     #[test]
     fn round_trips_payload_and_headers() {
-        let mut headers = Headers::new();
+        let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/json");
         headers.insert("correlation-id", "abc-1");
 

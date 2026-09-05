@@ -9,11 +9,13 @@
 //! * [`PubSubMode::Sharded`] - `SSUBSCRIBE` / `SPUBLISH` (Redis 7+), slot-local so it scales across
 //!   a cluster, but has no pattern support.
 //!
-//! Headers travel in a frame around the payload (see [`crate::envelope`]): a lossless binary frame
+//! Headers travel in a frame around the payload: a lossless binary frame
 //! by default, or a readable codec-serialized envelope when a codec is set with
 //! [`RedisPubSub::codec`] / [`RedisPubSubPublish::codec`].
 
 use std::fmt::{Debug, Formatter};
+use std::future::{Future, ready};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -24,14 +26,57 @@ use futures::Stream;
 use futures::stream::unfold;
 use ruststream::codec::Codec;
 use ruststream::{
-    AckError, Headers, IncomingMessage, OutgoingMessage, PairError, Partitioned, PublishPolicy,
-    Publisher, SubscriptionSource,
+    AckError, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage, OutgoingMessage,
+    PairError, Partitioned, PublishPolicy, Publisher, SubscriptionSource,
 };
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::envelope::{SharedEnvelope, frame, unframe};
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
+
+/// This form's publish policy, [`RedisPubSubPublish`], under the mount-site name every form gives
+/// its own. Its options, the delivery mode and the framing codec, still chain off it.
+pub use crate::pubsub::RedisPubSubPublish as Publish;
+
+/// The core prelude plus everything a Redis Pub/Sub service writes.
+///
+/// The broker, the [`RedisPubSub`] descriptor with its [`PubSubMode`], this form's [`Publish`]
+/// policy, and its per-delivery context. Pub/Sub carries no core capability traits.
+///
+/// # Examples
+///
+/// ```
+/// use ruststream_fred::pubsub::prelude::*;
+///
+/// let events = RedisPubSub::new("events").mode(PubSubMode::Sharded);
+/// let broker = RedisBroker::standalone("redis://localhost:6379");
+/// let replies: Publish = Publish::new().mode(PubSubMode::Sharded);
+/// let _ = (events, broker, replies);
+/// ```
+///
+/// Two vocabularies that do not mix. A handler body imports `ruststream::prelude::*` and bounds an
+/// injected slot with the broker capability trait it needs (`Out<impl Publisher>`); a routes file
+/// globs this prelude and names the policy by its mount-site word, the same word on every form.
+///
+/// A file that also globs another form's prelude sees an ambiguous `Publish`; use
+/// [`crate::prelude`] and write `pubsub::Publish` there.
+pub mod prelude {
+    pub use ruststream::prelude::*;
+
+    pub use super::{PubSubMode, Publish, RedisPubSub};
+    // `keys` arrives as the module, not as a glob: its members are short words a service also uses
+    // for its own types, and `Ctx<keys::Channel>` reads as what it is at the use site.
+    pub use crate::context::{PubSubContext, keys};
+    pub use crate::{PARTITION_KEY_HEADER, RedisBroker, RedisPublishExt};
+
+    #[cfg(any(
+        feature = "tls-rustls",
+        feature = "tls-rustls-ring",
+        feature = "tls-native-tls"
+    ))]
+    pub use crate::{TlsConfig, TlsConnector};
+}
 
 /// Pub/Sub delivery mode. Defaults to [`Classic`](Self::Classic).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -168,11 +213,11 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisPubSu
 
 /// A Pub/Sub subscription backed by a dedicated `fred` client, so its message stream and channel
 /// state are isolated from other subscribers and from the publishing pool.
-pub struct RedisPubSubSubscriber {
-    client: Client,
-    rx: Receiver<Message>,
-    codec: Option<SharedEnvelope>,
-}
+///
+/// Pub/Sub delivers one message at a time, so the batches a [`BatchSubscriber`] hands out are
+/// assembled on the client by the core's [`BufferedSubscriber`]: it fills a batch up to the size
+/// the mount site asked for and closes a partial one on its own deadline.
+pub struct RedisPubSubSubscriber(BufferedSubscriber<PubSubWire>);
 
 impl Debug for RedisPubSubSubscriber {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -187,11 +232,57 @@ impl RedisPubSubSubscriber {
         rx: Receiver<Message>,
         codec: Option<SharedEnvelope>,
     ) -> Self {
-        Self { client, rx, codec }
+        Self(BufferedSubscriber::new(PubSubWire { client, rx, codec }))
     }
 }
 
-impl Drop for RedisPubSubSubscriber {
+impl ruststream::Subscriber for RedisPubSubSubscriber {
+    type Message = RedisPubSubMessage;
+    type Error = RedisError;
+
+    /// Yields one message per Pub/Sub delivery.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned stream between items is safe. Because Pub/Sub has no buffering, any
+    /// message published while no stream is polling is lost (this is Redis Pub/Sub semantics, not a
+    /// limitation of this client).
+    fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
+        self.0.stream()
+    }
+}
+
+impl BatchSubscriber for RedisPubSubSubscriber {
+    type Batch = Vec<RedisPubSubMessage>;
+
+    /// Yields batches of at most `size` deliveries, assembled as they arrive.
+    ///
+    /// # Cancel safety
+    ///
+    /// Same as [`Subscriber::stream`](ruststream::Subscriber::stream). A batch abandoned mid-fill
+    /// loses the deliveries it holds, as any Pub/Sub delivery nobody is polling for is lost.
+    fn batches(
+        &mut self,
+        size: NonZeroUsize,
+    ) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
+        self.0.batches(size)
+    }
+}
+
+/// The wire side of a Pub/Sub subscription: the dedicated client and the channel it feeds.
+struct PubSubWire {
+    client: Client,
+    rx: Receiver<Message>,
+    codec: Option<SharedEnvelope>,
+}
+
+impl Debug for PubSubWire {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PubSubWire").finish_non_exhaustive()
+    }
+}
+
+impl Drop for PubSubWire {
     fn drop(&mut self) {
         // The dedicated client owns a background connection task; close it on a detached task since
         // `drop` cannot await.
@@ -215,17 +306,10 @@ fn to_message(msg: &Message, codec: Option<&SharedEnvelope>) -> RedisPubSubMessa
     }
 }
 
-impl ruststream::Subscriber for RedisPubSubSubscriber {
+impl ruststream::Subscriber for PubSubWire {
     type Message = RedisPubSubMessage;
     type Error = RedisError;
 
-    /// Yields one message per Pub/Sub delivery.
-    ///
-    /// # Cancel safety
-    ///
-    /// Dropping the returned stream between items is safe. Because Pub/Sub has no buffering, any
-    /// message published while no stream is polling is lost (this is Redis Pub/Sub semantics, not a
-    /// limitation of this client).
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
         let codec = self.codec.clone();
         unfold((&mut self.rx, codec), |(rx, codec)| async move {
@@ -250,7 +334,7 @@ pub struct RedisPubSubMessage {
     /// Whether this delivery arrived through a `PSUBSCRIBE` pattern match (vs an exact subscribe).
     pattern: bool,
     payload: Bytes,
-    headers: Headers,
+    headers: HeaderMap,
 }
 
 impl Debug for RedisPubSubMessage {
@@ -286,16 +370,21 @@ impl IncomingMessage for RedisPubSubMessage {
         &self.payload
     }
 
-    fn headers(&self) -> &Headers {
+    fn headers(&self) -> &HeaderMap {
         &self.headers
     }
 
-    async fn ack(self) -> Result<(), AckError> {
-        Err(AckError::Unsupported)
+    // See `RedisMessage`: the keyed worker lanes read the key from here, not from `Partitioned`.
+    fn partition_key(&self) -> Option<&[u8]> {
+        Partitioned::partition_key(self)
     }
 
-    async fn nack(self, _requeue: bool) -> Result<(), AckError> {
-        Err(AckError::Unsupported)
+    fn ack(self) -> impl Future<Output = Result<(), AckError>> {
+        ready(Err(AckError::Unsupported))
+    }
+
+    fn nack(self, _requeue: bool) -> impl Future<Output = Result<(), AckError>> {
+        ready(Err(AckError::Unsupported))
     }
 }
 
@@ -359,8 +448,11 @@ impl RedisPubSubPublish {
 impl PublishPolicy<ConnectedRedisBroker> for RedisPubSubPublish {
     type Live = RedisPubSubPublisher;
 
-    async fn pair(self, connected: &ConnectedRedisBroker) -> Result<Self::Live, PairError> {
-        Ok(connected.pubsub_publisher(self))
+    fn pair(
+        self,
+        connected: &ConnectedRedisBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(connected.pubsub_publisher(self)))
     }
 }
 
@@ -426,7 +518,7 @@ mod tests {
             channel: "events".to_owned(),
             pattern: false,
             payload: Bytes::from_static(b"{}"),
-            headers: Headers::new(),
+            headers: HeaderMap::new(),
         };
         let cx = PubSubContext::build(&exact);
         assert_eq!(cx.channel(), "events");
@@ -436,7 +528,7 @@ mod tests {
             channel: "events.user".to_owned(),
             pattern: true,
             payload: Bytes::from_static(b"{}"),
-            headers: Headers::new(),
+            headers: HeaderMap::new(),
         };
         assert!(PubSubContext::build(&matched).from_pattern());
     }

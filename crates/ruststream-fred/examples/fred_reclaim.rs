@@ -14,9 +14,7 @@
 
 use std::time::Duration;
 
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
-use ruststream::subscriber;
-use ruststream_fred::{RedisBroker, RedisStream};
+use ruststream_fred::stream::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -27,18 +25,18 @@ struct Order {
 // --8<-- [start:worker]
 // The descriptor sits directly in the decorator: a fresh-tail consumer on the `workers` group.
 #[subscriber(RedisStream::new("orders").group("workers"))]
-async fn handle(order: &Order) -> HandlerResult {
+async fn handle(order: &Order) -> HandlerOutcome {
     println!("processing order {}", order.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:worker]
 
 // --8<-- [start:reclaim]
 // A recovery handler for the same group: reclaims entries left pending for over 30s.
 #[subscriber(RedisStream::reclaim("orders", Duration::from_secs(30)).group("workers"))]
-async fn recover(order: &Order) -> HandlerResult {
+async fn recover(order: &Order) -> HandlerOutcome {
     println!("recovering order {}", order.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:reclaim]
 
