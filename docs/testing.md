@@ -104,11 +104,11 @@ no key to expire in process, and the list and Pub/Sub envelope codecs never run,
 back as the bare payload here and as a frame on a real server. A test that needs to assert on any of
 those needs a real server.
 
-One capability note: the stand-in has a single publisher, and it carries both transaction kinds. A
-list or Pub/Sub reply slot therefore offers transactions in process that `RedisListPublisher` and
-`RedisPubSubPublisher` do not, so a slot bounded on a transaction capability compiles here and not
-against `RedisBroker`. That is a compile error at the same mount site either way, never a silent
-difference at run time.
+Capabilities match, per form. The stream policy pairs into a publisher carrying both transaction
+kinds, as `RedisPublisher` does; the list and Pub/Sub policies pair into `RedisTestPlainPublisher`,
+which offers `Publisher` alone, as `RedisListPublisher` and `RedisPubSubPublisher` do. A slot bounded
+on a transaction capability therefore fails to compile in process exactly where it fails against a
+real server, instead of passing under the harness and breaking on the production build.
 
 Two things are validated the way the real broker validates them, so a subscription that could not
 start against Redis does not start under the harness either: a stream with no consumer group, and a

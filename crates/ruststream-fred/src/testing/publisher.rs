@@ -163,6 +163,59 @@ impl OwnedTransactions for RedisTestPublisher {
     }
 }
 
+/// The stand-in for a publisher with no transaction surface.
+///
+/// It mirrors [`RedisListPublisher`](crate::RedisListPublisher) and
+/// [`RedisPubSubPublisher`](crate::RedisPubSubPublisher), which implement [`Publisher`] and nothing
+/// more, so the stand-in is never more capable than the transport it stands in for. Without it
+/// a list or Pub/Sub reply slot would pair into [`RedisTestPublisher`] and pick up both transaction
+/// kinds, so a handler bounded on a transaction capability would compile in process and fail to
+/// compile against [`ConnectedRedisBroker`](crate::ConnectedRedisBroker): the in-process build
+/// passing is exactly the wrong way round for a stand-in to be wrong.
+///
+/// Delivery is the same in-process fanout [`RedisTestPublisher`] performs; only the capability
+/// surface differs. It is what [`RedisListPublish`](crate::RedisListPublish) and
+/// [`RedisPubSubPublish`](crate::RedisPubSubPublish) pair into here, so a test reaches one by
+/// naming the production policy rather than a type of its own.
+///
+/// # Examples
+///
+/// ```
+/// use ruststream::{Broker, OutgoingMessage, PublishPolicy, Publisher};
+/// use ruststream_fred::RedisListPublish;
+/// use ruststream_fred::testing::RedisTestBroker;
+///
+/// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
+/// let connected = RedisTestBroker::new().connect().await?;
+/// let publisher = RedisListPublish::new().pair(&connected).await?;
+/// publisher.publish(OutgoingMessage::new("jobs", b"{}".as_slice())).await?;
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Clone)]
+pub struct RedisTestPlainPublisher(RedisTestPublisher);
+
+impl std::fmt::Debug for RedisTestPlainPublisher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RedisTestPlainPublisher")
+            .finish_non_exhaustive()
+    }
+}
+
+impl RedisTestPlainPublisher {
+    pub(crate) fn new(state: Arc<TestBrokerState>) -> Self {
+        Self(RedisTestPublisher::new(state))
+    }
+}
+
+impl Publisher for RedisTestPlainPublisher {
+    type Error = RedisError;
+
+    fn publish(&self, msg: OutgoingMessage<'_>) -> impl Future<Output = Result<(), Self::Error>> {
+        self.0.publish(msg)
+    }
+}
+
 /// An owned in-process transaction, opened by
 /// [`transaction`](OwnedTransactions::transaction) on a [`RedisTestPublisher`].
 ///

@@ -8,8 +8,9 @@
 //! * [`ConnectedRedisTestBroker`] - its connected form, backed by an in-process key router, which
 //!   implements `Subscribe` and [`ruststream::testing::TestableBroker`] so it plugs straight into
 //!   the [`TestApp`](ruststream::testing::TestApp) harness and the framework's conformance suite;
-//! * [`RedisTestPublisher`] - what this crate's publish policies pair into here, carrying both
-//!   transaction kinds ([`RedisTestTransaction`] is the owned one);
+//! * [`RedisTestPublisher`] / [`RedisTestPlainPublisher`] - what this crate's publish policies pair
+//!   into here, one per capability surface the real publishers offer: the first carries both
+//!   transaction kinds ([`RedisTestTransaction`] is the owned one), the second `Publisher` alone;
 //! * [`RedisTestSubscriber`] / [`RedisTestMessage`] - `Subscriber` and `IncomingMessage` impls with
 //!   `nack(requeue = true)` redelivery (re-sent into the same subscriber's queue).
 //!
@@ -20,10 +21,12 @@
 //! both brokers. There is no test-only policy type; [`RedisPublish`](crate::RedisPublish) is also
 //! the stand-in's default reply publisher.
 //!
-//! A descriptor resolves to its key or channel, which is all the stand-in routes by. The
-//! `SubscriptionSource` and `PublishPolicy` impls for [`ConnectedRedisTestBroker`] carry the
-//! per-form detail: what the mount ignores, where it diverges from a real server, and which
-//! configurations it refuses at startup rather than reinterprets.
+//! A descriptor resolves to its key or channel, which is all the stand-in routes by, and a policy
+//! pairs into the publisher whose capability surface matches the one it would get on a real server,
+//! so a slot bound here is a slot that compiles in production. The `SubscriptionSource` and
+//! `PublishPolicy` impls for [`ConnectedRedisTestBroker`] carry the per-form detail: what the mount
+//! ignores, where it diverges from a real server, and which configurations it refuses at startup
+//! rather than reinterprets.
 //!
 //! No `redis-server`, no docker, no network. Broker-specific edge cases (consumer-group cursors,
 //! `XAUTOCLAIM` redelivery, idle reclaim, `MAXLEN` trimming, dead-letter routing) are out of scope
@@ -35,5 +38,5 @@ mod router;
 mod subscriber;
 
 pub use broker::{ConnectedRedisTestBroker, RedisTestBroker};
-pub use publisher::{RedisTestPublisher, RedisTestTransaction};
+pub use publisher::{RedisTestPlainPublisher, RedisTestPublisher, RedisTestTransaction};
 pub use subscriber::{RedisTestMessage, RedisTestSubscriber};

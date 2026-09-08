@@ -15,7 +15,9 @@ use ruststream::{
 
 use crate::{
     error::RedisError,
-    testing::{RedisTestPublisher, RedisTestSubscriber, router::KeyRouter},
+    testing::{
+        RedisTestPlainPublisher, RedisTestPublisher, RedisTestSubscriber, router::KeyRouter,
+    },
 };
 
 /// Shared state owned by every clone of a single test broker instance.
@@ -130,10 +132,22 @@ impl ConnectedRedisTestBroker {
         )))
     }
 
-    /// Returns a publisher bound to this broker. Cheap to clone.
+    /// Returns a publisher bound to this broker, carrying both transaction kinds like
+    /// [`ConnectedRedisBroker::publisher`](crate::ConnectedRedisBroker::publisher). Cheap to clone.
     #[must_use]
     pub fn publisher(&self) -> RedisTestPublisher {
         RedisTestPublisher::new(Arc::clone(&self.state))
+    }
+
+    /// Returns a publisher offering [`Publisher`](ruststream::Publisher) alone, the surface the
+    /// list and Pub/Sub publishers have on a real server. Cheap to clone.
+    ///
+    /// Reached in a test by pairing [`RedisListPublish`](crate::RedisListPublish) or
+    /// [`RedisPubSubPublish`](crate::RedisPubSubPublish), which is how a routes file writes it;
+    /// this is the direct handle for code that has no policy in hand.
+    #[must_use]
+    pub fn plain_publisher(&self) -> RedisTestPlainPublisher {
+        RedisTestPlainPublisher::new(Arc::clone(&self.state))
     }
 }
 

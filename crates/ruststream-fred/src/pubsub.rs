@@ -498,19 +498,20 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisPubSubPublish {
 /// the bare payload here and as a frame on a real server, which is what a `published(..)`
 /// assertion sees.
 ///
-/// The stand-in's publisher carries both transaction kinds, which [`RedisPubSubPublisher`] does
-/// not: a slot bounded on a transaction capability compiles here and does not against
-/// [`ConnectedRedisBroker`]. The mismatch is a compile error at the same mount site either way,
-/// never a silent difference at run time.
+/// The capability surface matches: this pairs into
+/// [`RedisTestPlainPublisher`](crate::testing::RedisTestPlainPublisher), which offers [`Publisher`]
+/// and nothing more, exactly as [`RedisPubSubPublisher`] does. A slot bounded on a transaction
+/// capability therefore fails to compile here too, rather than passing in process and breaking on
+/// the production build.
 #[cfg(feature = "testing")]
 impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisPubSubPublish {
-    type Live = crate::testing::RedisTestPublisher;
+    type Live = crate::testing::RedisTestPlainPublisher;
 
     fn pair(
         self,
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
-        ready(Ok(connected.publisher()))
+        ready(Ok(connected.plain_publisher()))
     }
 }
 
