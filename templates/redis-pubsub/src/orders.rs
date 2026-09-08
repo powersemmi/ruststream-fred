@@ -6,9 +6,7 @@
 //! no reply path here (its `ack` / `nack` report `Unsupported`). Returning `Ack` simply marks the
 //! delivery handled; the runtime tolerates the unsupported settle.
 
-use ruststream::runtime::HandlerResult;
-use ruststream::subscriber;
-use ruststream_fred::RedisPubSub;
+use ruststream_fred::pubsub::prelude::*;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -21,9 +19,9 @@ pub struct Event {
 }
 
 /// Consumes each `events` broadcast. Pub/Sub fans out to every connected subscriber and cannot ack,
-/// so this is a read-only handler: it does its work and returns `Ack` to mark the delivery handled.
+/// so this is a read-only handler: it does its work and acks to mark the delivery handled.
 #[subscriber(RedisPubSub::new("events"))]
-pub async fn on_event(event: &Event) -> HandlerResult {
+pub async fn on_event(event: &Event) -> HandlerOutcome {
     println!("event: {}", event.kind);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }

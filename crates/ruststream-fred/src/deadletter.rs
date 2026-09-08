@@ -21,7 +21,7 @@
 
 use fred::clients::Pool;
 use fred::interfaces::StreamsInterface;
-use ruststream::Headers;
+use ruststream::HeaderMap;
 
 use crate::convert::fields_for_publish;
 
@@ -62,7 +62,7 @@ impl PoisonPolicy {
 }
 
 /// Returns the headers for a dead-lettered copy: the originals plus the reason tag.
-pub(crate) fn with_reason(headers: &Headers, reason: &'static str) -> Headers {
+pub(crate) fn with_reason(headers: &HeaderMap, reason: &'static str) -> HeaderMap {
     let mut tagged = headers.clone();
     tagged.insert(DEAD_LETTER_REASON_HEADER, reason);
     tagged
@@ -79,7 +79,7 @@ pub(crate) async fn settle_poison_stream(
     pool: &Pool,
     policy: &PoisonPolicy,
     payload: &[u8],
-    headers: &Headers,
+    headers: &HeaderMap,
     reason: &'static str,
 ) -> Result<(), fred::error::Error> {
     if let Some(dlq) = policy.dead_letter_key() {
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn with_reason_tags_without_dropping_originals() {
-        let mut headers = Headers::new();
+        let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/json");
         let tagged = with_reason(&headers, REASON_DROPPED);
         assert_eq!(tagged.get_str(DEAD_LETTER_REASON_HEADER), Some("dropped"));

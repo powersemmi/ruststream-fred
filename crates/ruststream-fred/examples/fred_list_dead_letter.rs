@@ -11,9 +11,7 @@
 //! redis-cli LPUSH jobs.dlq '{"id":0}'
 //! ```
 
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
-use ruststream::subscriber;
-use ruststream_fred::{RedisBroker, RedisList};
+use ruststream_fred::list::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -30,13 +28,13 @@ struct Job {
         .dead_letter("jobs.failed")
         .max_deliveries(5)
 )]
-async fn handle_job(job: &Job) -> HandlerResult {
+async fn handle_job(job: &Job) -> HandlerOutcome {
     if job.id == 0 {
         // A poison job: nack to retry. Once the cap is reached it is dead-lettered for you.
-        return HandlerResult::Nack { requeue: true };
+        return HandlerOutcome::retry();
     }
     println!("processed job {}", job.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:handler]
 

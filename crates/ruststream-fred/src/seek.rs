@@ -175,8 +175,10 @@ impl RedisGroupPosition {
 /// Moves a consumer group's cursor.
 ///
 /// The handle behind the core `Seekable` capability, minted with
-/// [`Seekable::seeker`](ruststream::Seekable::seeker) or injected into a handler as a
-/// `Seek(seeker): Seek<RedisGroupSeeker>` parameter.
+/// [`Seekable::seeker`](ruststream::Seekable::seeker) or read out of a delivery's context under
+/// the [`SeekHandle`](crate::context::keys::SeekHandle) key - as a
+/// `Ctx(seeker): Ctx<keys::SeekHandle>` handler parameter, or with
+/// `ctx.context(keys::SeekHandle)`.
 ///
 /// # A seek is group-wide
 ///
@@ -229,8 +231,10 @@ impl RedisGroupPosition {
 #[derive(Clone)]
 pub struct RedisGroupSeeker {
     pool: Pool,
-    key: String,
-    group: String,
+    // `Arc<str>` rather than `String`: every delivery's context clones this handle, so the clone
+    // has to stay allocation-free on the dispatch path.
+    key: Arc<str>,
+    group: Arc<str>,
     /// Shared with the subscription: bumped on every seek so entries selected under the old
     /// cursor are recognised as stale and dropped instead of delivered.
     generation: Arc<AtomicU64>,
@@ -246,13 +250,33 @@ impl std::fmt::Debug for RedisGroupSeeker {
 }
 
 impl RedisGroupSeeker {
-    pub(crate) fn new(pool: Pool, key: String, group: String, generation: Arc<AtomicU64>) -> Self {
+    pub(crate) fn new(
+        pool: Pool,
+        key: impl Into<Arc<str>>,
+        group: impl Into<Arc<str>>,
+        generation: Arc<AtomicU64>,
+    ) -> Self {
         Self {
             pool,
-            key,
-            group,
+            key: key.into(),
+            group: group.into(),
             generation,
         }
+    }
+
+    /// The stream key this handle repositions a group over.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// The consumer group whose cursor this handle moves.
+    ///
+    /// The cursor belongs to the group, so this names everything a
+    /// [`seek`](Seeker::seek) through this handle repositions.
+    #[must_use]
+    pub fn group(&self) -> &str {
+        &self.group
     }
 }
 
@@ -269,7 +293,7 @@ impl Seeker for RedisGroupSeeker {
     async fn seek(&self, to: RedisGroupPosition) -> Result<(), RedisError> {
         let _: String = self
             .pool
-            .xgroup_setid(self.key.as_str(), self.group.as_str(), to.as_xid())
+            .xgroup_setid(&*self.key, &*self.group, to.as_xid())
             .await
             .map_err(RedisError::stream)?;
         // Bumped after the cursor moved, so a reader that observes the new generation is

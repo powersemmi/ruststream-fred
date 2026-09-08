@@ -17,7 +17,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use ruststream::{Headers, RawMessage, testing::Coordinator};
+use ruststream::{HeaderMap, RawMessage, testing::Coordinator};
 use tokio::sync::mpsc;
 
 /// Opaque handle identifying one subscription inside a [`KeyRouter`].
@@ -29,7 +29,7 @@ pub(crate) struct SubscriptionId(u64);
 pub(crate) struct Delivery {
     pub(crate) subject: String,
     pub(crate) payload: Bytes,
-    pub(crate) headers: Headers,
+    pub(crate) headers: HeaderMap,
 }
 
 pub(crate) type DeliverySender = mpsc::UnboundedSender<Delivery>;
@@ -98,7 +98,7 @@ impl KeyRouter {
         &self,
         subject: String,
         payload: Bytes,
-        headers: Headers,
+        headers: HeaderMap,
         coordinator: Option<&Coordinator>,
     ) {
         let snapshot =
@@ -166,8 +166,8 @@ impl std::fmt::Debug for KeyRouter {
 mod tests {
     use super::*;
 
-    fn no_headers() -> Headers {
-        Headers::new()
+    fn no_headers() -> HeaderMap {
+        HeaderMap::new()
     }
 
     #[tokio::test]

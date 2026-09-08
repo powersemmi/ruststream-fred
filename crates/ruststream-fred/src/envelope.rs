@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use ruststream::Headers;
+use ruststream::HeaderMap;
 use ruststream::codec::Codec;
 use serde::{Deserialize, Serialize};
 
@@ -26,27 +26,31 @@ pub(crate) type SharedEnvelope = Arc<dyn EnvelopeCodec>;
 /// Object-safe wrapper so the broker can hold a codec without the generic `Codec` methods (which
 /// make `Codec` itself not `dyn`-compatible). Implemented for every [`Codec`] via a blanket impl.
 pub(crate) trait EnvelopeCodec: Send + Sync {
-    fn encode(&self, payload: &[u8], headers: &Headers) -> Vec<u8>;
-    fn decode(&self, bytes: &[u8]) -> (Bytes, Headers);
+    fn encode(&self, payload: &[u8], headers: &HeaderMap) -> Vec<u8>;
+    fn decode(&self, bytes: &[u8]) -> (Bytes, HeaderMap);
 }
 
 impl<C: Codec> EnvelopeCodec for C {
-    fn encode(&self, payload: &[u8], headers: &Headers) -> Vec<u8> {
+    fn encode(&self, payload: &[u8], headers: &HeaderMap) -> Vec<u8> {
         let envelope = Envelope::from_parts(payload, headers);
         Codec::encode(self, &envelope)
             .map_or_else(|_| binary_encode(payload, headers), |b| b.to_vec())
     }
 
-    fn decode(&self, bytes: &[u8]) -> (Bytes, Headers) {
+    fn decode(&self, bytes: &[u8]) -> (Bytes, HeaderMap) {
         Codec::decode::<Envelope>(self, bytes).map_or_else(
-            |_| (Bytes::copy_from_slice(bytes), Headers::new()),
+            |_| (Bytes::copy_from_slice(bytes), HeaderMap::new()),
             Envelope::into_parts,
         )
     }
 }
 
 /// Frames `payload` and `headers` for the wire, using `codec` if set else the binary framing.
-pub(crate) fn frame(codec: Option<&SharedEnvelope>, payload: &[u8], headers: &Headers) -> Vec<u8> {
+pub(crate) fn frame(
+    codec: Option<&SharedEnvelope>,
+    payload: &[u8],
+    headers: &HeaderMap,
+) -> Vec<u8> {
     codec.map_or_else(
         || binary_encode(payload, headers),
         |codec| codec.encode(payload, headers),
@@ -55,7 +59,7 @@ pub(crate) fn frame(codec: Option<&SharedEnvelope>, payload: &[u8], headers: &He
 
 /// Unframes a wire value back into payload and headers, using `codec` if set else the binary
 /// framing.
-pub(crate) fn unframe(codec: Option<&SharedEnvelope>, bytes: &[u8]) -> (Bytes, Headers) {
+pub(crate) fn unframe(codec: Option<&SharedEnvelope>, bytes: &[u8]) -> (Bytes, HeaderMap) {
     codec.map_or_else(|| binary_decode(bytes), |codec| codec.decode(bytes))
 }
 
@@ -69,7 +73,7 @@ struct Envelope {
 }
 
 impl Envelope {
-    fn from_parts(payload: &[u8], headers: &Headers) -> Self {
+    fn from_parts(payload: &[u8], headers: &HeaderMap) -> Self {
         let headers = headers
             .iter()
             .map(|(name, value)| {
@@ -85,8 +89,8 @@ impl Envelope {
         }
     }
 
-    fn into_parts(self) -> (Bytes, Headers) {
-        let mut headers = Headers::new();
+    fn into_parts(self) -> (Bytes, HeaderMap) {
+        let mut headers = HeaderMap::new();
         for (name, value) in self.headers {
             headers.insert(name, Bytes::from(value.into_bytes()));
         }
@@ -108,7 +112,7 @@ fn len_prefix(n: usize) -> [u8; 4] {
     u32::try_from(n).unwrap_or(u32::MAX).to_be_bytes()
 }
 
-fn binary_encode(payload: &[u8], headers: &Headers) -> Vec<u8> {
+fn binary_encode(payload: &[u8], headers: &HeaderMap) -> Vec<u8> {
     let mut buf = Vec::with_capacity(4 + payload.len());
     buf.extend_from_slice(&len_prefix(headers.len()));
     for (name, value) in headers.iter() {
@@ -122,8 +126,8 @@ fn binary_encode(payload: &[u8], headers: &Headers) -> Vec<u8> {
     buf
 }
 
-fn binary_decode(bytes: &[u8]) -> (Bytes, Headers) {
-    try_binary_decode(bytes).unwrap_or_else(|| (Bytes::copy_from_slice(bytes), Headers::new()))
+fn binary_decode(bytes: &[u8]) -> (Bytes, HeaderMap) {
+    try_binary_decode(bytes).unwrap_or_else(|| (Bytes::copy_from_slice(bytes), HeaderMap::new()))
 }
 
 fn read_u32(bytes: &[u8], pos: &mut usize) -> Option<usize> {
@@ -140,10 +144,10 @@ fn read_slice<'a>(bytes: &'a [u8], pos: &mut usize, len: usize) -> Option<&'a [u
     Some(slice)
 }
 
-fn try_binary_decode(bytes: &[u8]) -> Option<(Bytes, Headers)> {
+fn try_binary_decode(bytes: &[u8]) -> Option<(Bytes, HeaderMap)> {
     let mut pos = 0;
     let count = read_u32(bytes, &mut pos)?;
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     for _ in 0..count {
         let name_len = read_u32(bytes, &mut pos)?;
         let name = read_slice(bytes, &mut pos, name_len)?;
@@ -160,8 +164,8 @@ mod tests {
     use super::*;
     use ruststream::codec::JsonCodec;
 
-    fn sample_headers() -> Headers {
-        let mut headers = Headers::new();
+    fn sample_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/json");
         headers.insert("correlation-id", "abc-1");
         headers

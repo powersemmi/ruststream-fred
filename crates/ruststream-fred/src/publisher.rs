@@ -2,6 +2,7 @@
 //! borrowed [`TransactionalPublisher`] on the handle and the owned [`OwnedTransactions`] value.
 
 use std::fmt::{Debug, Formatter};
+use std::future::{Future, ready};
 use std::sync::{Arc, Mutex};
 
 use fred::interfaces::{StreamsInterface, TransactionInterface};
@@ -74,8 +75,11 @@ pub struct RedisPublish;
 impl PublishPolicy<ConnectedRedisBroker> for RedisPublish {
     type Live = RedisPublisher;
 
-    async fn pair(self, connected: &ConnectedRedisBroker) -> Result<Self::Live, PairError> {
-        Ok(connected.publisher())
+    fn pair(
+        self,
+        connected: &ConnectedRedisBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(connected.publisher()))
     }
 }
 
@@ -192,15 +196,18 @@ impl TransactionalPublisher for RedisPublisher {
     /// Returns [`RedisError::InvalidOptions`] on a cluster topology, which cannot offer
     /// multi-key transactions, or [`RedisError::TransactionBusy`] when a transaction is already
     /// open on this handle (the open one is left untouched).
-    async fn begin_transaction(&self) -> Result<(), Self::Error> {
-        self.check_transactions_supported()?;
-        let mut guard = self.txn.lock().expect("redis publisher mutex poisoned");
-        if guard.is_some() {
-            return Err(RedisError::TransactionBusy);
+    fn begin_transaction(&self) -> impl Future<Output = Result<(), Self::Error>> {
+        if let Err(err) = self.check_transactions_supported() {
+            return ready(Err(err));
         }
-        *guard = Some(Vec::new());
-        drop(guard);
-        Ok(())
+        {
+            let mut guard = self.txn.lock().expect("redis publisher mutex poisoned");
+            if guard.is_some() {
+                return ready(Err(RedisError::TransactionBusy));
+            }
+            *guard = Some(Vec::new());
+        }
+        ready(Ok(()))
     }
 
     /// Flushes the buffered `XADD`s as one `MULTI` / `EXEC` block, in publish order, then clears
@@ -228,13 +235,15 @@ impl TransactionalPublisher for RedisPublisher {
     /// # Errors
     ///
     /// Returns [`RedisError::NoTransaction`] when no transaction is open on this handle.
-    async fn abort(&self) -> Result<(), Self::Error> {
-        self.txn
-            .lock()
-            .expect("redis publisher mutex poisoned")
-            .take()
-            .ok_or(RedisError::NoTransaction)
-            .map(|_| ())
+    fn abort(&self) -> impl Future<Output = Result<(), Self::Error>> {
+        ready(
+            self.txn
+                .lock()
+                .expect("redis publisher mutex poisoned")
+                .take()
+                .ok_or(RedisError::NoTransaction)
+                .map(|_| ()),
+        )
     }
 }
 
@@ -248,15 +257,17 @@ impl OwnedTransactions for RedisPublisher {
     ///
     /// Returns [`RedisError::InvalidOptions`] on a cluster topology, which cannot offer
     /// multi-key transactions.
-    async fn transaction(&self) -> Result<RedisTransaction, RedisError> {
-        self.check_transactions_supported()?;
+    fn transaction(&self) -> impl Future<Output = Result<RedisTransaction, RedisError>> {
+        if let Err(err) = self.check_transactions_supported() {
+            return ready(Err(err));
+        }
         // Opening allocates a buffer and never touches the connection; a connection torn down
         // before the flush surfaces at commit, the visibility point, like the handle-level begin.
-        Ok(RedisTransaction {
+        ready(Ok(RedisTransaction {
             core: Arc::clone(&self.core),
             buffered: Vec::new(),
             settled: false,
-        })
+        }))
     }
 }
 
@@ -326,12 +337,15 @@ impl Transaction for RedisTransaction {
     type Error = RedisError;
 
     /// Buffers the `XADD` locally; nothing reaches the server before [`commit`](Self::commit).
-    async fn publish(&mut self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
+    fn publish(
+        &mut self,
+        msg: OutgoingMessage<'_>,
+    ) -> impl Future<Output = Result<(), Self::Error>> {
         self.buffered.push((
             msg.name().to_owned(),
             fields_for_publish(msg.payload(), msg.headers()),
         ));
-        Ok(())
+        ready(Ok(()))
     }
 
     /// Flushes the buffer as one `MULTI` / `EXEC` block, in publish order.
@@ -350,8 +364,8 @@ impl Transaction for RedisTransaction {
     }
 
     /// Discards the buffer. Nothing was sent to the server, so this cannot fail.
-    async fn abort(mut self) -> Result<(), Self::Error> {
+    fn abort(mut self) -> impl Future<Output = Result<(), Self::Error>> {
         self.settled = true;
-        Ok(())
+        ready(Ok(()))
     }
 }

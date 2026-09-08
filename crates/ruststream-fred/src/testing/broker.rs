@@ -4,6 +4,7 @@
 //! same transport drives the [`TestApp`](ruststream::testing::TestApp) harness and the framework's
 //! conformance suite.
 
+use std::future::{Future, ready};
 use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
@@ -91,8 +92,8 @@ impl Broker for RedisTestBroker {
     type Error = RedisError;
     type Connected = ConnectedRedisTestBroker;
 
-    async fn connect(self) -> Result<Self::Connected, Self::Error> {
-        Ok(ConnectedRedisTestBroker { state: self.state })
+    fn connect(self) -> impl Future<Output = Result<Self::Connected, Self::Error>> {
+        ready(Ok(ConnectedRedisTestBroker { state: self.state }))
     }
 }
 
@@ -110,23 +111,23 @@ impl ConnectedRedisTestBroker {
     /// # Errors
     ///
     /// Returns [`RedisError::Subscribe`] when `key` is empty.
-    #[allow(
-        clippy::unused_async,
-        reason = "API parity with ConnectedRedisBroker::subscribe"
-    )]
-    pub async fn subscribe(
+    // Awaited like `ConnectedRedisBroker::subscribe`; the form differs only because this body is
+    // synchronous, so there is nothing to suspend on.
+    pub fn subscribe(
         &self,
         key: impl Into<String>,
-    ) -> Result<RedisTestSubscriber, RedisError> {
+    ) -> impl Future<Output = Result<RedisTestSubscriber, RedisError>> {
         let key = key.into();
-        validate_key(&key).map_err(RedisError::Subscribe)?;
+        if let Err(err) = validate_key(&key) {
+            return ready(Err(RedisError::Subscribe(err)));
+        }
         let (id, requeue, rx) = self.state.router.subscribe(key);
-        Ok(RedisTestSubscriber::new(
+        ready(Ok(RedisTestSubscriber::new(
             Arc::clone(&self.state),
             id,
             rx,
             requeue,
-        ))
+        )))
     }
 
     /// Returns a publisher bound to this broker. Cheap to clone.
@@ -140,9 +141,9 @@ impl ConnectedBroker for ConnectedRedisTestBroker {
     type Error = RedisError;
     type Closed = ();
 
-    async fn shutdown(self) -> Result<Self::Closed, Self::Error> {
+    fn shutdown(self) -> impl Future<Output = Result<Self::Closed, Self::Error>> {
         self.state.router.clear();
-        Ok(())
+        ready(Ok(()))
     }
 }
 

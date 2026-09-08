@@ -3,11 +3,13 @@ resolver = "3"
 members = ["crates/ruststream-fred"]
 # `templates/` holds cargo-generate scaffolds (rendered by `cargo generate`, not built here): their
 # sources carry `{{project-name}}` placeholders that are not valid Rust/TOML until rendered, so they
-# must stay out of the workspace.
+# must stay out of the workspace. `exclude` alone is not enough: cargo's git-source package
+# discovery ignores it and parses every `Cargo.toml` in the repository, which is why the scaffold
+# manifests are named `Cargo.toml.liquid` (cargo-generate drops the suffix when it renders them).
 exclude = ["templates"]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -16,7 +18,10 @@ authors = ["RustStream contributors"]
 
 [workspace.dependencies]
 ruststream-fred = { path = "crates/ruststream-fred" }
-ruststream = { version = ">=0.6.1, <0.7.0", default-features = false }
+# The lower bound names the pre-release on purpose: cargo excludes pre-release versions from a
+# range that does not mention one, so `>=0.7.0` would refuse the published `0.7.0-rc.1` candidate.
+# This form admits the candidate now and the final 0.7.0 when it lands.
+ruststream = { version = ">=0.7.0-rc.1, <0.8.0", default-features = false }
 
 fred = "10"
 bytes = "1"

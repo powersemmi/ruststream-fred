@@ -11,9 +11,7 @@
 //! redis-cli XADD orders '*' _payload '{"id":0}'
 //! ```
 
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
-use ruststream::subscriber;
-use ruststream_fred::{RedisBroker, RedisStream};
+use ruststream_fred::stream::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -30,13 +28,13 @@ struct Order {
         .dead_letter("orders.dlq")
         .max_deliveries(5)
 )]
-async fn handle_order(order: &Order) -> HandlerResult {
+async fn handle_order(order: &Order) -> HandlerOutcome {
     if order.id == 0 {
         // A poison message: nack to retry. Once the cap is reached it is dead-lettered for you.
-        return HandlerResult::Nack { requeue: true };
+        return HandlerOutcome::retry();
     }
     println!("processed order {}", order.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:handler]
 

@@ -26,6 +26,10 @@
 - **Redis Streams with consumer groups.** Subscribe through a group off the fresh tail
   (`RedisStream::new`), or reclaim a crashed consumer's pending entries (`RedisStream::reclaim`).
   Payload and headers round-trip as stream entry fields.
+- **Batches on every transport.** A batch handler names its size where it is mounted
+  (`batch(nonzero!(n))`); on streams that number is the `COUNT` of the `XREADGROUP` that fetches the
+  batch, and the list and Pub/Sub subscribers assemble batches of the same size on the client.
+  Redis's own read options, `block(..)` among them, chain after it.
 - **Standalone, cluster, and sentinel.** One crate, named constructors pick the topology:
   `RedisBroker::standalone`, `::cluster`, `::sentinel`.
 - **Authentication and TLS on every topology.** `.credentials` / `.password` set the auth fields
@@ -45,9 +49,10 @@
   buffer-owning value, so any number can be open concurrently). Both commit their buffer as one
   `MULTI` / `EXEC` block, so subscribers see the whole batch or none of it.
 - **Repositioning a group.** The streams subscriber implements the `Seekable` capability: a
-  `start_at(..)` clause opens a subscription at a chosen point and a `Seek` parameter moves the
-  cursor from a handler. A Redis cursor belongs to the consumer group, so a seek repositions every
-  consumer of that group, a scope the `RedisGroupPosition` / `RedisGroupSeeker` names carry.
+  `start_at(..)` clause opens a subscription at a chosen point, and the delivery's own typed context
+  carries the group's seeker under a `SeekHandle` key, so a handler moves the cursor while the
+  service runs. A Redis cursor belongs to the consumer group, so a seek repositions every consumer
+  of that group, a scope the `RedisGroupPosition` / `RedisGroupSeeker` names carry.
 - **Acknowledgement via the republish-retry model.** `ack` is `XACK`; `nack(requeue = true)`
   re-appends a copy to the stream then acks the original (at-least-once); `nack(requeue = false)`
   acks to drop.
@@ -59,8 +64,8 @@
 
 ```toml
 [dependencies]
-ruststream = { version = "0.6", features = ["macros", "json"] }
-ruststream-fred = "0.6"
+ruststream = { version = "0.7", features = ["macros", "json"] }
+ruststream-fred = "0.7"
 serde = { version = "1", features = ["derive"] }
 ```
 

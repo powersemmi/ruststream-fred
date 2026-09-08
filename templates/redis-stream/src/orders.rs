@@ -6,9 +6,7 @@
 //! durable and each entry is `XACK`ed when the handler returns `Ack`. `confirm` consumes `orders` and
 //! replies on the `confirmations` stream; `on_cancel` consumes `cancellations`.
 
-use ruststream::runtime::HandlerResult;
-use ruststream::subscriber;
-use ruststream_fred::RedisStream;
+use ruststream_fred::stream::prelude::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -42,10 +40,10 @@ pub async fn confirm(order: &Order) -> Confirmation {
     }
 }
 
-/// Logs cancellations read through the same group. No reply, so it returns a plain `HandlerResult`;
-/// `Ack` triggers the `XACK`.
+/// Logs cancellations read through the same group. No reply, so it returns a plain
+/// `HandlerOutcome`; an ack triggers the `XACK`.
 #[subscriber(RedisStream::new("cancellations").group("workers"))]
-pub async fn on_cancel(order: &Order) -> HandlerResult {
+pub async fn on_cancel(order: &Order) -> HandlerOutcome {
     println!("order {} ({}) cancelled", order.id, order.item);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }

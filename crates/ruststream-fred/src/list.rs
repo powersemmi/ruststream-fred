@@ -13,14 +13,15 @@
 //! before settling leaves its entry stranded on the processing list. Opting into a recovery ZSET
 //! with [`RedisList::recovery_zset`] (and [`RedisList::min_idle`]) starts a watchdog that returns
 //! such orphans to the main list; without it (the default) reliable lists have no orphan recovery,
-//! and Redis Streams ([`crate::RedisStream`]) remain the recommended durable path. See
-//! [`crate::recovery`].
+//! and Redis Streams ([`crate::RedisStream`]) remain the recommended durable path.
 //!
-//! Headers travel in a frame around the payload (see [`crate::envelope`]): a lossless binary frame
+//! Headers travel in a frame around the payload: a lossless binary frame
 //! by default, or a readable codec-serialized envelope when a codec is set with
 //! [`RedisList::codec`] / [`RedisListPublish::codec`].
 
 use std::fmt::{Debug, Formatter};
+use std::future::{Future, ready};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,7 +35,8 @@ use futures::stream::unfold;
 use ruststream::codec::Codec;
 use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::{
-    AckError, Headers, IncomingMessage, PairError, Partitioned, PublishPolicy, SubscriptionSource,
+    AckError, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage, PairError,
+    Partitioned, PublishPolicy, SubscriptionSource,
 };
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
@@ -42,6 +44,44 @@ use crate::deadletter::{self, PoisonPolicy, REASON_DROPPED, REASON_MAX_DELIVERIE
 use crate::envelope::{SharedEnvelope, frame, unframe};
 use crate::recovery::{self, RecoveryConfig};
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
+
+/// This form's publish policy, [`RedisListPublish`], under the mount-site name every form gives
+/// its own. Its options, the framing codec and the key TTL, still chain off it.
+pub use crate::list::RedisListPublish as Publish;
+
+/// The core prelude, the broker, the [`RedisList`] descriptor and this form's [`Publish`] policy.
+/// A list carries no core capability traits.
+///
+/// # Examples
+///
+/// ```
+/// use ruststream_fred::list::prelude::*;
+///
+/// let jobs = RedisList::new("jobs").reliable();
+/// let broker = RedisBroker::standalone("redis://localhost:6379");
+/// let replies: Publish = Publish::default();
+/// let _ = (jobs, broker, replies);
+/// ```
+///
+/// Two vocabularies that do not mix. A handler body imports `ruststream::prelude::*` and bounds an
+/// injected slot with the broker capability trait it needs (`Out<impl Publisher>`); a routes file
+/// globs this prelude and names the policy by its mount-site word, the same word on every form.
+///
+/// A file that also globs another form's prelude sees an ambiguous `Publish`; use
+/// [`crate::prelude`] and write `list::Publish` there.
+pub mod prelude {
+    pub use ruststream::prelude::*;
+
+    pub use super::{Publish, RedisList};
+    pub use crate::{PARTITION_KEY_HEADER, RedisBroker, RedisPublishExt, RedisSubscribeExt};
+
+    #[cfg(any(
+        feature = "tls-rustls",
+        feature = "tls-rustls-ring",
+        feature = "tls-native-tls"
+    ))]
+    pub use crate::{TlsConfig, TlsConnector};
+}
 
 const DEFAULT_BLOCK: Duration = Duration::from_secs(5);
 /// Suffix appended to the list key to form the default per-consumer processing list (reliable mode).
@@ -137,6 +177,9 @@ impl RedisList {
     }
 
     /// How long one blocking pop waits before looping. Defaults to 5 seconds.
+    ///
+    /// Also reachable at the mount site, after the batch size, through
+    /// [`RedisSubscribeExt`](crate::RedisSubscribeExt).
     pub const fn block(mut self, block: Duration) -> Self {
         self.block = Some(block);
         self
@@ -205,6 +248,12 @@ impl RedisList {
     #[must_use]
     pub fn key(&self) -> &str {
         &self.key
+    }
+
+    /// Consumes the definition for its key, so opening a subscription moves the string out
+    /// instead of copying it.
+    pub(crate) fn into_key(self) -> String {
+        self.key
     }
 
     pub(crate) const fn is_reliable(&self) -> bool {
@@ -289,25 +338,15 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisList 
 }
 
 /// A list-backed work-queue subscription.
-pub struct RedisListSubscriber {
-    pool: Pool,
-    key: String,
-    reliable: bool,
-    processing: String,
-    block: Duration,
-    codec: Option<SharedEnvelope>,
-    policy: PoisonPolicy,
-    recovery: Option<RecoveryConfig>,
-}
+///
+/// A pop returns one entry, so the batches a [`BatchSubscriber`] hands out are assembled on the
+/// client by the core's [`BufferedSubscriber`]: it fills a batch up to the size the mount site
+/// asked for and closes a partial one on its own deadline.
+pub struct RedisListSubscriber(BufferedSubscriber<ListWire>);
 
 impl Debug for RedisListSubscriber {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RedisListSubscriber")
-            .field("key", &self.key)
-            .field("reliable", &self.reliable)
-            .field("poison", &self.policy.is_active())
-            .field("recovery", &self.recovery.is_some())
-            .finish_non_exhaustive()
+        f.debug_tuple("RedisListSubscriber").field(&self.0).finish()
     }
 }
 
@@ -326,7 +365,7 @@ impl RedisListSubscriber {
         policy: PoisonPolicy,
         recovery: Option<RecoveryConfig>,
     ) -> Self {
-        Self {
+        Self(BufferedSubscriber::new(ListWire {
             pool,
             key,
             reliable,
@@ -335,9 +374,67 @@ impl RedisListSubscriber {
             codec,
             policy,
             recovery,
-        }
+        }))
     }
+}
 
+impl ruststream::Subscriber for RedisListSubscriber {
+    type Message = RedisListMessage;
+    type Error = RedisError;
+
+    /// Yields one message per popped entry.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned stream between items is safe. In reliable mode an entry already moved
+    /// to the processing list but not yet settled stays there until acked or recovered manually.
+    fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
+        self.0.stream()
+    }
+}
+
+impl BatchSubscriber for RedisListSubscriber {
+    type Batch = Vec<RedisListMessage>;
+
+    /// Yields batches of at most `size` entries, assembled from consecutive pops.
+    ///
+    /// # Cancel safety
+    ///
+    /// Same as [`Subscriber::stream`](ruststream::Subscriber::stream). Dropping the stream while a
+    /// batch is filling abandons the entries it holds unsettled; in reliable mode they stay on the
+    /// processing list until recovered.
+    fn batches(
+        &mut self,
+        size: NonZeroUsize,
+    ) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
+        self.0.batches(size)
+    }
+}
+
+/// The wire side of a list subscription: one blocking pop per delivery.
+struct ListWire {
+    pool: Pool,
+    key: String,
+    reliable: bool,
+    processing: String,
+    block: Duration,
+    codec: Option<SharedEnvelope>,
+    policy: PoisonPolicy,
+    recovery: Option<RecoveryConfig>,
+}
+
+impl Debug for ListWire {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ListWire")
+            .field("key", &self.key)
+            .field("reliable", &self.reliable)
+            .field("poison", &self.policy.is_active())
+            .field("recovery", &self.recovery.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl ListWire {
     fn simple_message(&self, raw: &[u8]) -> RedisListMessage {
         let (payload, headers) = unframe(self.codec.as_ref(), raw);
         RedisListMessage {
@@ -406,16 +503,10 @@ impl RedisListSubscriber {
     }
 }
 
-impl ruststream::Subscriber for RedisListSubscriber {
+impl ruststream::Subscriber for ListWire {
     type Message = RedisListMessage;
     type Error = RedisError;
 
-    /// Yields one message per popped entry.
-    ///
-    /// # Cancel safety
-    ///
-    /// Dropping the returned stream between items is safe. In reliable mode an entry already moved
-    /// to the processing list but not yet settled stays there until acked or recovered manually.
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
         unfold(&*self, |s| async move {
             loop {
@@ -454,7 +545,7 @@ struct RecoveryHandle {
 /// removes the entry from the processing list and `nack` either returns it or drops it.
 pub struct RedisListMessage {
     payload: Bytes,
-    headers: Headers,
+    headers: HeaderMap,
     ack: Option<ListAck>,
 }
 
@@ -472,8 +563,13 @@ impl IncomingMessage for RedisListMessage {
         &self.payload
     }
 
-    fn headers(&self) -> &Headers {
+    fn headers(&self) -> &HeaderMap {
         &self.headers
+    }
+
+    // See `RedisMessage`: the keyed worker lanes read the key from here, not from `Partitioned`.
+    fn partition_key(&self) -> Option<&[u8]> {
+        Partitioned::partition_key(self)
     }
 
     async fn ack(self) -> Result<(), AckError> {
@@ -517,7 +613,7 @@ fn ack_broker(err: fred::error::Error) -> AckError {
 }
 
 /// The next framework retry-count value (the current envelope header plus one, or one when absent).
-fn next_retry_count(headers: &Headers) -> u64 {
+fn next_retry_count(headers: &HeaderMap) -> u64 {
     headers
         .get_str(RETRY_COUNT_HEADER)
         .and_then(|v| v.parse::<u64>().ok())
@@ -536,7 +632,7 @@ async fn lpush(pool: &Pool, key: &str, body: Vec<u8>) -> Result<(), AckError> {
 async fn list_dead_letter(
     handle: &ListAck,
     payload: &[u8],
-    headers: &Headers,
+    headers: &HeaderMap,
     reason: &'static str,
 ) -> Result<(), AckError> {
     if let Some(dlq) = handle.policy.dead_letter_key() {
@@ -632,8 +728,11 @@ impl RedisListPublish {
 impl PublishPolicy<ConnectedRedisBroker> for RedisListPublish {
     type Live = RedisListPublisher;
 
-    async fn pair(self, connected: &ConnectedRedisBroker) -> Result<Self::Live, PairError> {
-        Ok(connected.list_publisher(self))
+    fn pair(
+        self,
+        connected: &ConnectedRedisBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(connected.list_publisher(self)))
     }
 }
 

@@ -21,7 +21,63 @@ use crate::deadletter::PoisonPolicy;
 use crate::delay::{DelayConfig, DelayedRetry};
 use crate::{error::RedisError, subscriber::RedisSubscriber};
 
-const DEFAULT_COUNT: u64 = 64;
+/// This form's publish policy, [`RedisPublish`](crate::RedisPublish), under the mount-site name
+/// every form gives its own.
+pub use crate::publisher::RedisPublish as Publish;
+
+/// The same policy under the transactional mount-site name: a stream publisher buffers on the
+/// handle and owns transactions as it is, so the plain policy *is* the transactional one and
+/// there is no second type to transition to.
+pub use crate::publisher::RedisPublish as TransactionalPublish;
+
+/// The core prelude plus everything a Redis Streams service writes.
+///
+/// The broker, the [`RedisStream`] descriptor and its options, the group seek types with the
+/// delivery and batch contexts that carry them, this form's [`Publish`] policy, and the
+/// transaction, position and seek capabilities.
+///
+/// # Examples
+///
+/// ```
+/// use ruststream_fred::stream::prelude::*;
+///
+/// let orders = RedisStream::new("orders").group("workers");
+/// let broker = RedisBroker::standalone("redis://localhost:6379");
+/// let replies: TransactionalPublish = TransactionalPublish;
+/// let _ = (orders, broker, replies);
+/// ```
+///
+/// Two vocabularies that do not mix. A handler body imports `ruststream::prelude::*` and bounds an
+/// injected slot with the broker capability trait it needs (`Out<impl Publisher>`, `Out<impl
+/// TransactionalPublisher>`); a routes file globs this prelude and names the policy by its
+/// mount-site word, the same word on every form.
+///
+/// A file that also globs another form's prelude sees an ambiguous `Publish`; use
+/// [`crate::prelude`] and write `stream::Publish` there.
+pub mod prelude {
+    pub use ruststream::prelude::*;
+
+    pub use ruststream::{
+        OwnedTransactions, Positioned, Seeker, Transaction, TransactionalPublisher,
+    };
+
+    pub use super::{Publish, RedisStream, StreamStart, TransactionalPublish};
+    // `keys` arrives as the module, not as a glob: its members are short words a service also uses
+    // for its own types, and `Ctx<keys::SeekHandle>` reads as what it is at the use site.
+    pub use crate::context::{StreamBatchContext, StreamContext, keys};
+    pub use crate::{
+        DelayedRetry, PARTITION_KEY_HEADER, RedisBroker, RedisGroupPosition, RedisGroupSeeker,
+        RedisPublishExt, RedisSubscribeExt,
+    };
+
+    #[cfg(any(
+        feature = "tls-rustls",
+        feature = "tls-rustls-ring",
+        feature = "tls-native-tls"
+    ))]
+    pub use crate::{TlsConfig, TlsConnector};
+}
+
 const DEFAULT_BLOCK: Duration = Duration::from_secs(5);
 
 /// Generates an automatic consumer name when the caller does not set one. Distinct names keep
@@ -72,7 +128,7 @@ pub(crate) enum ReadMode {
 /// use ruststream_fred::RedisStream;
 ///
 /// // Fresh tail: a normal worker reading new entries.
-/// let fresh = RedisStream::new("orders").group("workers").count(128);
+/// let fresh = RedisStream::new("orders").group("workers");
 ///
 /// // Recovery: reclaim entries a crashed worker left pending for over 30s.
 /// let recover = RedisStream::reclaim("orders", Duration::from_secs(30)).group("workers");
@@ -84,7 +140,6 @@ pub struct RedisStream {
     key: String,
     group: Option<String>,
     consumer: Option<String>,
-    count: Option<u64>,
     block: Option<Duration>,
     start: StreamStart,
     mode: ReadMode,
@@ -102,7 +157,6 @@ impl RedisStream {
             key: key.into(),
             group: None,
             consumer: None,
-            count: None,
             block: None,
             start: StreamStart::New,
             mode: ReadMode::Fresh,
@@ -123,7 +177,6 @@ impl RedisStream {
             key: key.into(),
             group: None,
             consumer: None,
-            count: None,
             block: None,
             start: StreamStart::New,
             mode: ReadMode::Reclaim { min_idle },
@@ -145,15 +198,12 @@ impl RedisStream {
         self
     }
 
-    /// Upper bound on entries fetched per read. Defaults to 64.
-    pub const fn count(mut self, count: u64) -> Self {
-        self.count = Some(count);
-        self
-    }
-
     /// How long one read blocks waiting for entries. Defaults to 5 seconds. In fresh-tail mode this
     /// is the `XREADGROUP` server-side block; in reclaim mode `XAUTOCLAIM` does not block, so this is
     /// the poll interval slept between scans that find nothing to reclaim.
+    ///
+    /// Also reachable at the mount site, after the batch size, through
+    /// [`RedisSubscribeExt`](crate::RedisSubscribeExt).
     pub const fn block(mut self, block: Duration) -> Self {
         self.block = Some(block);
         self
@@ -217,10 +267,6 @@ impl RedisStream {
 
     pub(crate) fn consumer_or_auto(&self) -> String {
         self.consumer.clone().unwrap_or_else(auto_consumer)
-    }
-
-    pub(crate) fn count_or_default(&self) -> u64 {
-        self.count.unwrap_or(DEFAULT_COUNT)
     }
 
     pub(crate) fn block_or_default(&self) -> Duration {

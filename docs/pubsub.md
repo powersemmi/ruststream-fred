@@ -1,5 +1,8 @@
 # Pub/Sub
 
+A service on this form globs `ruststream_fred::pubsub::prelude::*`, which carries the descriptor,
+its mode and this form's publish policy as `Publish`.
+
 Pub/Sub is fire-and-forget: no durability, no consumer groups, no ack (`ack` / `nack` report
 `Unsupported`). A `RedisPubSub` descriptor selects the channel and mode. Classic broadcasts
 cluster-wide and supports patterns:
@@ -22,10 +25,14 @@ sharded Pub/Sub on a cluster at the same time - each handler mounts on its own b
 --8<-- "crates/ruststream-fred/examples/fred_pubsub.rs:app"
 ```
 
-To publish, chain `.publisher(..)` on the include site with a `RedisPubSubPublish` policy (add
-`.mode(PubSubMode::Sharded)` to match a sharded subscriber). The classic handler above uses the macro
-`publish("audit")` form, so its return value goes out through that Pub/Sub policy - not the default
-stream publisher.
+To publish, chain `.out(Reply, ..)` on the include site with a `RedisPubSubPublish` policy (add
+`.mode(PubSubMode::Sharded)` to match a sharded subscriber). `Reply` is the position the policy binds
+to - the value the handler returns. The classic handler above uses the macro `publish("audit")` form,
+so its return value goes out through that Pub/Sub policy - not the default stream publisher.
+
+Pub/Sub delivers one message at a time, so a batch handler here is served by batches the subscriber
+assembles on the client; it still names its size with `batch(n)` at the mount site and never sees a
+longer batch (see [Batches](streams.md#batches)).
 
 Headers travel in a frame around the payload: a lossless binary frame by default, or - when you set a
 codec on both the publisher and the subscriber (`.codec(JsonCodec)`) - a readable codec-serialized
