@@ -77,6 +77,34 @@ module:
     --8<-- "crates/ruststream-fred/examples/fred_testing.rs:pubsub-test"
     ```
 
+## What the stand-in mounts, ignores and refuses
+
+Every descriptor this crate ships mounts on `RedisTestBroker`, so the test wires the declaration the
+service ships: the three handlers above carry `RedisStream`, `RedisList` and `RedisPubSub` exactly as
+a routes file writes them, with no bare key string and no remapping at the mount site.
+
+The stand-in routes by key or channel and nothing else, so the rest of a descriptor has no effect
+here: consumer and group names, `start_id`, `block`, `dead_letter`, `max_deliveries`,
+`delayed_retry`, a list's `reliable` processing list and orphan-recovery watchdog, a Pub/Sub `mode`,
+and the envelope `codec` on lists and Pub/Sub. A test that needs to assert on any of those needs a
+real server.
+
+Two things are validated the way the real broker validates them, so a subscription that could not
+start against Redis does not start under the harness either: a stream with no consumer group, and a
+list recovery ZSET with no `min_idle`.
+
+Two are refused outright, because honouring them in process would deliver what the real subscription
+never delivers:
+
+- `RedisStream::reclaim(..)`, which reads another consumer's stale pending entries. The stand-in
+  keeps no pending list, so the mount would hand the handler fresh entries instead.
+- `RedisPubSub::pattern()`, which subscribes to a glob. The stand-in matches channel names exactly,
+  so the mount would go silent on every channel the glob is meant to catch.
+
+One difference is left for the test author to keep out of assertions: Pub/Sub and a simple
+(non-reliable) list report `AckError::Unsupported` on a real server, while every in-process delivery
+settles. Assert on what the handler did, not on a settlement the transport cannot perform.
+
 ## Conformance suite
 
 Run the framework's full conformance suite against the stub broker:

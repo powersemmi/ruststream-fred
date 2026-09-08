@@ -195,6 +195,27 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisPubSub {
     }
 }
 
+/// Mounts the production descriptor on the in-process stand-in, which routes by channel name
+/// alone.
+///
+/// The descriptor is validated exactly as [`ConnectedRedisBroker::subscribe_pubsub`] validates it,
+/// so a subscription that a real server would refuse at startup is refused here too rather than
+/// passing a test and failing on deployment: a pattern in [`PubSubMode::Sharded`] is rejected.
+///
+/// [`pattern`](RedisPubSub::pattern) is rejected on its own as well. The stand-in matches channel
+/// names exactly, so a glob subscription would go silent on every channel it is meant to catch
+/// while still matching its own literal spelling: a mount that neither delivers what production
+/// delivers nor fails where production fails. Exercise `PSUBSCRIBE` against a real server.
+///
+/// The rest of the descriptor is inert here: [`mode`](RedisPubSub::mode) selects between commands
+/// the stand-in does not issue, and the envelope [`codec`](RedisPubSub::codec) never runs, since
+/// deliveries carry their headers natively instead of framed into the payload, so a framing
+/// mismatch between a subscription and its publisher cannot surface in process.
+///
+/// One divergence to keep out of assertions: Pub/Sub reports [`AckError::Unsupported`] on a real
+/// server, while every in-process delivery settles. A Pub/Sub handler therefore acks here and
+/// cannot there, so assert on what the handler did rather than on a settlement the transport
+/// cannot perform.
 #[cfg(feature = "testing")]
 impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisPubSub {
     type Subscriber = crate::testing::RedisTestSubscriber;
@@ -207,6 +228,17 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisPubSu
         self,
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> Result<Self::Subscriber, RedisError> {
+        // Ordered so the narrower misconfiguration keeps its own message: a sharded pattern is
+        // wrong on any broker, the blanket pattern rejection below is only about this one.
+        self.validate()?;
+        if self.is_pattern() {
+            return Err(RedisError::InvalidOptions(format!(
+                "pattern subscription on `{}` cannot mount on the in-process test broker: it \
+                 matches channel names exactly, so the subscription would miss every channel the \
+                 glob is meant to catch; test PSUBSCRIBE against a real Redis server",
+                self.channel
+            )));
+        }
         connected.subscribe(self.channel()).await
     }
 }

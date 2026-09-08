@@ -13,6 +13,14 @@
 //! * [`RedisTestSubscriber`] / [`RedisTestMessage`] - `Subscriber` and `IncomingMessage` impls with
 //!   `nack(requeue = true)` redelivery (re-sent into the same subscriber's queue).
 //!
+//! All three descriptors mount here, so a service is tested on the declaration it ships: the
+//! `#[subscriber(RedisStream::new(..).group(..))]` a routes file writes is the one the harness
+//! mounts, and the same holds for [`RedisList`](crate::RedisList) and
+//! [`RedisPubSub`](crate::RedisPubSub). Each resolves to its key or channel, which is all the
+//! stand-in routes by. Their `SubscriptionSource` impls for [`ConnectedRedisTestBroker`] carry the
+//! per-form detail: what the mount ignores, and which configurations it refuses at startup rather
+//! than reinterprets.
+//!
 //! No `redis-server`, no docker, no network. Broker-specific edge cases (consumer-group cursors,
 //! `XAUTOCLAIM` redelivery, idle reclaim, `MAXLEN` trimming, dead-letter routing) are out of scope
 //! here. Exercise them against a real Redis server.

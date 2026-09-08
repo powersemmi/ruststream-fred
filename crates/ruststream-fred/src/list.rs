@@ -321,6 +321,24 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisList {
     }
 }
 
+/// Mounts the production descriptor on the in-process stand-in, which routes by list key alone.
+///
+/// The descriptor is validated exactly as [`ConnectedRedisBroker::subscribe_list`] validates it,
+/// so a subscription that a real server would refuse at startup is refused here too rather than
+/// passing a test and failing on deployment: a recovery ZSET named without a
+/// [`min_idle`](RedisList::min_idle) is rejected.
+///
+/// The rest of the descriptor is inert here, because the stand-in has one queue per key, delivers
+/// on publish, and settles in memory: [`reliable`](RedisList::reliable) and its processing list,
+/// `block`, `dead_letter`, `max_deliveries`, and the orphan-recovery watchdog. The envelope
+/// [`codec`](RedisList::codec) is inert too, since deliveries carry their headers natively instead
+/// of framed into the entry, so a framing mismatch between a subscription and its publisher cannot
+/// surface in process.
+///
+/// One divergence to keep out of assertions: a simple (non-reliable) list reports
+/// [`AckError::Unsupported`] on a real server, while every in-process delivery settles. A handler
+/// mounted on [`RedisList::new`] therefore acks here and cannot there, so assert on what the
+/// handler did rather than on a settlement a simple list cannot perform.
 #[cfg(feature = "testing")]
 impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisList {
     type Subscriber = crate::testing::RedisTestSubscriber;
@@ -333,6 +351,7 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisList 
         self,
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> Result<Self::Subscriber, RedisError> {
+        self.recovery_config()?;
         connected.subscribe(self.key()).await
     }
 }
