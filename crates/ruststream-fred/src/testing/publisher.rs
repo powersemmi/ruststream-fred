@@ -1,6 +1,9 @@
-//! [`RedisTestPublisher`]: `Publisher` plus both transaction kinds on top of the in-memory router.
+//! The publishers this crate's policies pair into against the stand-in, on top of the in-memory
+//! router: [`RedisTestPublisher`] with both transaction kinds, and [`RedisTestPlainPublisher`] with
+//! `Publisher` alone.
 //!
-//! It is what this crate's publish policies pair into against the stand-in; the policies keep the
+//! Two rather than one, so a form's in-process surface is the surface its real publisher has and a
+//! slot that compiles under the harness compiles in production. The policies themselves keep the
 //! spelling a routes file already uses, so there is no test-only policy type to name here.
 
 use std::future::{Future, ready};
