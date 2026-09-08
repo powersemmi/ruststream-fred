@@ -18,7 +18,7 @@ use ruststream::{
 use crate::{
     error::RedisError,
     testing::{
-        broker::TestBrokerState,
+        broker::{Settlement, TestBrokerState},
         router::{Delivery, DeliveryReceiver, DeliverySender, SubscriptionId},
     },
 };
@@ -32,11 +32,14 @@ pub struct RedisTestSubscriber {
     /// A clone of the broker's harness coordinator, threaded into each yielded message so a requeue
     /// re-counts and a consumed delivery decrements. `None` outside a harness run.
     coordinator: Option<Coordinator>,
+    /// Whether this subscription's form can settle, carried into every delivery it yields.
+    settlement: Settlement,
 }
 
 impl std::fmt::Debug for RedisTestSubscriber {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RedisTestSubscriber")
+            .field("settlement", &self.settlement)
             .finish_non_exhaustive()
     }
 }
@@ -47,6 +50,7 @@ impl RedisTestSubscriber {
         id: SubscriptionId,
         rx: DeliveryReceiver,
         requeue: DeliverySender,
+        settlement: Settlement,
     ) -> Self {
         // The harness installs its coordinator before any subscription opens, so reading it here
         // captures the live coordinator for the whole subscription.
@@ -57,6 +61,7 @@ impl RedisTestSubscriber {
             rx,
             requeue,
             coordinator,
+            settlement,
         }
     }
 }
@@ -74,6 +79,7 @@ impl Subscriber for RedisTestSubscriber {
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
         let requeue = self.requeue.clone();
         let coordinator = self.coordinator.clone();
+        let settlement = self.settlement;
         // Poll the receiver in place rather than wrapping it in an owning stream, so `stream` can
         // be called again after the returned stream is dropped (the runtime and the conformance
         // helpers re-enter it per call).
@@ -84,6 +90,7 @@ impl Subscriber for RedisTestSubscriber {
                         delivery,
                         requeue.clone(),
                         coordinator.clone(),
+                        settlement,
                     ))
                 })
             })
@@ -93,9 +100,13 @@ impl Subscriber for RedisTestSubscriber {
 
 /// Message handed to handlers from a [`RedisTestSubscriber`].
 ///
-/// `ack` consumes the handle silently; `nack(requeue = true)` re-queues the delivery on the owning
-/// subscription's channel so the next handler invocation sees it again (matching the republish
-/// model the real broker uses); `nack(requeue = false)` drops it.
+/// On a settleable subscription (a stream, a reliable list) `ack` consumes the handle silently,
+/// `nack(requeue = true)` re-queues the delivery on the owning subscription's channel so the next
+/// handler invocation sees it again (matching the republish model the real broker uses), and
+/// `nack(requeue = false)` drops it.
+///
+/// On the forms whose real deliveries cannot settle (Pub/Sub, a simple list) both report
+/// [`AckError::Unsupported`] and nothing is re-queued, exactly as against a real server.
 pub struct RedisTestMessage {
     delivery: Option<Delivery>,
     requeue: DeliverySender,
@@ -103,6 +114,8 @@ pub struct RedisTestMessage {
     /// decremented exactly once when the message is consumed or dropped (see the `Drop` impl). `None`
     /// outside a harness run.
     coordinator: Option<Coordinator>,
+    /// Inherited from the subscription that yielded this delivery.
+    settlement: Settlement,
 }
 
 impl Drop for RedisTestMessage {
@@ -132,11 +145,13 @@ impl RedisTestMessage {
         delivery: Delivery,
         requeue: DeliverySender,
         coordinator: Option<Coordinator>,
+        settlement: Settlement,
     ) -> Self {
         Self {
             delivery: Some(delivery),
             requeue,
             coordinator,
+            settlement,
         }
     }
 
@@ -179,7 +194,7 @@ impl IncomingMessage for RedisTestMessage {
 
     fn ack(mut self) -> impl Future<Output = Result<(), AckError>> {
         self.delivery.take();
-        ready(Ok(()))
+        ready(self.settlement_result())
     }
 
     fn nack(mut self, requeue: bool) -> impl Future<Output = Result<(), AckError>> {
@@ -187,7 +202,9 @@ impl IncomingMessage for RedisTestMessage {
             .delivery
             .take()
             .expect("RedisTestMessage ack/nack invoked twice");
-        if requeue {
+        // A transport that cannot acknowledge cannot redeliver either: the delivery is dropped and
+        // the caller told, rather than quietly re-queued into a subscription the real one would not.
+        if requeue && self.settlement == Settlement::Settleable {
             // The requeue bypasses `KeyRouter::publish`, so count the re-enqueue here to balance
             // this message's `Drop` decrement. The redelivered copy is consumed (and decremented) in
             // turn.
@@ -197,7 +214,17 @@ impl IncomingMessage for RedisTestMessage {
                 coordinator.enqueued();
             }
         }
-        ready(Ok(()))
+        ready(self.settlement_result())
+    }
+}
+
+impl RedisTestMessage {
+    /// What a settle call reports on this delivery's form.
+    fn settlement_result(&self) -> Result<(), AckError> {
+        match self.settlement {
+            Settlement::Settleable => Ok(()),
+            Settlement::Unsupported => Err(AckError::Unsupported),
+        }
     }
 }
 
@@ -212,13 +239,17 @@ impl BatchSubscriber for RedisTestSubscriber {
     ) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
         let requeue = self.requeue.clone();
         let coordinator = self.coordinator.clone();
+        let settlement = self.settlement;
         futures::stream::poll_fn(move |cx| {
             let first = match self.rx.poll_recv(cx) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(None) => return Poll::Ready(None),
-                Poll::Ready(Some(d)) => {
-                    RedisTestMessage::from_delivery(d, requeue.clone(), coordinator.clone())
-                }
+                Poll::Ready(Some(d)) => RedisTestMessage::from_delivery(
+                    d,
+                    requeue.clone(),
+                    coordinator.clone(),
+                    settlement,
+                ),
             };
             let mut batch = vec![first];
             while batch.len() < size.get() {
@@ -228,6 +259,7 @@ impl BatchSubscriber for RedisTestSubscriber {
                             d,
                             requeue.clone(),
                             coordinator.clone(),
+                            settlement,
                         ));
                     }
                     Poll::Ready(None) | Poll::Pending => break,

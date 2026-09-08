@@ -18,9 +18,10 @@ use ruststream::runtime::{AppInfo, HandlerOutcome, PublishExt, RustStream};
 use ruststream::subscriber;
 use ruststream::testing::TestApp;
 use ruststream::{
-    BatchSubscriber, Broker, ConnectedBroker, DescribeServer, HeaderMap, IncomingMessage, Outgoing,
-    OutgoingMessage, OwnedTransactions, Partitioned, Publisher, RawMessage, Serialized, Subscriber,
-    Transaction, TransactionalPublisher, nonzero, testing::expect_published,
+    AckError, BatchSubscriber, Broker, ConnectedBroker, DescribeServer, HeaderMap, IncomingMessage,
+    Outgoing, OutgoingMessage, OwnedTransactions, Partitioned, Publisher, RawMessage, Serialized,
+    Subscriber, SubscriptionSource, Transaction, TransactionalPublisher, nonzero,
+    testing::expect_published,
 };
 use ruststream_fred::{
     PARTITION_KEY_HEADER, PubSubMode, RedisError, RedisList, RedisPubSub, RedisPublishExt,
@@ -868,4 +869,117 @@ async fn a_pattern_subscription_does_not_mount_in_process() {
         format!("{err}").contains("matches channel names exactly"),
         "got {err}"
     );
+}
+
+// The two places the stand-in used to be more capable than the transport it stands in for. Both
+// are contract behaviour the conformance suites now check in process; these cases name them
+// directly, so a regression reads as itself rather than as a suite failure.
+
+/// The twin of `publisher_errors_after_shutdown` in the live integration tests: a handle that
+/// outlived the connection must refuse, not write into a router nobody is reading.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_publisher_errors_after_shutdown() {
+    let broker = connected().await;
+    let publisher = broker.publisher();
+    publisher
+        .publish(OutgoingMessage::new("post.shutdown", b"before"))
+        .await
+        .expect("publish before shutdown");
+
+    broker.clone().shutdown().await.expect("shutdown");
+
+    let err = publisher
+        .publish(OutgoingMessage::new("post.shutdown", b"after"))
+        .await
+        .expect_err("publishing through a handle aliasing a closed connection must error");
+    assert!(matches!(err, RedisError::ShutDown), "got {err}");
+
+    // The same for a subscription: the connected form is gone, so opening one is refused too.
+    let err = broker
+        .subscribe("post.shutdown")
+        .await
+        .expect_err("subscribing after shutdown must error");
+    assert!(matches!(err, RedisError::ShutDown), "got {err}");
+}
+
+/// Pub/Sub cannot acknowledge on a real server, so it must not acknowledge here either.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pubsub_delivery_cannot_be_settled() {
+    let broker = connected().await;
+    let mut sub = SubscriptionSource::subscribe(RedisPubSub::new("unsettleable.pubsub"), &broker)
+        .await
+        .expect("subscribe");
+
+    broker
+        .publisher()
+        .publish(OutgoingMessage::new("unsettleable.pubsub", b"e"))
+        .await
+        .expect("publish");
+
+    let msg = next_message(&mut Box::pin(sub.stream())).await;
+    assert!(matches!(msg.ack().await, Err(AckError::Unsupported)));
+}
+
+/// A simple list is at-most-once for the same reason, and a refused requeue must not redeliver.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_simple_list_delivery_cannot_be_settled_or_requeued() {
+    let broker = connected().await;
+    let mut sub = SubscriptionSource::subscribe(RedisList::new("unsettleable.list"), &broker)
+        .await
+        .expect("subscribe");
+
+    broker
+        .publisher()
+        .publish(OutgoingMessage::new("unsettleable.list", b"j"))
+        .await
+        .expect("publish");
+
+    let mut stream = Box::pin(sub.stream());
+    let msg = next_message(&mut stream).await;
+    assert!(matches!(msg.nack(true).await, Err(AckError::Unsupported)));
+
+    // A transport that cannot acknowledge cannot redeliver, so nothing comes back.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), stream.next())
+            .await
+            .is_err(),
+        "a refused requeue must not redeliver"
+    );
+}
+
+/// The forms that do settle on a real server keep settling here, so the split is a mirror of the
+/// transport rather than a blanket refusal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stream_and_a_reliable_list_still_settle() {
+    let broker = connected().await;
+    for (name, source) in [
+        ("settleable.stream", Settleable::Stream),
+        ("settleable.list", Settleable::List),
+    ] {
+        let mut sub = match source {
+            Settleable::Stream => {
+                SubscriptionSource::subscribe(RedisStream::new(name).group("workers"), &broker)
+                    .await
+            }
+            Settleable::List => {
+                SubscriptionSource::subscribe(RedisList::new(name).reliable(), &broker).await
+            }
+        }
+        .expect("subscribe");
+
+        broker
+            .publisher()
+            .publish(OutgoingMessage::new(name, b"x"))
+            .await
+            .expect("publish");
+
+        let msg = next_message(&mut Box::pin(sub.stream())).await;
+        msg.ack().await.expect("a settleable form must acknowledge");
+    }
+}
+
+/// Which settleable form a case in the loop above opens.
+enum Settleable {
+    Stream,
+    List,
 }

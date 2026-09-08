@@ -77,7 +77,15 @@ impl RedisTestPublisher {
 impl Publisher for RedisTestPublisher {
     type Error = RedisError;
 
+    /// # Errors
+    ///
+    /// Returns [`RedisError::Publish`] when the stream key is empty, or [`RedisError::ShutDown`]
+    /// once the connection this handle was made from has been shut down: the handle can outlive
+    /// the connection, so this is where the real broker's dropped pool is mirrored.
     fn publish(&self, msg: OutgoingMessage<'_>) -> impl Future<Output = Result<(), Self::Error>> {
+        if let Err(err) = self.state.alive() {
+            return ready(Err(err));
+        }
         if let Err(err) = validate_publish_key(msg.name()) {
             return ready(Err(err));
         }
@@ -118,7 +126,8 @@ impl TransactionalPublisher for RedisTestPublisher {
 
     /// # Errors
     ///
-    /// Returns [`RedisError::NoTransaction`] when no transaction is open on this handle.
+    /// Returns [`RedisError::NoTransaction`] when no transaction is open on this handle, or
+    /// [`RedisError::ShutDown`] once the connection is gone, like the flush on the real publisher.
     fn commit(&self) -> impl Future<Output = Result<(), Self::Error>> {
         let buffered = self
             .txn
@@ -128,6 +137,9 @@ impl TransactionalPublisher for RedisTestPublisher {
         let Some(buffered) = buffered else {
             return ready(Err(RedisError::NoTransaction));
         };
+        if let Err(err) = self.state.alive() {
+            return ready(Err(err));
+        }
         for (key, payload, headers) in buffered {
             self.state
                 .router
@@ -292,10 +304,17 @@ impl Transaction for RedisTestTransaction {
         ready(Ok(()))
     }
 
+    /// # Errors
+    ///
+    /// Returns [`RedisError::ShutDown`] once the connection is gone, like the flush on the real
+    /// publisher.
     fn commit(mut self) -> impl Future<Output = Result<(), Self::Error>> {
         // Settled before the flush, as on the real publisher: a failed commit has still consumed
         // the transaction, so the drop warning must not fire.
         self.settled = true;
+        if let Err(err) = self.state.alive() {
+            return ready(Err(err));
+        }
         for (key, payload, headers) in self.buffered.drain(..) {
             self.state
                 .router

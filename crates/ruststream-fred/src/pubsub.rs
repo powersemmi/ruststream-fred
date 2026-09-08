@@ -212,10 +212,9 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisPubSub {
 /// deliveries carry their headers natively instead of framed into the payload, so a framing
 /// mismatch between a subscription and its publisher cannot surface in process.
 ///
-/// One divergence to keep out of assertions: Pub/Sub reports [`AckError::Unsupported`] on a real
-/// server, while every in-process delivery settles. A Pub/Sub handler therefore acks here and
-/// cannot there, so assert on what the handler did rather than on a settlement the transport
-/// cannot perform.
+/// Settlement matches the real transport: deliveries here report [`AckError::Unsupported`] and a
+/// requeue is refused rather than performed, so a test cannot assert on an acknowledgement Pub/Sub
+/// is unable to make.
 #[cfg(feature = "testing")]
 impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisPubSub {
     type Subscriber = crate::testing::RedisTestSubscriber;
@@ -239,7 +238,7 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisPubSu
                 self.channel
             )));
         }
-        connected.subscribe(self.channel()).await
+        connected.subscribe_unsettleable(self.channel()).await
     }
 }
 

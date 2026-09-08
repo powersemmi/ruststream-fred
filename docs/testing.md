@@ -122,9 +122,10 @@ never delivers:
 - `RedisPubSub::pattern()`, which subscribes to a glob. The stand-in matches channel names exactly,
   so the mount would go silent on every channel the glob is meant to catch.
 
-One difference is left for the test author to keep out of assertions: Pub/Sub and a simple
-(non-reliable) list report `AckError::Unsupported` on a real server, while every in-process delivery
-settles. Assert on what the handler did, not on a settlement the transport cannot perform.
+Settlement follows the transport, not the stand-in. A stream and a reliable list acknowledge, and a
+requeue redelivers; Pub/Sub and a simple list report `AckError::Unsupported` and refuse a requeue,
+here exactly as on a real server. A handle that outlived `shutdown` refuses too, with
+`RedisError::ShutDown`, rather than writing into a router nobody is reading.
 
 ## Conformance suite
 
@@ -133,3 +134,14 @@ Run the framework's full conformance suite against the stub broker:
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_testing.rs:conformance"
 ```
+
+That is the routing contract. The rest of the framework's contract runs against the stand-in too,
+in `tests/conformance_fred.rs`, alongside the same suites against a real server: `harness::lifecycle`
+(including the post-shutdown publish that must error), `capabilities::batches` on all three forms,
+`capabilities::transactions` and `capabilities::owned_transactions`. Keeping both legs is the point:
+the in-process leg is what makes a passing handler test mean something, and the live leg is what
+proves the stand-in is not lying about the contract it reproduces.
+
+`capabilities::seeking` is the one suite with no in-process leg. It requires a `Seekable` subscriber
+whose positions round-trip, and giving the stand-in one would mean simulating the consumer-group
+cursor it states outright that it does not simulate. Seeking is proven against a real server.
