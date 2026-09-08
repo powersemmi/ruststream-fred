@@ -755,6 +755,31 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisListPublish {
     }
 }
 
+/// Pairs the production policy against the in-process stand-in, so a routes file's
+/// `.out(Reply, Publish)` mounts on both without naming a second type.
+///
+/// Both options the policy carries are inert in process: the stand-in has no key to expire, so
+/// [`ttl`](RedisListPublish::ttl) has nothing to re-arm, and it delivers headers natively rather
+/// than framed into the entry, so the envelope [`codec`](RedisListPublish::codec) never runs.
+/// A published entry therefore reads back as the bare payload here and as a frame on a real
+/// server, which is what a `published(..)` assertion sees.
+///
+/// The stand-in's publisher carries both transaction kinds, which [`RedisListPublisher`] does not:
+/// a slot bounded on a transaction capability compiles here and does not against
+/// [`ConnectedRedisBroker`]. The mismatch is a compile error at the same mount site either way,
+/// never a silent difference at run time.
+#[cfg(feature = "testing")]
+impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisListPublish {
+    type Live = crate::testing::RedisTestPublisher;
+
+    fn pair(
+        self,
+        connected: &crate::testing::ConnectedRedisTestBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(connected.publisher()))
+    }
+}
+
 /// Publishes onto a list with `LPUSH`, so right-popping consumers see FIFO order: a
 /// [`RedisListPublish`] policy paired with a connection.
 ///

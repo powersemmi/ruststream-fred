@@ -87,6 +87,24 @@ impl DefaultPublish for ConnectedRedisBroker {
     type Policy = RedisPublish;
 }
 
+/// Pairs the production policy against the in-process stand-in, so a routes file's
+/// `.out(Reply, Publish)` mounts on both without naming a second type.
+///
+/// The policy carries nothing to honour (`XADD` takes its key from each message), and the
+/// stand-in's publisher offers the same surface the live one does, both transaction kinds
+/// included, so this form loses nothing in process.
+#[cfg(feature = "testing")]
+impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisPublish {
+    type Live = crate::testing::RedisTestPublisher;
+
+    fn pair(
+        self,
+        connected: &crate::testing::ConnectedRedisTestBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(connected.publisher()))
+    }
+}
+
 /// The live stream publisher: [`RedisPublish`] paired with a connection. Cheap to clone.
 ///
 /// [`Publisher::publish`] appends the message to the stream named by

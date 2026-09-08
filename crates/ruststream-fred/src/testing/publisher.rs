@@ -1,13 +1,15 @@
-//! [`RedisTestPublisher`]: `Publisher` plus both transaction kinds on top of the in-memory router,
-//! and the [`RedisTestPublish`] policy it pairs from.
+//! [`RedisTestPublisher`]: `Publisher` plus both transaction kinds on top of the in-memory router.
+//!
+//! It is what this crate's publish policies pair into against the stand-in; the policies keep the
+//! spelling a routes file already uses, so there is no test-only policy type to name here.
 
 use std::future::{Future, ready};
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use ruststream::{
-    DefaultPublish, HeaderMap, OutgoingMessage, OwnedTransactions, PairError, PublishPolicy,
-    Publisher, Transaction, TransactionalPublisher,
+    DefaultPublish, HeaderMap, OutgoingMessage, OwnedTransactions, Publisher, Transaction,
+    TransactionalPublisher,
 };
 use tracing::warn;
 
@@ -22,33 +24,10 @@ use crate::{
 /// One buffered publish (key, payload, headers), held while a transaction is open.
 type Buffered = (String, Bytes, HeaderMap);
 
-/// The publish policy of the in-process broker, mirroring [`RedisPublish`](crate::RedisPublish).
-///
-/// # Examples
-///
-/// ```
-/// use ruststream_fred::testing::RedisTestPublish;
-///
-/// let policy = RedisTestPublish::default();
-/// # let _ = policy;
-/// ```
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[must_use]
-pub struct RedisTestPublish;
-
-impl PublishPolicy<ConnectedRedisTestBroker> for RedisTestPublish {
-    type Live = RedisTestPublisher;
-
-    fn pair(
-        self,
-        connected: &ConnectedRedisTestBroker,
-    ) -> impl Future<Output = Result<Self::Live, PairError>> {
-        ready(Ok(connected.publisher()))
-    }
-}
-
+// The default reply publisher is the production stream policy, the same value a routes file
+// names: the stand-in has no policy of its own, so there is one spelling for both brokers.
 impl DefaultPublish for ConnectedRedisTestBroker {
-    type Policy = RedisTestPublish;
+    type Policy = crate::RedisPublish;
 }
 
 /// Publisher returned by

@@ -488,6 +488,32 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisPubSubPublish {
     }
 }
 
+/// Pairs the production policy against the in-process stand-in, so a routes file's
+/// `.out(Reply, Publish)` mounts on both without naming a second type.
+///
+/// Both options the policy carries are inert in process: [`mode`](RedisPubSubPublish::mode)
+/// selects between `PUBLISH` and `SPUBLISH`, neither of which the stand-in issues, and it delivers
+/// headers natively rather than framed into the payload, so the envelope
+/// [`codec`](RedisPubSubPublish::codec) never runs. A published message therefore reads back as
+/// the bare payload here and as a frame on a real server, which is what a `published(..)`
+/// assertion sees.
+///
+/// The stand-in's publisher carries both transaction kinds, which [`RedisPubSubPublisher`] does
+/// not: a slot bounded on a transaction capability compiles here and does not against
+/// [`ConnectedRedisBroker`]. The mismatch is a compile error at the same mount site either way,
+/// never a silent difference at run time.
+#[cfg(feature = "testing")]
+impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisPubSubPublish {
+    type Live = crate::testing::RedisTestPublisher;
+
+    fn pair(
+        self,
+        connected: &crate::testing::ConnectedRedisTestBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(connected.publisher()))
+    }
+}
+
 /// Publishes Pub/Sub messages with `PUBLISH` (classic) or `SPUBLISH` (sharded): a
 /// [`RedisPubSubPublish`] policy paired with a connection.
 ///

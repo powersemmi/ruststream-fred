@@ -58,8 +58,9 @@
   acks to drop.
 - **In-process test broker.** The `testing` feature ships `RedisTestBroker`, an in-process transport
   whose connected form implements `ruststream::testing::TestableBroker`, so it drives the `TestApp`
-  harness and passes the framework's conformance suite without a server. All three descriptors mount
-  on it, so a test wires the declaration the service ships rather than a bare key string.
+  harness and passes the framework's conformance suite without a server. Every descriptor and every
+  publish policy mounts on it, so a test wires what the service ships rather than a bare key string
+  and a test-only policy.
 
 ## Install
 

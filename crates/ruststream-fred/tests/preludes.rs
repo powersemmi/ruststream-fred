@@ -8,9 +8,11 @@
 //!
 //! The two must not share names, which is what these probes pin. Through each mode prelude,
 //! `Publisher` still resolves to the broker capability trait a handler would bound with, and
-//! `Publish` names that form's policy value - a policy this broker pairs. They are compile-time
-//! bounds rather than assertions: a prelude that drops an alias, or lets a policy take the
-//! capability word, fails to compile here and nowhere else.
+//! `Publish` names that form's policy value - a policy this broker pairs, against the real server
+//! and against the in-process stand-in alike, so a routes file has one spelling for both. They are
+//! compile-time bounds rather than assertions: a prelude that drops an alias, lets a policy take
+//! the capability word, or leaves a form pairing on only one of the two brokers, fails to compile
+//! here and nowhere else.
 
 mod stream_prelude {
     use ruststream_fred::ConnectedRedisBroker;
@@ -22,6 +24,10 @@ mod stream_prelude {
     /// The mount site's other half: what it names is a policy this broker can pair.
     fn pairs<P: PublishPolicy<ConnectedRedisBroker>>() {}
 
+    /// The same, against the in-process stand-in: one policy, two brokers.
+    #[cfg(feature = "testing")]
+    fn pairs_in_process<P: PublishPolicy<ruststream_fred::testing::ConnectedRedisTestBroker>>() {}
+
     /// The mount-site word, in both spellings this form offers. A stream publisher buffers on the
     /// handle and owns transactions as it is, so the two name one policy.
     #[test]
@@ -31,6 +37,8 @@ mod stream_prelude {
         let _: TransactionalPublish = TransactionalPublish;
         pairs::<Publish>();
         pairs::<TransactionalPublish>();
+        #[cfg(feature = "testing")]
+        pairs_in_process::<Publish>();
     }
 }
 
@@ -42,10 +50,15 @@ mod list_prelude {
 
     fn pairs<P: PublishPolicy<ConnectedRedisBroker>>() {}
 
+    #[cfg(feature = "testing")]
+    fn pairs_in_process<P: PublishPolicy<ruststream_fred::testing::ConnectedRedisTestBroker>>() {}
+
     #[test]
     fn the_mount_site_word_names_this_forms_policy() {
         let _: Publish = Publish::default();
         pairs::<Publish>();
+        #[cfg(feature = "testing")]
+        pairs_in_process::<Publish>();
     }
 }
 
@@ -57,10 +70,15 @@ mod pubsub_prelude {
 
     fn pairs<P: PublishPolicy<ConnectedRedisBroker>>() {}
 
+    #[cfg(feature = "testing")]
+    fn pairs_in_process<P: PublishPolicy<ruststream_fred::testing::ConnectedRedisTestBroker>>() {}
+
     #[test]
     fn the_mount_site_word_names_this_forms_policy() {
         let _: Publish = Publish::new().mode(PubSubMode::Sharded);
         pairs::<Publish>();
+        #[cfg(feature = "testing")]
+        pairs_in_process::<Publish>();
     }
 }
 
