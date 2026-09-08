@@ -85,7 +85,11 @@ and `RedisPubSub` exactly as a routes file writes them, with no bare key string 
 the mount site, and the reply half is the same value production names:
 
 ```rust
-b.include(confirm).out(Reply, Publish);
+--8<-- "crates/ruststream-fred/examples/fred_testing.rs:reply-handler"
+```
+
+```rust
+--8<-- "crates/ruststream-fred/examples/fred_testing.rs:reply-test"
 ```
 
 There is no test-only publish policy. `Publish` from each form's prelude pairs against the connected
