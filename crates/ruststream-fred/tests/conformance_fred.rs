@@ -19,6 +19,8 @@ use ruststream::conformance::{capabilities, harness};
 use ruststream_fred::testing::RedisTestBroker;
 use ruststream_fred::{RedisBroker, RedisPubSub, RedisPubSubPublish, RedisStream};
 
+mod live;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redis_test_broker_passes_conformance_suite() {
     harness::run_suite(RedisTestBroker::new).await;
@@ -130,6 +132,8 @@ async fn passes_seeking() {
     .await;
 }
 
+/// The server URL, or `None` to skip. Under `RUSTSTREAM_REQUIRE_LIVE` a missing variable fails the
+/// test instead, so a job that started a server cannot report a suite that never ran.
 fn redis_url() -> Option<String> {
-    std::env::var("REDIS_TEST_URL").ok()
+    live::url("REDIS_TEST_URL")
 }

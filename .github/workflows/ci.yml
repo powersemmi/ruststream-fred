@@ -210,6 +210,10 @@ jobs:
         working-directory: ruststream-fred
         run: docker compose -f docker-compose.test.yml up -d --wait
 
+      # RUSTSTREAM_REQUIRE_LIVE is this job's contract with the suites: the servers are up, so a
+      # test that skips is a defect rather than a convenience. Without it a gated test returns
+      # before its first assertion and reports ok, which reads exactly like a run that did the
+      # work - and this job gates on four addresses, so it has four ways to go quietly green.
       - name: Run Redis integration tests (standalone + cluster + sentinel)
         working-directory: ruststream-fred
         env:
@@ -217,12 +221,14 @@ jobs:
           REDIS_AUTH_TEST_URL: redis://127.0.0.1:6385
           REDIS_CLUSTER_TEST_URL: 127.0.0.1:7000
           REDIS_SENTINEL_TEST_URL: 127.0.0.1:26379
+          RUSTSTREAM_REQUIRE_LIVE: "1"
         run: cargo test -p ruststream-fred --test integration_fred -- --test-threads=1
 
       - name: Run Redis conformance suite
         working-directory: ruststream-fred
         env:
           REDIS_TEST_URL: redis://127.0.0.1:6379
+          RUSTSTREAM_REQUIRE_LIVE: "1"
         run: cargo test -p ruststream-fred --features testing --test conformance_fred -- --test-threads=1
 
       - name: Stop Redis topologies
