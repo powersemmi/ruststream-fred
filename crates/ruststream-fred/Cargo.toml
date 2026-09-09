@@ -39,7 +39,16 @@ all-features = true
 [dev-dependencies]
 # The conformance harness drives the testing-feature broker; macros + json power the runnable
 # fred_* examples (the docs site embeds their snippets), and serde decodes their message types.
-ruststream = { workspace = true, features = ["conformance", "testing", "macros", "json"] }
+# `cbor` and `msgpack` are here for the envelope tests only: a service picks the envelope codec, so
+# the text-or-bytes field has to be proven against every codec the framework ships, not only JSON.
+ruststream = { workspace = true, features = [
+    "conformance",
+    "testing",
+    "macros",
+    "json",
+    "cbor",
+    "msgpack",
+] }
 serde = { version = "1", features = ["derive"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 # Only the credential-provider unit test implements fred's async CredentialProvider trait.

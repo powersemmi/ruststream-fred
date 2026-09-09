@@ -18,6 +18,7 @@ use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use bytes::Bytes;
 use fred::interfaces::{ClientLike, KeysInterface};
 use fred::types::InfoKind;
 use futures::StreamExt;
@@ -795,6 +796,98 @@ async fn list_codec_envelope_round_trips_headers() {
     let msg = next(&mut stream).await.expect("delivery ok");
     assert_eq!(msg.payload(), br#"{"id":1}"#);
     assert_eq!(msg.headers().content_type(), Some("application/json"));
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// The readable envelope carries data that is not text without touching it: these bytes are not
+/// valid UTF-8, and the earlier envelope replaced them on the way out.
+const NOT_TEXT: &[u8] = &[0xff, 0x00, 0x1f, 0xfe, 0x80];
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_codec_envelope_round_trips_bytes_that_are_not_text() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("list_codec_binary");
+
+    let mut headers = HeaderMap::new();
+    headers.insert("signature", Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]));
+
+    broker
+        .list_publisher(RedisListPublish::new().codec(JsonCodec))
+        .publish(OutgoingMessage::new(key.as_str(), NOT_TEXT).with_headers(headers))
+        .await
+        .expect("lpush");
+
+    let mut sub = broker
+        .subscribe_list(RedisList::new(&key).codec(JsonCodec))
+        .await
+        .expect("subscribe list");
+    let mut stream = Box::pin(sub.stream());
+    let msg = next(&mut stream).await.expect("delivery ok");
+
+    assert_eq!(
+        msg.payload(),
+        NOT_TEXT,
+        "the list envelope changed the payload"
+    );
+    assert_eq!(
+        msg.headers().get("signature").map(<[u8]>::to_vec),
+        Some(vec![0xde, 0xad, 0xbe, 0xef]),
+        "the list envelope changed a header value"
+    );
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pubsub_codec_envelope_round_trips_bytes_that_are_not_text() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let channel = unique_key("pubsub_codec_binary");
+
+    let mut sub = broker
+        .subscribe_pubsub(RedisPubSub::new(&channel).codec(JsonCodec))
+        .await
+        .expect("subscribe pubsub");
+    let publisher = broker.pubsub_publisher(RedisPubSubPublish::new().codec(JsonCodec));
+    let mut stream = Box::pin(sub.stream());
+
+    let mut headers = HeaderMap::new();
+    headers.insert("signature", Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]));
+
+    // Pub/Sub keeps nothing, and SUBSCRIBE registers asynchronously, so publish until one lands.
+    let mut got = None;
+    for _ in 0..25 {
+        publisher
+            .publish(OutgoingMessage::new(channel.as_str(), NOT_TEXT).with_headers(headers.clone()))
+            .await
+            .expect("publish");
+        if let Ok(Some(item)) =
+            tokio::time::timeout(Duration::from_millis(200), stream.next()).await
+        {
+            let msg = item.expect("delivery ok");
+            assert_eq!(
+                msg.headers().get("signature").map(<[u8]>::to_vec),
+                Some(vec![0xde, 0xad, 0xbe, 0xef]),
+                "the Pub/Sub envelope changed a header value"
+            );
+            got = Some(msg.payload().to_vec());
+            break;
+        }
+    }
+
+    assert_eq!(
+        got.as_deref(),
+        Some(NOT_TEXT),
+        "the Pub/Sub envelope changed the payload"
+    );
 
     drop(stream);
     broker.shutdown().await.expect("shutdown");

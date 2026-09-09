@@ -21,8 +21,9 @@ crashed handler does not silently lose its job:
 Publish with the `RedisListPublish` policy (`LPUSH`): attach it where the handler is mounted and the
 runtime pairs it with the connected broker, or call
 `connected.list_publisher(RedisListPublish::new())` outside an app. Headers travel in the same frame
-as Pub/Sub: a lossless binary frame by default, or a readable codec-serialized envelope when a codec
-is set on both ends (`.codec(JsonCodec)`).
+as [Pub/Sub](pubsub.md): a binary frame by default, or a readable codec-serialized envelope when a
+codec is set on both ends (`.codec(JsonCodec)`). Both are lossless, including for an entry whose
+payload is not text.
 
 A pop returns one entry, so a batch handler on a list is served by batches the subscriber assembles
 on the client; it still names its size with `batch(n)` at the mount site and never sees a longer
