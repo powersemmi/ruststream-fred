@@ -3,7 +3,8 @@
 //! The first parameter is the decoded payload; the macro turns each function into a mountable
 //! definition (a value named after the function) that `routes` collects into a `Router`. Both
 //! handlers bind to a [`RedisStream`] descriptor naming the `workers` consumer group, so delivery is
-//! durable and each entry is `XACK`ed when the handler returns `Ack`. `confirm` consumes `orders` and
+//! durable and each entry is `XACK`ed when a handler returns `HandlerOutcome::ack()`. `confirm`
+//! consumes `orders` and
 //! replies on the `confirmations` stream; `on_cancel` consumes `cancellations`.
 
 use ruststream_fred::stream::prelude::*;
