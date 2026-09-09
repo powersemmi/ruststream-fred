@@ -110,7 +110,7 @@ struct Order {
     id: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Outgoing, Serialize)]
 struct Confirmation {
     id: u64,
 }
