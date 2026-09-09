@@ -106,7 +106,7 @@ async fn handle_pubsub_notification(payment: &Payment) -> HandlerOutcome {
 // --8<-- [end:pubsub-handler]
 
 /// The reply a settled payment publishes to the `receipts` stream.
-#[derive(Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Deserialize, Outgoing, Serialize, PartialEq)]
 struct Receipt {
     id: u64,
 }

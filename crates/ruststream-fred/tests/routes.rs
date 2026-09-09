@@ -23,7 +23,7 @@ mod stream_routes {
         id: u64,
     }
 
-    #[derive(Debug, Deserialize, Serialize, PartialEq)]
+    #[derive(Debug, Deserialize, Outgoing, Serialize, PartialEq)]
     struct Confirmation {
         id: u64,
         accepted: bool,
@@ -75,7 +75,7 @@ mod list_routes {
         id: u64,
     }
 
-    #[derive(Debug, Deserialize, Serialize, PartialEq)]
+    #[derive(Debug, Deserialize, Outgoing, Serialize, PartialEq)]
     struct Receipt {
         id: u64,
     }
@@ -120,7 +120,7 @@ mod pubsub_routes {
         id: u64,
     }
 
-    #[derive(Debug, Deserialize, Serialize, PartialEq)]
+    #[derive(Debug, Deserialize, Outgoing, Serialize, PartialEq)]
     struct Audit {
         id: u64,
     }
@@ -167,7 +167,7 @@ mod default_reply {
         id: u64,
     }
 
-    #[derive(Debug, Deserialize, Serialize, PartialEq)]
+    #[derive(Debug, Deserialize, Outgoing, Serialize, PartialEq)]
     struct Confirmation {
         id: u64,
     }
