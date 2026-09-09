@@ -1,5 +1,5 @@
 //! Redis Pub/Sub subscribers: classic broadcast and sharded (cluster-scalable) delivery, plus
-//! re-publishing from a handler with the macro `publish(...)` form.
+//! re-publishing from a handler with the macro `publish` form.
 //!
 //! Pub/Sub is fire-and-forget: no durability, no consumer groups, no ack. A descriptor selects the
 //! mode. Classic (`SUBSCRIBE`) broadcasts cluster-wide and supports patterns; sharded
@@ -18,18 +18,27 @@
 use ruststream_fred::pubsub::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 struct Event {
     kind: String,
 }
 
 // --8<-- [start:classic]
-// Classic broadcast subscription that re-publishes each event to an `audit` channel. The macro
-// `publish("audit")` form publishes the handler's return value through the publisher wired at mount.
-#[subscriber(RedisPubSub::new("events"), publish("audit"))]
-async fn on_event(event: &Event) -> Event {
+// The audit copy is a message this service sends, so its type derives `Outgoing`, and the channel
+// it goes to is a property of that type: `#[outgoing(name = "audit")]` is the destination.
+#[derive(Debug, Serialize, Outgoing)]
+#[outgoing(name = "audit")]
+struct AuditEntry {
+    kind: String,
+}
+
+// Classic broadcast subscription that re-publishes each event to the `audit` channel. The bare
+// `publish` clause sends the handler's return value through the publisher wired at mount, to the
+// destination the reply type declares.
+#[subscriber(RedisPubSub::new("events"), publish)]
+async fn on_event(event: &Event) -> AuditEntry {
     println!("event: {}", event.kind);
-    Event {
+    AuditEntry {
         kind: event.kind.clone(),
     }
 }
@@ -53,10 +62,10 @@ async fn on_event_sharded(event: &Event) -> HandlerOutcome {
 fn app() -> impl App {
     RustStream::new(AppInfo::new("events", "0.1.0"))
         .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
-            // `publish("audit")` sends through this Pub/Sub policy (PUBLISH), not the default
-            // stream publisher (XADD). `Reply` is the position the policy binds to - the value
-            // the handler returns - and the policy is pure declaration: the runtime pairs it
-            // with the connected broker at startup.
+            // The reply names where it goes; this names how it gets there: the Pub/Sub policy
+            // (PUBLISH), not the default stream publisher (XADD). `Reply` is the position the
+            // policy binds to - the value the handler returns - and the policy is pure
+            // declaration: the runtime pairs it with the connected broker at startup.
             b.include(on_event).out(Reply, Publish::default());
         })
         .with_broker(RedisBroker::cluster(["redis://localhost:7000"]), |b| {

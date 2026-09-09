@@ -625,9 +625,35 @@ async fn owned_transaction_abort_discards_the_buffer() {
     assert!(observed.is_empty(), "aborted messages must be discarded");
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
+/// The request of the harness cases. It is injected through the publish builder, so it derives
+/// `Outgoing`; declaring no name of its own leaves the stream key to the injecting call.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Outgoing)]
 struct Order {
     id: u64,
+}
+
+/// A reply that fixes its own destination: every `Confirmation` this service sends goes to the
+/// `confirmations` stream, so the subscriber clause names nothing.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Outgoing)]
+#[outgoing(name = "confirmations")]
+struct Confirmation {
+    id: u64,
+}
+
+/// A reply that declares no destination: the mount site's `publish("..")` is the one that applies.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Outgoing)]
+struct Receipt {
+    id: u64,
+}
+
+#[subscriber(RedisStream::new("orders.confirmed").group("workers"), publish)]
+async fn confirm_order(order: &Order) -> Confirmation {
+    Confirmation { id: order.id }
+}
+
+#[subscriber(RedisStream::new("orders.receipted").group("workers"), publish("receipts"))]
+async fn receipt_for_order(order: &Order) -> Receipt {
+    Receipt { id: order.id }
 }
 
 #[subscriber(RedisStream::new("orders").group("workers"))]
@@ -696,6 +722,64 @@ async fn test_app_requeue_stays_balanced() {
         .subscriber("retry")
         .assert_called(2)
         .settled(HandlerOutcome::ack());
+
+    tb.shutdown().await.expect("shutdown");
+}
+
+// The reply type declares `confirmations`, so the `XADD` goes there and the attribute's clause
+// carries no name at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reply_lands_on_the_stream_its_type_declares() {
+    let app =
+        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
+            b.include(confirm_order);
+        });
+    let tb = TestApp::start(app).await.expect("start");
+
+    tb.broker::<RedisTestBroker>()
+        .message(&Order { id: 1 })
+        .to("orders.confirmed")
+        .publish()
+        .await
+        .expect("publish");
+    tb.settle().await.expect("settle");
+
+    tb.broker::<RedisTestBroker>()
+        .subscriber("orders.confirmed")
+        .assert_called_once();
+    tb.broker::<RedisTestBroker>()
+        .published::<Confirmation>("confirmations")
+        .assert_called_once()
+        .with(&Confirmation { id: 1 });
+
+    tb.shutdown().await.expect("shutdown");
+}
+
+// The reply type declares nothing, so the stream key comes from the mount site's
+// `publish("receipts")`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reply_without_a_declared_stream_lands_where_the_mount_site_says() {
+    let app =
+        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
+            b.include(receipt_for_order);
+        });
+    let tb = TestApp::start(app).await.expect("start");
+
+    tb.broker::<RedisTestBroker>()
+        .message(&Order { id: 2 })
+        .to("orders.receipted")
+        .publish()
+        .await
+        .expect("publish");
+    tb.settle().await.expect("settle");
+
+    tb.broker::<RedisTestBroker>()
+        .subscriber("orders.receipted")
+        .assert_called_once();
+    tb.broker::<RedisTestBroker>()
+        .published::<Receipt>("receipts")
+        .assert_called_once()
+        .with(&Receipt { id: 2 });
 
     tb.shutdown().await.expect("shutdown");
 }

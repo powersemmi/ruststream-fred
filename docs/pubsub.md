@@ -27,8 +27,11 @@ sharded Pub/Sub on a cluster at the same time - each handler mounts on its own b
 
 To publish, chain `.out(Reply, ..)` on the include site with a `RedisPubSubPublish` policy (add
 `.mode(PubSubMode::Sharded)` to match a sharded subscriber). `Reply` is the position the policy binds
-to - the value the handler returns. The classic handler above uses the macro `publish("audit")` form,
-so its return value goes out through that Pub/Sub policy - not the default stream publisher.
+to - the value the handler returns. That policy sends the reply with `PUBLISH`, not with the `XADD`
+of the broker's default publisher.
+
+The channel the reply goes to comes from its own type: `AuditEntry` above declares `audit`. A reply
+type that declares no channel goes where the subscriber's `publish("..")` names.
 
 Pub/Sub delivers one message at a time, so a batch handler here is served by batches the subscriber
 assembles on the client; it still names its size with `batch(n)` at the mount site and never sees a

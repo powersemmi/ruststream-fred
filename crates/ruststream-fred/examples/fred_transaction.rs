@@ -18,7 +18,9 @@ use ruststream::OutgoingMessage;
 use ruststream_fred::stream::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Serialize)]
+// The same type arrives on `orders` and leaves on `processed`, so it declares no destination of
+// its own: the `Outgoing` derive without a name takes the one the mount site gives it.
+#[derive(Debug, Deserialize, Serialize, Outgoing)]
 struct Order {
     id: u64,
 }
