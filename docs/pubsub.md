@@ -1,43 +1,46 @@
 # Pub/Sub
 
-A service on this form globs `ruststream_fred::pubsub::prelude::*`, which carries the descriptor,
-its mode and this form's publish policy as `Publish`.
+Pub/Sub is fire-and-forget: a message reaches the subscribers connected at that moment, and `ack`
+and `nack` report `Unsupported`.
 
-Pub/Sub is fire-and-forget: no durability, no consumer groups, no ack (`ack` / `nack` report
-`Unsupported`). A `RedisPubSub` descriptor selects the channel and mode. Classic broadcasts
-cluster-wide and supports patterns:
+A Pub/Sub service imports `ruststream_fred::pubsub::prelude::*`: the descriptor, its mode, and this
+form's publish policy under the name `Publish`.
+
+A `RedisPubSub` descriptor names the channel and the mode. Classic delivery reaches every node of a
+cluster, and `.pattern()` subscribes to a channel pattern instead of one channel:
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_pubsub.rs:classic"
 ```
 
-Sharded delivery (`SSUBSCRIBE`, Redis 7+) stays slot-local so it scales across a cluster, at the cost
-of patterns. Enable it per subscription with `.mode(PubSubMode::Sharded)`:
+Sharded delivery (`SSUBSCRIBE`, Redis 7+) stays slot-local, so it scales across a cluster and takes
+no patterns. `.mode(PubSubMode::Sharded)` selects it per subscription:
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_pubsub.rs:sharded"
 ```
 
-Because RustStream is multi-broker, one service can run classic Pub/Sub on a standalone server and
-sharded Pub/Sub on a cluster at the same time - each handler mounts on its own broker:
+One service runs classic Pub/Sub on a standalone server and sharded Pub/Sub on a cluster at the same
+time; each handler mounts on its own broker:
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_pubsub.rs:app"
 ```
 
-To publish, chain `.out(Reply, ..)` on the include site with a `RedisPubSubPublish` policy (add
-`.mode(PubSubMode::Sharded)` to match a sharded subscriber). `Reply` is the position the policy binds
+You name this form's policy where the handler is mounted: `.out(Reply, Publish)`, with
+`.mode(PubSubMode::Sharded)` to match a sharded subscriber. `Reply` is the position the policy binds
 to - the value the handler returns. That policy sends the reply with `PUBLISH`, not with the `XADD`
 of the broker's default publisher.
 
-The channel the reply goes to comes from its own type: `AuditEntry` above declares `audit`. A reply
+The channel the reply goes to comes from the reply type: `AuditEntry` above declares `audit`. A reply
 type that declares no channel goes where the subscriber's `publish("..")` names.
 
-Pub/Sub delivers one message at a time, so a batch handler here is served by batches the subscriber
-assembles on the client; it still names its size with `batch(n)` at the mount site and never sees a
-longer batch (see [Batches](streams.md#batches)).
+Pub/Sub delivers one message at a time, so the subscriber assembles batches itself. A batch handler
+names its size with `batch(n)` where it is mounted and never sees a longer batch (see
+[Batches](streams.md#batches)).
 
-Headers travel in a frame around the payload: a lossless binary frame by default, or - when you set a
-codec on both the publisher and the subscriber (`.codec(JsonCodec)`) - a readable codec-serialized
-`{headers, payload}` envelope (so the wire value is legible JSON in tools like RedisInsight). A raw
-value an external client published is delivered as the payload with empty headers.
+A publish frames the headers together with the payload. The default frame is binary and carries any
+bytes unchanged. Setting the same codec on the subscriber and the publisher (`.codec(JsonCodec)`)
+switches to a `{headers, payload}` envelope the codec serializes, which makes the value readable in
+tools like RedisInsight; that envelope holds headers and payload as text, so binary payloads keep
+the default frame. A value published by an external client arrives as the payload with no headers.
