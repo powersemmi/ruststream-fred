@@ -39,8 +39,9 @@ Pub/Sub delivers one message at a time, so the subscriber assembles batches itse
 names its size with `batch(n)` where it is mounted and never sees a longer batch (see
 [Batches](streams.md#batches)).
 
-A publish frames the headers together with the payload. The default frame is binary and carries any
-bytes unchanged. Setting the same codec on the subscriber and the publisher (`.codec(JsonCodec)`)
-switches to a `{headers, payload}` envelope the codec serializes, which makes the value readable in
-tools like RedisInsight; that envelope holds headers and payload as text, so binary payloads keep
-the default frame. A value published by an external client arrives as the payload with no headers.
+A publish frames the headers together with the payload. The default frame is binary. Setting the
+same codec on the subscriber and the publisher (`.codec(JsonCodec)`) switches to a
+`{headers, payload}` envelope the codec serializes, which makes the value readable in tools like
+RedisInsight. Both frames carry any bytes unchanged: in the envelope a field that is valid UTF-8 is
+written as text, and any other bytes as themselves. A value published by an external client arrives
+as the payload with no headers.
