@@ -39,13 +39,8 @@ cargo generate --git https://github.com/powersemmi/ruststream-fred templates/red
 
 Топологию выбирает один из трёх именованных конструкторов:
 
-```toml
-# standalone
-# RedisBroker::standalone("redis://localhost:6379")
-# cluster (one reachable seed node is enough; the rest is discovered)
-# RedisBroker::cluster(["127.0.0.1:7000", "127.0.0.1:7001"])
-# sentinel (the monitored primary's name plus the sentinels)
-# RedisBroker::sentinel("mymaster", ["127.0.0.1:26379"])
+```rust
+--8<-- "crates/ruststream-fred/examples/fred_topologies.rs:topologies"
 ```
 
 ## Руководства по транспортам {#transport-guides}
