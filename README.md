@@ -58,8 +58,11 @@
 - **Publishers as policy plus connection.** `RedisPublish`, `RedisPubSubPublish`, and
   `RedisListPublish` are pure declarations, constructible anywhere; a mount site binds one with
   `.out(marker, policy)`, and the runtime pairs it with the connected broker, so publishing before
-  connect is not representable. `publisher.partition_key(key)` wraps a publisher so everything sent
-  through it carries that key, which feeds the runtime's keyed worker lanes (`workers(n, by_key)`).
+  connect is not representable.
+- **The partition key is a per-message setting.** `.partition_key(key)` is a step on the publish, so
+  it keys one message and leaves the mount site's codec and its slot attribution alone. It feeds the
+  runtime's keyed worker lanes (`workers(n, by_key)`) and reaches the consumer as the
+  `redis-partition-key` header, on all three transports.
 - **Both transaction kinds.** On standalone and sentinel the stream publisher carries the borrowed
   kind (one transaction on the handle) and the owned kind (`publisher.transaction()` returns a
   buffer-owning value, so any number can be open concurrently). Both commit their buffer as one

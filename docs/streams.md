@@ -184,11 +184,10 @@ wall-clock epoch milliseconds, so keep clocks synced (NTP).
 ## Partition keys
 
 `workers(n, by_key)` runs a subscription on several workers and keeps per-key order: deliveries
-sharing a partition key go to the same lane. Redis has no partition of its own, so the key goes in a
-header. `partition_key` returns a handle that carries it, so every publish through that handle is
-keyed:
+sharing a partition key go to the same lane. `partition_key` is a step on the publish, so it keys
+one message:
 
-<!-- inline-rust: two-publish fragment isolating the keyed handle; the compiled call sites are the crate's `partition_key` doctests, which need a connected broker and so cannot double as a snippet source here -->
+<!-- inline-rust: two-publish fragment isolating the step; the compiled call sites are the crate's `partition_key` doctests, which need a connected broker and so cannot double as a snippet source here -->
 ```rust
 use ruststream_fred::stream::prelude::*;
 use serde::Serialize;
@@ -199,12 +198,12 @@ struct Order {
     id: u64,
 }
 
-let tenant = publisher.partition_key("tenant-a");
-tenant.message(&Order { id: 7 }).publish().await?;
-tenant.message(&Order { id: 8 }).publish().await?;
+publisher.message(&Order { id: 7 }).partition_key("tenant-a").publish().await?;
+publisher.message(&Order { id: 8 }).partition_key("tenant-a").publish().await?;
 ```
 
-The key sits under the publish's own headers, so it composes with a declared header contract:
+The step sits anywhere after the message, and it takes no position of its own, so it composes with a
+declared header contract:
 
 <!-- inline-rust: isolates the contract-plus-key chain; the compiled form is the `partition_key_step_composes_with_a_header_contract` test, whose broker setup would bury the four lines that matter -->
 ```rust
@@ -220,16 +219,48 @@ struct OrderMeta {
 }
 
 publisher
-    .partition_key("tenant-a")
     .message(&KeyedOrder { id: 7 })
     .with_headers(&OrderMeta { region: "eu".into() })
+    .partition_key("tenant-a")
     .publish()
     .await?;
 ```
 
-Naming `redis-partition-key` in a publish's own headers overrides the handle's key for that message;
-naming any other header leaves it in place. The keyed handle exists on all three transports'
-publishers, and the header name is public as `PARTITION_KEY_HEADER`.
+A handler keys its own publishes the same way. The step is this broker's, so such a body imports
+this crate's prelude and names the options type in the slot's bound:
+
+<!-- inline-rust: the signature is the subject here; the compiled form is the `the_step_sets_the_key_the_delivery_reports` test, whose mount and assertions would bury it -->
+```rust
+use ruststream_fred::stream::prelude::*;
+
+#[derive(OutSlot)]
+#[publishes(Order)]
+struct Ledger;
+
+#[subscriber(RedisStream::new("orders.in").group("workers"))]
+async fn forward(
+    order: &Order,
+    Out(ledger): Out<impl Publisher<Options = RedisPublishOptions>, Ledger>,
+) -> HandlerOutcome {
+    if ledger
+        .message(order)
+        .to("orders.keyed")
+        .partition_key("tenant-a")
+        .publish()
+        .await
+        .is_err()
+    {
+        return HandlerOutcome::retry();
+    }
+    HandlerOutcome::ack()
+}
+```
+
+Redis has no partition of its own, so the publisher writes the resolved key into the
+`redis-partition-key` header, and that is where the consuming side reads it. Writing that header at
+the call site is the spelling that carries across brokers; a step overrides it for its own message,
+and a publish with no step leaves the map alone. The header name is public as
+`PARTITION_KEY_HEADER`, and all three transports take the step.
 
 ## Capabilities
 
@@ -243,6 +274,6 @@ Lists and Pub/Sub differ from Streams.
 | `TransactionalPublisher` | yes (Streams, standalone and sentinel) | The stream publisher buffers on the handle and commits it as one `MULTI` / `EXEC`. A cluster publisher rejects it, because a `MULTI` block cannot span hash slots. The List and Pub/Sub publishers have no transaction. See [Transactions](transactions.md). |
 | `OwnedTransactions` | yes (Streams, standalone and sentinel) | `publisher.transaction()` returns a buffer-owning value, so any number can be open on one handle; cluster is rejected for the same reason. |
 | `RequestReply` | no | Redis has no request-reply primitive: nothing on the wire carries a reply address or correlates a reply with its request. |
-| `Partitioned` | yes | All three transports read the key from the `redis-partition-key` header for the runtime's `workers(n, by_key)` lanes. The sender sets it, with [`partition_key`](#partition-keys). |
+| `Partitioned` | yes | All three transports read the key from the `redis-partition-key` header for the runtime's `workers(n, by_key)` lanes. The sender sets it with the [`partition_key`](#partition-keys) step. |
 | `Seekable` + `Positioned` | yes (Streams) | The group cursor moves with `XGROUP SETID`, and a delivery reports the position that redelivers it. Handlers reach the handle through the `keys::SeekHandle` context key; see [Repositioning a group](#repositioning-a-group). A list is destructive and Pub/Sub keeps no history, so neither implements it. |
 | `DescribeServer` | yes | Reports the host and port a client dials (the first seed on cluster and sentinel). A URL's credentials, database number and query stay out of the generated document. |
