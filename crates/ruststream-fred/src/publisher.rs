@@ -14,6 +14,7 @@ use ruststream::{
 use tracing::warn;
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
+use crate::partition::{RedisPublishOptions, resolved_headers};
 use crate::{convert::fields_for_publish, error::RedisError};
 
 /// One buffered `XADD` (stream key plus its encoded entry fields), held while a transaction is open.
@@ -188,18 +189,18 @@ impl RedisPublisher {
 impl Publisher for RedisPublisher {
     type Error = RedisError;
     /// `XADD` takes the entry id and the trim threshold per command, and this publisher fixes
-    /// both (`*` and no trim), so a call site has nothing of its own to say. The stream key is
-    /// the message's name, not a setting.
-    type Options = ();
+    /// both (`*` and no trim); the stream key is the message's name, not a setting. What is left
+    /// to a call site is the partition key, which leaves as an entry field like any other header.
+    type Options = RedisPublishOptions;
 
     async fn publish(
         &self,
         msg: OutgoingMessage<'_>,
-        _options: Option<&Self::Options>,
+        options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
         let entry: Buffered = (
             msg.name().to_owned(),
-            fields_for_publish(msg.payload(), msg.headers()),
+            fields_for_publish(msg.payload(), &resolved_headers(msg.headers(), options)),
         );
         if self.buffer_if_in_txn(&entry) {
             return Ok(());
@@ -361,18 +362,19 @@ impl Drop for RedisTransaction {
 
 impl Transaction for RedisTransaction {
     type Error = RedisError;
-    /// The same as [`RedisPublisher`]'s: a buffered `XADD` is the same command, queued.
-    type Options = ();
+    /// The same as [`RedisPublisher`]'s: a buffered `XADD` is the same command, queued, so a
+    /// staged message takes a partition key the way a direct one does.
+    type Options = RedisPublishOptions;
 
     /// Buffers the `XADD` locally; nothing reaches the server before [`commit`](Self::commit).
     fn publish(
         &mut self,
         msg: OutgoingMessage<'_>,
-        _options: Option<&Self::Options>,
+        options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
         self.buffered.push((
             msg.name().to_owned(),
-            fields_for_publish(msg.payload(), msg.headers()),
+            fields_for_publish(msg.payload(), &resolved_headers(msg.headers(), options)),
         ));
         ready(Ok(()))
     }

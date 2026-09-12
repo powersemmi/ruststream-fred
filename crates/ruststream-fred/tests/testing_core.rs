@@ -24,7 +24,7 @@ use ruststream::{
     testing::expect_published,
 };
 use ruststream_fred::{
-    PARTITION_KEY_HEADER, PubSubMode, RedisError, RedisList, RedisPubSub, RedisPublishExt,
+    PARTITION_KEY_HEADER, PubSubMode, RedisError, RedisList, RedisPubSub, RedisPublishSteps,
     RedisStream,
     testing::{ConnectedRedisTestBroker, RedisTestBroker, RedisTestMessage},
 };
@@ -65,7 +65,7 @@ where
 }
 
 /// A message declaring a header contract: the shape whose publish leaves the builder's headers
-/// position occupied, so the partition key has to ride elsewhere.
+/// position occupied, so the partition key cannot ride there.
 #[derive(Outgoing, Serialize, Deserialize)]
 #[outgoing(name = "orders.keyed", headers = OrderMeta)]
 struct KeyedOrder {
@@ -77,8 +77,8 @@ struct OrderMeta {
     region: String,
 }
 
-/// An opaque payload for the partition-key cases: they assert on the header the keyed handle
-/// contributes, not on what a codec would make of the body, so the bytes leave as they are.
+/// An opaque payload for the partition-key cases: they assert on the header the step resolves
+/// into, not on what a codec would make of the body, so the bytes leave as they are.
 #[derive(Outgoing, Serialized)]
 struct Payload(Vec<u8>);
 
@@ -237,6 +237,8 @@ async fn describe_server_returns_redis_protocol() {
     assert_eq!(spec.protocol, "redis");
 }
 
+/// Writing the header at the call site stays the portable spelling: no step ran, so the publisher
+/// leaves the map alone and the delivery reports what the sender wrote.
 #[tokio::test]
 async fn partition_key_header_is_surfaced() {
     let broker = connected().await;
@@ -292,8 +294,8 @@ async fn partition_key_absent_yields_none() {
     broker.shutdown().await.expect("shutdown");
 }
 
-/// The adapter is the publish-side counterpart of `Partitioned`: what it carries is what the
-/// delivery reports, with no hand-built header map at the call site.
+/// The step is the publish-side counterpart of `Partitioned`: what it sets is what the delivery
+/// reports, with no hand-built header map at the call site.
 #[tokio::test]
 async fn partition_key_step_carries_the_header() {
     let broker = connected().await;
@@ -301,9 +303,9 @@ async fn partition_key_step_carries_the_header() {
     let publisher = broker.publisher();
 
     publisher
-        .partition_key("tenant-a")
         .message(&Payload(b"payload".to_vec()))
         .to("keyed.plain")
+        .partition_key("tenant-a")
         .publish()
         .await
         .expect("publish");
@@ -324,8 +326,8 @@ async fn partition_key_step_carries_the_header() {
 }
 
 /// The reason the step exists: a message declaring a header contract fills the builder's single
-/// headers position with that contract, so a partition key has nowhere else to go. Travelling
-/// beneath it as base headers, the key composes with the contract instead of competing for it.
+/// headers position with that contract, so a partition key has nowhere else to go. As an option
+/// it travels beside the contract instead of competing for that position.
 #[tokio::test]
 async fn partition_key_step_composes_with_a_header_contract() {
     let broker = connected().await;
@@ -333,11 +335,11 @@ async fn partition_key_step_composes_with_a_header_contract() {
     let publisher = broker.publisher();
 
     publisher
-        .partition_key("tenant-a")
         .message(&KeyedOrder { id: 7 })
         .with_headers(&OrderMeta {
             region: "eu".into(),
         })
+        .partition_key("tenant-a")
         .publish()
         .await
         .expect("publish");
@@ -353,8 +355,8 @@ async fn partition_key_step_composes_with_a_header_contract() {
     broker.shutdown().await.expect("shutdown");
 }
 
-/// The handle's key sits under the call's headers, not over them, so naming unrelated headers at
-/// the call site leaves the key in place and the call's own entries untouched.
+/// The key is resolved into the headers the publish already carries, so naming unrelated headers
+/// at the call site leaves both the key and those entries in place.
 #[tokio::test]
 async fn partition_key_step_survives_unrelated_call_site_headers() {
     let broker = connected().await;
@@ -365,10 +367,10 @@ async fn partition_key_step_survives_unrelated_call_site_headers() {
     headers.insert("trace-id", "abc");
 
     publisher
-        .partition_key("tenant-b")
         .message(&Payload(b"payload".to_vec()))
         .with_headers(headers)
         .to("keyed.map")
+        .partition_key("tenant-b")
         .publish()
         .await
         .expect("publish");
@@ -383,10 +385,10 @@ async fn partition_key_step_survives_unrelated_call_site_headers() {
     broker.shutdown().await.expect("shutdown");
 }
 
-/// Call site wins: the handle serves many publishes, a call names one message, so a partition key
-/// written into the publish's own headers overrides the one the handle carries.
+/// The step wins: a header map may be a contract the message type declares, while the step names
+/// this one message and nothing else, so the resolved key is written over what the map carried.
 #[tokio::test]
-async fn call_site_partition_key_overrides_the_step() {
+async fn the_step_overrides_a_call_site_partition_key() {
     let broker = connected().await;
     let mut sub = broker.subscribe("keyed.override").await.expect("subscribe");
     let publisher = broker.publisher();
@@ -395,10 +397,10 @@ async fn call_site_partition_key_overrides_the_step() {
     headers.insert(PARTITION_KEY_HEADER, "call-site");
 
     publisher
-        .partition_key("handle")
         .message(&Payload(b"payload".to_vec()))
         .with_headers(headers)
         .to("keyed.override")
+        .partition_key("stepped")
         .publish()
         .await
         .expect("publish");
@@ -406,7 +408,7 @@ async fn call_site_partition_key_overrides_the_step() {
     let msg = next_message(&mut Box::pin(sub.stream())).await;
     assert_eq!(
         Partitioned::partition_key(&msg),
-        Some(b"call-site".as_slice())
+        Some(b"stepped".as_slice())
     );
     msg.ack().await.ok();
     broker.shutdown().await.expect("shutdown");

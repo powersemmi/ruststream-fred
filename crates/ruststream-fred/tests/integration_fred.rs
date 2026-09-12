@@ -32,7 +32,7 @@ use ruststream::{
 use ruststream_fred::{
     ConnectedRedisBroker, DEAD_LETTER_REASON_HEADER, DELIVERY_COUNT_HEADER, DelayedRetry,
     IDLE_MS_HEADER, RedisBroker, RedisError, RedisGroupPosition, RedisList, RedisListPublish,
-    RedisPubSub, RedisPubSubPublish, RedisPublishExt, RedisStream, StreamStart,
+    RedisPubSub, RedisPubSubPublish, RedisPublishSteps, RedisStream, StreamStart,
 };
 
 mod live;
@@ -48,8 +48,8 @@ fn env(key: &str) -> Option<String> {
     live::url(key)
 }
 
-/// An opaque payload: the partition-key case asserts on the header the keyed handle contributes,
-/// not on what a codec would make of the body, so the bytes leave as they are.
+/// An opaque payload: the partition-key case asserts on the header the step resolves into, not on
+/// what a codec would make of the body, so the bytes leave as they are.
 #[derive(Outgoing, Serialized)]
 struct Payload(Vec<u8>);
 
@@ -340,8 +340,8 @@ async fn stream_drop_routes_to_dead_letter() {
     broker.shutdown().await.expect("shutdown");
 }
 
-/// The partition key set on the publisher survives the `XADD` entry-field encoding, which is what
-/// the in-process broker cannot prove: headers travel as prefixed entry fields on a real stream.
+/// The partition key the step set survives the `XADD` entry-field encoding, which is what the
+/// in-process broker cannot prove: headers travel as prefixed entry fields on a real stream.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stream_partition_key_survives_the_round_trip() {
     let Some(url) = env("REDIS_TEST_URL") else {
@@ -357,9 +357,9 @@ async fn stream_partition_key_survives_the_round_trip() {
 
     broker
         .publisher()
-        .partition_key("tenant-a")
         .message(&Payload(b"payload".to_vec()))
         .to(key.as_str())
+        .partition_key("tenant-a")
         .publish()
         .await
         .expect("publish");

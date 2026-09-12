@@ -68,7 +68,7 @@ pub mod prelude {
     pub use crate::context::{StreamBatchContext, StreamContext, keys};
     pub use crate::{
         DelayedRetry, PARTITION_KEY_HEADER, RedisBroker, RedisGroupPosition, RedisGroupSeeker,
-        RedisPublishExt, RedisSubscribeExt,
+        RedisPublishOptions, RedisPublishSteps, RedisSubscribeExt,
     };
 
     #[cfg(any(

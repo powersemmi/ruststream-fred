@@ -32,7 +32,7 @@ pub use crate::context::{PubSubContext, StreamBatchContext, StreamContext, keys}
 pub use crate::{
     DelayedRetry, PARTITION_KEY_HEADER, PubSubMode, RedisBroker, RedisGroupPosition,
     RedisGroupSeeker, RedisList, RedisListPublish, RedisPubSub, RedisPubSubPublish, RedisPublish,
-    RedisPublishExt, RedisStream, RedisSubscribeExt, StreamStart,
+    RedisPublishOptions, RedisPublishSteps, RedisStream, RedisSubscribeExt, StreamStart,
 };
 
 // The policies keep their prefixed names here, and there is no bare `Publish`: this glob spans all

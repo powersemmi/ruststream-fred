@@ -43,6 +43,7 @@ use ruststream::{
 use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::deadletter::{self, PoisonPolicy, REASON_DROPPED, REASON_MAX_DELIVERIES};
 use crate::envelope::{SharedEnvelope, frame, unframe};
+use crate::partition::{RedisPublishOptions, resolved_headers};
 use crate::recovery::{self, RecoveryConfig};
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
 
@@ -74,7 +75,10 @@ pub mod prelude {
     pub use ruststream::prelude::*;
 
     pub use super::{Publish, RedisList};
-    pub use crate::{PARTITION_KEY_HEADER, RedisBroker, RedisPublishExt, RedisSubscribeExt};
+    pub use crate::{
+        PARTITION_KEY_HEADER, RedisBroker, RedisPublishOptions, RedisPublishSteps,
+        RedisSubscribeExt,
+    };
 
     #[cfg(any(
         feature = "tls-rustls",
@@ -844,18 +848,22 @@ fn ttl_millis(ttl: Duration) -> i64 {
 
 impl ruststream::Publisher for RedisListPublisher {
     type Error = RedisError;
-    /// `LPUSH` carries the key and the value and nothing else, so a call site has no setting of
-    /// its own. The key TTL is a property of the queue, fixed by the policy and re-armed on every
-    /// publish.
-    type Options = ();
+    /// `LPUSH` carries the key and the value and nothing else; the key TTL is a property of the
+    /// queue, fixed by the policy and re-armed on every publish. What a call site still says is
+    /// the partition key, framed into the entry with the message's other headers.
+    type Options = RedisPublishOptions;
 
     async fn publish(
         &self,
         msg: ruststream::OutgoingMessage<'_>,
-        _options: Option<&Self::Options>,
+        options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
         let pool = self.core.pool()?;
-        let body = frame(self.codec.as_ref(), msg.payload(), msg.headers());
+        let body = frame(
+            self.codec.as_ref(),
+            msg.payload(),
+            &resolved_headers(msg.headers(), options),
+        );
         let Some(ttl) = self.ttl else {
             let _: i64 = pool
                 .lpush(msg.name(), body)

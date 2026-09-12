@@ -34,6 +34,7 @@ use tokio::sync::broadcast::{Receiver, error::RecvError};
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::envelope::{SharedEnvelope, frame, unframe};
+use crate::partition::{RedisPublishOptions, resolved_headers};
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
 
 /// This form's publish policy, [`RedisPubSubPublish`], under the mount-site name every form gives
@@ -69,7 +70,7 @@ pub mod prelude {
     // `keys` arrives as the module, not as a glob: its members are short words a service also uses
     // for its own types, and `Ctx<keys::Channel>` reads as what it is at the use site.
     pub use crate::context::{PubSubContext, keys};
-    pub use crate::{PARTITION_KEY_HEADER, RedisBroker, RedisPublishExt};
+    pub use crate::{PARTITION_KEY_HEADER, RedisBroker, RedisPublishOptions, RedisPublishSteps};
 
     #[cfg(any(
         feature = "tls-rustls",
@@ -578,20 +579,25 @@ impl RedisPubSubPublisher {
 
 impl Publisher for RedisPubSubPublisher {
     type Error = RedisError;
-    /// `PUBLISH` and `SPUBLISH` take a channel and a payload and nothing else. Which of the two
-    /// is issued is the publisher's mode, fixed by the policy, because a sharded publish only
-    /// reaches sharded subscribers.
-    type Options = ();
+    /// `PUBLISH` and `SPUBLISH` take a channel and a payload and nothing else, and which of the
+    /// two is issued is the publisher's mode, fixed by the policy, because a sharded publish only
+    /// reaches sharded subscribers. What a call site still says is the partition key, framed into
+    /// the payload with the message's other headers.
+    type Options = RedisPublishOptions;
 
     async fn publish(
         &self,
         msg: OutgoingMessage<'_>,
-        _options: Option<&Self::Options>,
+        options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
         let pool = self.core.pool()?;
         let client = pool.next();
         let channel = msg.name().to_owned();
-        let body = frame(self.codec.as_ref(), msg.payload(), msg.headers());
+        let body = frame(
+            self.codec.as_ref(),
+            msg.payload(),
+            &resolved_headers(msg.headers(), options),
+        );
         let _: i64 = match self.mode {
             PubSubMode::Classic => client.publish(channel, body).await,
             PubSubMode::Sharded => client.spublish(channel, body).await,

@@ -18,6 +18,7 @@ use tracing::warn;
 
 use crate::{
     error::RedisError,
+    partition::{RedisPublishOptions, resolved_headers},
     testing::{
         ConnectedRedisTestBroker,
         broker::{TestBrokerState, validate_publish_key},
@@ -76,9 +77,9 @@ impl RedisTestPublisher {
 
 impl Publisher for RedisTestPublisher {
     type Error = RedisError;
-    /// The same as [`RedisPublisher`](crate::RedisPublisher)'s: this crate's publishers have no
-    /// per-message setting, so a test names the same empty type production does.
-    type Options = ();
+    /// The same as [`RedisPublisher`](crate::RedisPublisher)'s, so a test names the type
+    /// production names and a partition key resolves here the way it does on a server.
+    type Options = RedisPublishOptions;
 
     /// # Errors
     ///
@@ -88,7 +89,7 @@ impl Publisher for RedisTestPublisher {
     fn publish(
         &self,
         msg: OutgoingMessage<'_>,
-        _options: Option<&Self::Options>,
+        options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
         if let Err(err) = self.state.alive() {
             return ready(Err(err));
@@ -99,7 +100,7 @@ impl Publisher for RedisTestPublisher {
         let entry: Buffered = (
             msg.name().to_owned(),
             Bytes::copy_from_slice(msg.payload()),
-            msg.headers().clone(),
+            resolved_headers(msg.headers(), options).into_owned(),
         );
         if self.buffer_if_in_txn(&entry) {
             return ready(Ok(()));
@@ -235,7 +236,7 @@ impl Publisher for RedisTestPlainPublisher {
     /// As on [`RedisListPublisher`](crate::RedisListPublisher) and
     /// [`RedisPubSubPublisher`](crate::RedisPubSubPublisher), the two production publishers this
     /// one stands in for.
-    type Options = ();
+    type Options = RedisPublishOptions;
 
     fn publish(
         &self,
@@ -301,7 +302,7 @@ impl Drop for RedisTestTransaction {
 impl Transaction for RedisTestTransaction {
     type Error = RedisError;
     /// As on [`RedisTransaction`](crate::RedisTransaction).
-    type Options = ();
+    type Options = RedisPublishOptions;
 
     /// # Errors
     ///
@@ -309,7 +310,7 @@ impl Transaction for RedisTestTransaction {
     fn publish(
         &mut self,
         msg: OutgoingMessage<'_>,
-        _options: Option<&Self::Options>,
+        options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
         if let Err(err) = validate_publish_key(msg.name()) {
             return ready(Err(err));
@@ -317,7 +318,7 @@ impl Transaction for RedisTestTransaction {
         self.buffered.push((
             msg.name().to_owned(),
             Bytes::copy_from_slice(msg.payload()),
-            msg.headers().clone(),
+            resolved_headers(msg.headers(), options).into_owned(),
         ));
         ready(Ok(()))
     }
