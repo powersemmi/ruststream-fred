@@ -20,7 +20,9 @@ use fred::types::config::CredentialProvider;
 ))]
 use fred::types::config::TlsConfig;
 use fred::types::config::{Config, ServerConfig};
-use ruststream::{Broker, ConnectedBroker, DescribeServer, ServerSpec, Subscribe};
+use ruststream::{
+    Broker, ConnectedBroker, DescribeServer, RedeliveryAddress, ServerSpec, Subscribe,
+};
 
 use crate::{
     error::RedisError,
@@ -502,24 +504,16 @@ impl DescribeServer for RedisBroker {
 /// The `host:port` a client dials, with everything else an address may carry stripped: the scheme,
 /// any `user:password@`, the database path and the query.
 ///
-/// A server description travels into the generated `AsyncAPI` document, which teams publish and
-/// share, so a credential must never reach it. The split is on the *last* `@` because a password
-/// may contain one, and the host is what follows the final separator.
+/// [`ServerSpec::host_from_url`] does the stripping, so the rule that keeps a credential out of a
+/// published `AsyncAPI` document lives in one place for every broker. What is added here is the
+/// Redis default port, which the core cannot know.
 fn describe_address(addr: &str, default_port: u16) -> String {
-    let addr = addr.trim();
-    let after_scheme = addr.split_once("://").map_or(addr, |(_, rest)| rest);
-    let authority = after_scheme
-        .split_once(['/', '?'])
-        .map_or(after_scheme, |(authority, _)| authority);
-    let host = authority
-        .rsplit_once('@')
-        .map_or(authority, |(_, host)| host);
-
+    let host = ServerSpec::host_from_url(addr.trim());
     if host.is_empty() {
         return String::new();
     }
-    if has_port(host) {
-        host.to_owned()
+    if has_port(&host) {
+        host
     } else {
         format!("{host}:{default_port}")
     }
@@ -773,6 +767,13 @@ impl Subscribe for ConnectedRedisBroker {
             ))
         })?;
         ConnectedRedisBroker::subscribe(self, RedisStream::new(name).group(group)).await
+    }
+
+    /// The stream key itself. A bare name opens a consumer group over that key, and an `XADD`
+    /// there reaches the group again, so `#[subscriber("orders")]` composes with a scope's
+    /// deferred retry publisher.
+    fn redelivery_address(&self, name: &str) -> Option<RedeliveryAddress> {
+        Some(RedeliveryAddress::new(name.to_owned()))
     }
 }
 

@@ -76,13 +76,20 @@ impl RedisTestPublisher {
 
 impl Publisher for RedisTestPublisher {
     type Error = RedisError;
+    /// The same as [`RedisPublisher`](crate::RedisPublisher)'s: this crate's publishers have no
+    /// per-message setting, so a test names the same empty type production does.
+    type Options = ();
 
     /// # Errors
     ///
     /// Returns [`RedisError::Publish`] when the stream key is empty, or [`RedisError::ShutDown`]
     /// once the connection this handle was made from has been shut down: the handle can outlive
     /// the connection, so this is where the real broker's dropped pool is mirrored.
-    fn publish(&self, msg: OutgoingMessage<'_>) -> impl Future<Output = Result<(), Self::Error>> {
+    fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        _options: Option<&Self::Options>,
+    ) -> impl Future<Output = Result<(), Self::Error>> {
         if let Err(err) = self.state.alive() {
             return ready(Err(err));
         }
@@ -203,7 +210,7 @@ impl OwnedTransactions for RedisTestPublisher {
 /// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
 /// let connected = RedisTestBroker::new().connect().await?;
 /// let publisher = RedisListPublish::new().pair(&connected).await?;
-/// publisher.publish(OutgoingMessage::new("jobs", b"{}".as_slice())).await?;
+/// publisher.publish(OutgoingMessage::new("jobs", b"{}".as_slice()), None).await?;
 /// # Ok(())
 /// # }
 /// ```
@@ -225,9 +232,17 @@ impl RedisTestPlainPublisher {
 
 impl Publisher for RedisTestPlainPublisher {
     type Error = RedisError;
+    /// As on [`RedisListPublisher`](crate::RedisListPublisher) and
+    /// [`RedisPubSubPublisher`](crate::RedisPubSubPublisher), the two production publishers this
+    /// one stands in for.
+    type Options = ();
 
-    fn publish(&self, msg: OutgoingMessage<'_>) -> impl Future<Output = Result<(), Self::Error>> {
-        self.0.publish(msg)
+    fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
+    ) -> impl Future<Output = Result<(), Self::Error>> {
+        self.0.publish(msg, options)
     }
 }
 
@@ -247,7 +262,7 @@ impl Publisher for RedisTestPlainPublisher {
 /// let connected = RedisTestBroker::new().connect().await?;
 /// let publisher = connected.publisher();
 /// let mut txn = publisher.transaction().await?;
-/// txn.publish(OutgoingMessage::new("orders", b"{}".as_slice())).await?;
+/// txn.publish(OutgoingMessage::new("orders", b"{}".as_slice()), None).await?;
 /// txn.commit().await?;
 /// # Ok(())
 /// # }
@@ -285,6 +300,8 @@ impl Drop for RedisTestTransaction {
 
 impl Transaction for RedisTestTransaction {
     type Error = RedisError;
+    /// As on [`RedisTransaction`](crate::RedisTransaction).
+    type Options = ();
 
     /// # Errors
     ///
@@ -292,6 +309,7 @@ impl Transaction for RedisTestTransaction {
     fn publish(
         &mut self,
         msg: OutgoingMessage<'_>,
+        _options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
         if let Err(err) = validate_publish_key(msg.name()) {
             return ready(Err(err));

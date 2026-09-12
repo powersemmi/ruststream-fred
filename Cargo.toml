@@ -19,10 +19,10 @@ authors = ["RustStream contributors"]
 [workspace.dependencies]
 ruststream-fred = { path = "crates/ruststream-fred" }
 # The lower bound names the pre-release on purpose: cargo excludes pre-release versions from a
-# range that does not mention one, so `>=0.7.0` would refuse the published `0.7.0-rc.2` candidate.
-# This form admits the candidate now and the final 0.7.0 when it lands. rc.2 is the floor because
-# a reply type must derive `Outgoing` there, which rc.1 does not know.
-ruststream = { version = ">=0.7.0-rc.2, <0.8.0", default-features = false }
+# range that does not mention one, so `>=0.7.0` would refuse the published `0.7.0-rc.3` candidate.
+# This form admits the candidate now and the final 0.7.0 when it lands. rc.3 is the floor because
+# a publisher declares its per-message options type there, which rc.2 does not know.
+ruststream = { version = ">=0.7.0-rc.3, <0.8.0", default-features = false }
 
 fred = "10"
 bytes = "1"

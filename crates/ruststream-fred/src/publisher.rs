@@ -187,8 +187,16 @@ impl RedisPublisher {
 
 impl Publisher for RedisPublisher {
     type Error = RedisError;
+    /// `XADD` takes the entry id and the trim threshold per command, and this publisher fixes
+    /// both (`*` and no trim), so a call site has nothing of its own to say. The stream key is
+    /// the message's name, not a setting.
+    type Options = ();
 
-    async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
+    async fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        _options: Option<&Self::Options>,
+    ) -> Result<(), Self::Error> {
         let entry: Buffered = (
             msg.name().to_owned(),
             fields_for_publish(msg.payload(), msg.headers()),
@@ -313,8 +321,8 @@ impl OwnedTransactions for RedisPublisher {
 ///
 /// let mut orders = publisher.transaction().await?;
 /// let mut audit = publisher.transaction().await?; // concurrent with `orders`
-/// orders.publish(OutgoingMessage::new("orders", b"{}".as_slice())).await?;
-/// audit.publish(OutgoingMessage::new("audit", b"{}".as_slice())).await?;
+/// orders.publish(OutgoingMessage::new("orders", b"{}".as_slice()), None).await?;
+/// audit.publish(OutgoingMessage::new("audit", b"{}".as_slice()), None).await?;
 /// orders.commit().await?;
 /// audit.commit().await?;
 /// # Ok(())
@@ -353,11 +361,14 @@ impl Drop for RedisTransaction {
 
 impl Transaction for RedisTransaction {
     type Error = RedisError;
+    /// The same as [`RedisPublisher`]'s: a buffered `XADD` is the same command, queued.
+    type Options = ();
 
     /// Buffers the `XADD` locally; nothing reaches the server before [`commit`](Self::commit).
     fn publish(
         &mut self,
         msg: OutgoingMessage<'_>,
+        _options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
         self.buffered.push((
             msg.name().to_owned(),

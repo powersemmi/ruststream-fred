@@ -11,10 +11,11 @@
 //! silently stop fresh delivery), so the mode is part of the constructor name. Recovery is a
 //! separate `reclaim` subscriber on the same group: "two handlers per group".
 
+use std::future::{Future, ready};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use ruststream::SubscriptionSource;
+use ruststream::{RedeliveryAddress, SubscriptionSource};
 
 use crate::broker::ConnectedRedisBroker;
 use crate::deadletter::PoisonPolicy;
@@ -291,6 +292,16 @@ impl RedisStream {
     pub(crate) fn delay_config(&self) -> Option<DelayConfig> {
         self.delayed_retry.as_ref().map(DelayConfig::from_retry)
     }
+
+    /// Where a publisher reaches this subscription again, shared by both broker forms.
+    fn redelivery_key(&self) -> Option<RedeliveryAddress> {
+        match self.mode {
+            ReadMode::Fresh => Some(RedeliveryAddress::new(self.key.clone())),
+            // `XAUTOCLAIM` hands out entries already pending on another consumer, so an entry
+            // appended now is read by the live subscription instead, never by this one.
+            ReadMode::Reclaim { .. } => None,
+        }
+    }
 }
 
 impl SubscriptionSource<ConnectedRedisBroker> for RedisStream {
@@ -305,6 +316,17 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisStream {
         connected: &ConnectedRedisBroker,
     ) -> Result<Self::Subscriber, RedisError> {
         connected.subscribe(self).await
+    }
+
+    /// The stream key, which is where a publisher on this broker reaches the group again, except
+    /// under [`reclaim`](RedisStream::reclaim): that subscription reads another consumer's stale
+    /// pending entries, so a fresh `XADD` never arrives there and a deferred copy sent to the key
+    /// would be lost.
+    fn redelivery_address(
+        &self,
+        _connected: &ConnectedRedisBroker,
+    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, RedisError>> {
+        ready(Ok(self.redelivery_key()))
     }
 }
 
@@ -346,6 +368,14 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisStrea
             )));
         }
         connected.subscribe(self.key()).await
+    }
+
+    /// The same answer the real broker gives, so a scope that starts against Redis starts here.
+    fn redelivery_address(
+        &self,
+        _connected: &crate::testing::ConnectedRedisTestBroker,
+    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, RedisError>> {
+        ready(Ok(self.redelivery_key()))
     }
 }
 

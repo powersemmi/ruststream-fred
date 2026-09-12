@@ -59,9 +59,16 @@ impl<P: ?Sized> PartitionKeyed<'_, P> {
 
 impl<P: Publisher + ?Sized> Publisher for PartitionKeyed<'_, P> {
     type Error = P::Error;
+    /// The wrapped publisher's, so an adapter never takes a per-message setting away from the
+    /// publisher underneath it.
+    type Options = P::Options;
 
-    async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
-        self.inner.publish(msg).await
+    async fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
+    ) -> Result<(), Self::Error> {
+        self.inner.publish(msg, options).await
     }
 
     fn base_headers(&self) -> Option<&HeaderMap> {

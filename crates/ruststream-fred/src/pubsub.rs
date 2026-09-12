@@ -28,7 +28,7 @@ use futures::stream::unfold;
 use ruststream::codec::Codec;
 use ruststream::{
     AckError, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage, OutgoingMessage,
-    PairError, Partitioned, PublishPolicy, Publisher, SubscriptionSource,
+    PairError, Partitioned, PublishPolicy, Publisher, RedeliveryAddress, SubscriptionSource,
 };
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 
@@ -170,6 +170,11 @@ impl RedisPubSub {
         self.codec.clone()
     }
 
+    /// Where a publisher reaches this subscription again, shared by both broker forms.
+    fn redelivery_channel(&self) -> Option<RedeliveryAddress> {
+        (!self.pattern).then(|| RedeliveryAddress::new(self.channel.clone()))
+    }
+
     pub(crate) fn validate(&self) -> Result<(), RedisError> {
         if self.pattern && matches!(self.mode, PubSubMode::Sharded) {
             return Err(RedisError::InvalidOptions(
@@ -193,6 +198,20 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisPubSub {
         connected: &ConnectedRedisBroker,
     ) -> Result<Self::Subscriber, RedisError> {
         connected.subscribe_pubsub(self).await
+    }
+
+    /// The channel, and nothing for a [`pattern`](RedisPubSub::pattern) subscription: a glob is
+    /// what `PSUBSCRIBE` matches against, never a channel a `PUBLISH` can name, so a deferred
+    /// copy sent there would reach no one.
+    ///
+    /// The reply is about the address, not about the command: reaching a
+    /// [`PubSubMode::Sharded`] subscription still takes a publisher in the same mode, which is
+    /// the policy a scope names in `retry_via`.
+    fn redelivery_address(
+        &self,
+        _connected: &ConnectedRedisBroker,
+    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, RedisError>> {
+        ready(Ok(self.redelivery_channel()))
     }
 }
 
@@ -240,6 +259,14 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisPubSu
             )));
         }
         connected.subscribe_unsettleable(self.channel()).await
+    }
+
+    /// The same answer the real broker gives, so a scope that starts against Redis starts here.
+    fn redelivery_address(
+        &self,
+        _connected: &crate::testing::ConnectedRedisTestBroker,
+    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, RedisError>> {
+        ready(Ok(self.redelivery_channel()))
     }
 }
 
@@ -551,8 +578,16 @@ impl RedisPubSubPublisher {
 
 impl Publisher for RedisPubSubPublisher {
     type Error = RedisError;
+    /// `PUBLISH` and `SPUBLISH` take a channel and a payload and nothing else. Which of the two
+    /// is issued is the publisher's mode, fixed by the policy, because a sharded publish only
+    /// reaches sharded subscribers.
+    type Options = ();
 
-    async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
+    async fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        _options: Option<&Self::Options>,
+    ) -> Result<(), Self::Error> {
         let pool = self.core.pool()?;
         let client = pool.next();
         let channel = msg.name().to_owned();

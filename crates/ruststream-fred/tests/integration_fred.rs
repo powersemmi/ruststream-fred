@@ -98,7 +98,10 @@ async fn round_trip(broker: &ConnectedRedisBroker, key: &str) {
     headers.insert("content-type", "application/json");
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key, b"hello").with_headers(headers))
+        .publish(
+            OutgoingMessage::new(key, b"hello").with_headers(headers),
+            None,
+        )
         .await
         .expect("publish");
 
@@ -131,7 +134,7 @@ async fn publisher_errors_after_shutdown() {
     let key = unique_key("post_shutdown");
     let publisher = broker.publisher();
     publisher
-        .publish(OutgoingMessage::new(key.as_str(), b"before"))
+        .publish(OutgoingMessage::new(key.as_str(), b"before"), None)
         .await
         .expect("publish before shutdown");
 
@@ -139,7 +142,7 @@ async fn publisher_errors_after_shutdown() {
     assert!(closed.connections_closed() > 0);
 
     let err = publisher
-        .publish(OutgoingMessage::new(key.as_str(), b"after"))
+        .publish(OutgoingMessage::new(key.as_str(), b"after"), None)
         .await
         .expect_err("publishing through a handle aliasing a closed connection must error");
     assert!(matches!(err, RedisError::ShutDown), "got {err}");
@@ -166,7 +169,7 @@ async fn bare_string_subscription_needs_default_group() {
         .expect("subscribe with the default group");
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key.as_str(), b"hello"))
+        .publish(OutgoingMessage::new(key.as_str(), b"hello"), None)
         .await
         .expect("publish");
     let mut stream = Box::pin(sub.stream());
@@ -223,7 +226,7 @@ async fn standalone_nack_requeue_republishes_to_same_stream() {
         .expect("subscribe");
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key.as_str(), b"retry-me"))
+        .publish(OutgoingMessage::new(key.as_str(), b"retry-me"), None)
         .await
         .expect("publish");
 
@@ -257,7 +260,7 @@ async fn standalone_reclaim_picks_up_pending_entries() {
         .expect("subscribe worker");
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key.as_str(), b"orphan"))
+        .publish(OutgoingMessage::new(key.as_str(), b"orphan"), None)
         .await
         .expect("publish");
     {
@@ -323,7 +326,7 @@ async fn stream_drop_routes_to_dead_letter() {
         .expect("subscribe");
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key.as_str(), b"poison"))
+        .publish(OutgoingMessage::new(key.as_str(), b"poison"), None)
         .await
         .expect("publish");
 
@@ -397,7 +400,7 @@ async fn stream_max_deliveries_dead_letters_after_cap() {
         .expect("subscribe");
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key.as_str(), b"poison"))
+        .publish(OutgoingMessage::new(key.as_str(), b"poison"), None)
         .await
         .expect("publish");
 
@@ -437,7 +440,7 @@ async fn stream_reclaim_exposes_delivery_count_and_idle() {
         .expect("subscribe worker");
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key.as_str(), b"stuck"))
+        .publish(OutgoingMessage::new(key.as_str(), b"stuck"), None)
         .await
         .expect("publish");
     {
@@ -486,7 +489,7 @@ async fn stream_reclaim_caps_to_dead_letter() {
         .expect("subscribe worker");
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key.as_str(), b"poison"))
+        .publish(OutgoingMessage::new(key.as_str(), b"poison"), None)
         .await
         .expect("publish");
     {
@@ -532,7 +535,7 @@ async fn reliable_list_drop_routes_to_dead_letter() {
 
     broker
         .list_publisher(RedisListPublish::new())
-        .publish(OutgoingMessage::new(key.as_str(), b"poison"))
+        .publish(OutgoingMessage::new(key.as_str(), b"poison"), None)
         .await
         .expect("lpush");
 
@@ -580,7 +583,7 @@ async fn reliable_list_max_deliveries_dead_letters() {
 
     broker
         .list_publisher(RedisListPublish::new())
-        .publish(OutgoingMessage::new(key.as_str(), b"poison"))
+        .publish(OutgoingMessage::new(key.as_str(), b"poison"), None)
         .await
         .expect("lpush");
 
@@ -632,7 +635,7 @@ async fn reliable_list_recovery_returns_orphaned_entry() {
 
     broker
         .list_publisher(RedisListPublish::new())
-        .publish(OutgoingMessage::new(key.as_str(), b"job-x"))
+        .publish(OutgoingMessage::new(key.as_str(), b"job-x"), None)
         .await
         .expect("lpush");
 
@@ -689,7 +692,7 @@ async fn delayed_retry_zset_redelivers_after_delay_with_incremented_count() {
         .expect("subscribe");
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key.as_str(), b"retry-me"))
+        .publish(OutgoingMessage::new(key.as_str(), b"retry-me"), None)
         .await
         .expect("publish");
 
@@ -755,7 +758,10 @@ async fn pubsub_classic_round_trip() {
     let mut got = None;
     for _ in 0..25 {
         publisher
-            .publish(OutgoingMessage::new(channel.as_str(), b"hello").with_headers(headers.clone()))
+            .publish(
+                OutgoingMessage::new(channel.as_str(), b"hello").with_headers(headers.clone()),
+                None,
+            )
             .await
             .expect("publish");
         if let Ok(Some(item)) =
@@ -788,7 +794,10 @@ async fn list_codec_envelope_round_trips_headers() {
     // Codec on both ends: the wire value is a readable JSON envelope, headers and payload survive.
     broker
         .list_publisher(RedisListPublish::new().codec(JsonCodec))
-        .publish(OutgoingMessage::new(key.as_str(), br#"{"id":1}"#).with_headers(headers))
+        .publish(
+            OutgoingMessage::new(key.as_str(), br#"{"id":1}"#).with_headers(headers),
+            None,
+        )
         .await
         .expect("lpush");
 
@@ -822,7 +831,10 @@ async fn list_codec_envelope_round_trips_bytes_that_are_not_text() {
 
     broker
         .list_publisher(RedisListPublish::new().codec(JsonCodec))
-        .publish(OutgoingMessage::new(key.as_str(), NOT_TEXT).with_headers(headers))
+        .publish(
+            OutgoingMessage::new(key.as_str(), NOT_TEXT).with_headers(headers),
+            None,
+        )
         .await
         .expect("lpush");
 
@@ -870,7 +882,10 @@ async fn pubsub_codec_envelope_round_trips_bytes_that_are_not_text() {
     let mut got = None;
     for _ in 0..25 {
         publisher
-            .publish(OutgoingMessage::new(channel.as_str(), NOT_TEXT).with_headers(headers.clone()))
+            .publish(
+                OutgoingMessage::new(channel.as_str(), NOT_TEXT).with_headers(headers.clone()),
+                None,
+            )
             .await
             .expect("publish");
         if let Ok(Some(item)) =
@@ -907,7 +922,7 @@ async fn list_simple_round_trip() {
 
     broker
         .list_publisher(RedisListPublish::new())
-        .publish(OutgoingMessage::new(key.as_str(), b"job-1"))
+        .publish(OutgoingMessage::new(key.as_str(), b"job-1"), None)
         .await
         .expect("lpush");
 
@@ -945,7 +960,7 @@ async fn list_batches_are_capped_at_the_size_they_opened_with() {
     let publisher = broker.list_publisher(RedisListPublish::new());
     for i in 0..COUNT {
         publisher
-            .publish(OutgoingMessage::new(key.as_str(), &[i]))
+            .publish(OutgoingMessage::new(key.as_str(), &[i]), None)
             .await
             .expect("lpush");
     }
@@ -983,7 +998,7 @@ async fn list_publisher_ttl_sets_key_expiry() {
 
     broker
         .list_publisher(RedisListPublish::new().ttl(Duration::from_secs(60)))
-        .publish(OutgoingMessage::new(key.as_str(), b"job"))
+        .publish(OutgoingMessage::new(key.as_str(), b"job"), None)
         .await
         .expect("lpush with ttl");
 
@@ -1060,7 +1075,7 @@ async fn seek_to_beginning_replays_retained_history() {
     let publisher = broker.publisher();
     for payload in [b"h1".as_slice(), b"h2"] {
         publisher
-            .publish(OutgoingMessage::new(key.as_str(), payload))
+            .publish(OutgoingMessage::new(key.as_str(), payload), None)
             .await
             .expect("publish");
     }
@@ -1090,7 +1105,7 @@ async fn seek_to_beginning_replays_retained_history() {
         .expect("seek to the end");
     none_within(&mut stream, "after seeking to the end").await;
     publisher
-        .publish(OutgoingMessage::new(key.as_str(), b"h3"))
+        .publish(OutgoingMessage::new(key.as_str(), b"h3"), None)
         .await
         .expect("publish after the seek");
     let live = next(&mut stream).await.expect("delivery after the seek");
@@ -1134,7 +1149,7 @@ async fn a_seek_moves_the_whole_group() {
 
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key.as_str(), b"g1"))
+        .publish(OutgoingMessage::new(key.as_str(), b"g1"), None)
         .await
         .expect("publish");
 
@@ -1186,7 +1201,7 @@ async fn a_seek_leaves_the_pending_list_alone() {
 
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key.as_str(), b"in-flight"))
+        .publish(OutgoingMessage::new(key.as_str(), b"in-flight"), None)
         .await
         .expect("publish");
     {
@@ -1247,7 +1262,7 @@ async fn cluster_seek_replays_history() {
 
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key.as_str(), b"c1"))
+        .publish(OutgoingMessage::new(key.as_str(), b"c1"), None)
         .await
         .expect("publish");
 
@@ -1307,7 +1322,7 @@ async fn borrowed_commit_is_one_exec_block() {
     publisher.begin_transaction().await.expect("begin");
     for payload in [b"t1".as_slice(), b"t2", b"t3"] {
         publisher
-            .publish(OutgoingMessage::new(key.as_str(), payload))
+            .publish(OutgoingMessage::new(key.as_str(), payload), None)
             .await
             .expect("buffer");
     }
@@ -1343,11 +1358,11 @@ async fn list_reliable_round_trip_with_ack() {
 
     let publisher = broker.list_publisher(RedisListPublish::new());
     publisher
-        .publish(OutgoingMessage::new(key.as_str(), b"job-a"))
+        .publish(OutgoingMessage::new(key.as_str(), b"job-a"), None)
         .await
         .expect("lpush a");
     publisher
-        .publish(OutgoingMessage::new(key.as_str(), b"job-b"))
+        .publish(OutgoingMessage::new(key.as_str(), b"job-b"), None)
         .await
         .expect("lpush b");
 

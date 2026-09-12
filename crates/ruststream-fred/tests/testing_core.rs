@@ -20,7 +20,7 @@ use ruststream::testing::TestApp;
 use ruststream::{
     AckError, BatchSubscriber, Broker, ConnectedBroker, DescribeServer, HeaderMap, IncomingMessage,
     Outgoing, OutgoingMessage, OwnedTransactions, Partitioned, Publisher, RawMessage, Serialized,
-    Subscriber, SubscriptionSource, Transaction, TransactionalPublisher, nonzero,
+    Subscribe, Subscriber, SubscriptionSource, Transaction, TransactionalPublisher, nonzero,
     testing::expect_published,
 };
 use ruststream_fred::{
@@ -90,7 +90,7 @@ async fn pub_sub_round_trip_through_broker_traits() {
     let publisher = broker.publisher();
 
     publisher
-        .publish(OutgoingMessage::new("orders", b"o1"))
+        .publish(OutgoingMessage::new("orders", b"o1"), None)
         .await
         .expect("publish");
 
@@ -107,7 +107,7 @@ async fn publisher_rejects_empty_key() {
     let broker = connected().await;
     let publisher = broker.publisher();
     let err = publisher
-        .publish(OutgoingMessage::new("", b"x"))
+        .publish(OutgoingMessage::new("", b"x"), None)
         .await
         .expect_err("empty key must be rejected");
     assert!(format!("{err}").contains("publish"), "got {err}");
@@ -121,11 +121,11 @@ async fn distinct_keys_are_isolated() {
     let publisher = broker.publisher();
 
     publisher
-        .publish(OutgoingMessage::new("orders", b"o"))
+        .publish(OutgoingMessage::new("orders", b"o"), None)
         .await
         .expect("publish o");
     publisher
-        .publish(OutgoingMessage::new("events", b"e"))
+        .publish(OutgoingMessage::new("events", b"e"), None)
         .await
         .expect("publish e");
 
@@ -143,7 +143,7 @@ async fn nack_requeue_redelivers_to_same_subscriber() {
     let publisher = broker.publisher();
 
     publisher
-        .publish(OutgoingMessage::new("orders", b"once"))
+        .publish(OutgoingMessage::new("orders", b"once"), None)
         .await
         .expect("publish");
 
@@ -174,7 +174,7 @@ async fn headers_are_propagated_to_subscribers() {
     headers.insert("content-type", "application/json");
     headers.insert("correlation-id", "abc-1");
     let outgoing = OutgoingMessage::new("orders", b"{}").with_headers(headers);
-    publisher.publish(outgoing).await.expect("publish");
+    publisher.publish(outgoing, None).await.expect("publish");
 
     let mut stream = Box::pin(subscriber.stream());
     let msg = tokio::time::timeout(WAIT, stream.next())
@@ -192,11 +192,11 @@ async fn expect_published_observes_publishes() {
     let broker = connected().await;
     let publisher = broker.publisher();
     publisher
-        .publish(OutgoingMessage::new("events", b"first"))
+        .publish(OutgoingMessage::new("events", b"first"), None)
         .await
         .expect("publish first");
     publisher
-        .publish(OutgoingMessage::new("events", b"second"))
+        .publish(OutgoingMessage::new("events", b"second"), None)
         .await
         .expect("publish second");
     let observed = expect_published(&broker, "events", 2, Duration::from_secs(1)).await;
@@ -214,7 +214,7 @@ async fn stream_can_be_reentered() {
     let publisher = broker.publisher();
 
     publisher
-        .publish(OutgoingMessage::new("orders", b"one"))
+        .publish(OutgoingMessage::new("orders", b"one"), None)
         .await
         .expect("publish one");
     {
@@ -223,7 +223,7 @@ async fn stream_can_be_reentered() {
     }
 
     publisher
-        .publish(OutgoingMessage::new("orders", b"two"))
+        .publish(OutgoingMessage::new("orders", b"two"), None)
         .await
         .expect("publish two");
     let mut stream = Box::pin(subscriber.stream());
@@ -247,7 +247,10 @@ async fn partition_key_header_is_surfaced() {
 
     broker
         .publisher()
-        .publish(OutgoingMessage::new("events", b"payload").with_headers(headers))
+        .publish(
+            OutgoingMessage::new("events", b"payload").with_headers(headers),
+            None,
+        )
         .await
         .expect("publish");
 
@@ -273,7 +276,7 @@ async fn partition_key_absent_yields_none() {
 
     broker
         .publisher()
-        .publish(OutgoingMessage::new("events.bare", b"payload"))
+        .publish(OutgoingMessage::new("events.bare", b"payload"), None)
         .await
         .expect("publish");
 
@@ -418,7 +421,7 @@ async fn batch_drains_in_publish_order() {
     let count = 5u8;
     for i in 0..count {
         publisher
-            .publish(OutgoingMessage::new("batch.order", &[i]))
+            .publish(OutgoingMessage::new("batch.order", &[i]), None)
             .await
             .expect("publish");
     }
@@ -450,7 +453,7 @@ async fn batches_can_be_reentered() {
     let mut sub = broker.subscribe("batch.reenter").await.expect("subscribe");
 
     publisher
-        .publish(OutgoingMessage::new("batch.reenter", b"one"))
+        .publish(OutgoingMessage::new("batch.reenter", b"one"), None)
         .await
         .expect("publish");
     {
@@ -470,7 +473,7 @@ async fn batches_can_be_reentered() {
     }
 
     publisher
-        .publish(OutgoingMessage::new("batch.reenter", b"two"))
+        .publish(OutgoingMessage::new("batch.reenter", b"two"), None)
         .await
         .expect("publish");
     let mut batches = Box::pin(sub.batches(nonzero!(8)));
@@ -497,11 +500,11 @@ async fn transaction_buffers_until_commit() {
 
     publisher.begin_transaction().await.expect("begin");
     publisher
-        .publish(OutgoingMessage::new("tx", b"first"))
+        .publish(OutgoingMessage::new("tx", b"first"), None)
         .await
         .expect("publish first");
     publisher
-        .publish(OutgoingMessage::new("tx", b"second"))
+        .publish(OutgoingMessage::new("tx", b"second"), None)
         .await
         .expect("publish second");
 
@@ -523,7 +526,7 @@ async fn transaction_abort_discards_buffer() {
 
     publisher.begin_transaction().await.expect("begin");
     publisher
-        .publish(OutgoingMessage::new("tx", b"discarded"))
+        .publish(OutgoingMessage::new("tx", b"discarded"), None)
         .await
         .expect("publish");
     publisher.abort().await.expect("abort");
@@ -555,7 +558,7 @@ async fn transaction_misuse_errors() {
     ));
     // The rejected second begin must leave the open transaction intact.
     publisher
-        .publish(OutgoingMessage::new("tx.misuse", b"kept"))
+        .publish(OutgoingMessage::new("tx.misuse", b"kept"), None)
         .await
         .expect("publish inside the open transaction");
     publisher.commit().await.expect("commit");
@@ -574,21 +577,21 @@ async fn owned_transactions_are_independent() {
     let mut orders = publisher.transaction().await.expect("open orders txn");
     let mut audit = publisher.transaction().await.expect("open audit txn");
     orders
-        .publish(OutgoingMessage::new("owned.orders", b"o1"))
+        .publish(OutgoingMessage::new("owned.orders", b"o1"), None)
         .await
         .expect("buffer o1");
     orders
-        .publish(OutgoingMessage::new("owned.orders", b"o2"))
+        .publish(OutgoingMessage::new("owned.orders", b"o2"), None)
         .await
         .expect("buffer o2");
     audit
-        .publish(OutgoingMessage::new("owned.audit", b"a1"))
+        .publish(OutgoingMessage::new("owned.audit", b"a1"), None)
         .await
         .expect("buffer a1");
 
     // A direct publish through the same handle is unaffected by the open transactions.
     publisher
-        .publish(OutgoingMessage::new("owned.orders", b"direct"))
+        .publish(OutgoingMessage::new("owned.orders", b"direct"), None)
         .await
         .expect("direct publish");
     let observed = expect_published(&broker, "owned.orders", 2, Duration::from_millis(50)).await;
@@ -619,7 +622,7 @@ async fn owned_transaction_abort_discards_the_buffer() {
     let publisher = broker.publisher();
 
     let mut txn = publisher.transaction().await.expect("open txn");
-    txn.publish(OutgoingMessage::new("owned.abort", b"discarded"))
+    txn.publish(OutgoingMessage::new("owned.abort", b"discarded"), None)
         .await
         .expect("buffer");
     txn.abort().await.expect("abort");
@@ -966,14 +969,14 @@ async fn a_publisher_errors_after_shutdown() {
     let broker = connected().await;
     let publisher = broker.publisher();
     publisher
-        .publish(OutgoingMessage::new("post.shutdown", b"before"))
+        .publish(OutgoingMessage::new("post.shutdown", b"before"), None)
         .await
         .expect("publish before shutdown");
 
     broker.clone().shutdown().await.expect("shutdown");
 
     let err = publisher
-        .publish(OutgoingMessage::new("post.shutdown", b"after"))
+        .publish(OutgoingMessage::new("post.shutdown", b"after"), None)
         .await
         .expect_err("publishing through a handle aliasing a closed connection must error");
     assert!(matches!(err, RedisError::ShutDown), "got {err}");
@@ -996,7 +999,7 @@ async fn a_pubsub_delivery_cannot_be_settled() {
 
     broker
         .publisher()
-        .publish(OutgoingMessage::new("unsettleable.pubsub", b"e"))
+        .publish(OutgoingMessage::new("unsettleable.pubsub", b"e"), None)
         .await
         .expect("publish");
 
@@ -1014,7 +1017,7 @@ async fn a_simple_list_delivery_cannot_be_settled_or_requeued() {
 
     broker
         .publisher()
-        .publish(OutgoingMessage::new("unsettleable.list", b"j"))
+        .publish(OutgoingMessage::new("unsettleable.list", b"j"), None)
         .await
         .expect("publish");
 
@@ -1053,7 +1056,7 @@ async fn a_stream_and_a_reliable_list_still_settle() {
 
         broker
             .publisher()
-            .publish(OutgoingMessage::new(name, b"x"))
+            .publish(OutgoingMessage::new(name, b"x"), None)
             .await
             .expect("publish");
 
@@ -1066,4 +1069,70 @@ async fn a_stream_and_a_reliable_list_still_settle() {
 enum Settleable {
     Stream,
     List,
+}
+
+// Where a deferred retry is published. The three forms that can be reached again answer with the
+// key or the channel, and the conformance ladders hold that answer to its promise. The two that
+// cannot stay silent, so a scope wiring a retry publisher over them refuses to start instead of
+// dropping every delayed message into a name nobody reads.
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_reachable_form_reports_where_a_retry_is_published() {
+    let broker = connected().await;
+
+    assert_eq!(
+        RedisStream::new("orders")
+            .group("workers")
+            .redelivery_address(&broker)
+            .await
+            .expect("reporting an address must not fail")
+            .map(|address| address.to_string()),
+        Some("orders".to_owned()),
+    );
+    assert_eq!(
+        RedisList::new("jobs")
+            .reliable()
+            .redelivery_address(&broker)
+            .await
+            .expect("reporting an address must not fail")
+            .map(|address| address.to_string()),
+        Some("jobs".to_owned()),
+    );
+    assert_eq!(
+        RedisPubSub::new("notifications")
+            .redelivery_address(&broker)
+            .await
+            .expect("reporting an address must not fail")
+            .map(|address| address.to_string()),
+        Some("notifications".to_owned()),
+    );
+    assert_eq!(
+        Subscribe::redelivery_address(&broker, "orders").map(|address| address.to_string()),
+        Some("orders".to_owned()),
+        "a bare-name subscription opens a group over the key, and an XADD there reaches it",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reclaim_stream_and_a_pattern_channel_report_nothing() {
+    let broker = connected().await;
+
+    assert_eq!(
+        RedisStream::reclaim("recovered", Duration::from_secs(30))
+            .group("workers")
+            .redelivery_address(&broker)
+            .await
+            .expect("reporting an address must not fail"),
+        None,
+        "XAUTOCLAIM reads entries already pending elsewhere, so a fresh XADD never arrives here",
+    );
+    assert_eq!(
+        RedisPubSub::new("events.*")
+            .pattern()
+            .redelivery_address(&broker)
+            .await
+            .expect("reporting an address must not fail"),
+        None,
+        "a glob is matched against channel names; it is not a channel a PUBLISH can name",
+    );
 }

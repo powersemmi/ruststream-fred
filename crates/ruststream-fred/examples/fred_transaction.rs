@@ -60,8 +60,11 @@ fn app() -> impl App {
         // connected.
         b.after_startup(TransactionalPublish, async move |publisher| {
             let mut seed = publisher.transaction().await?;
-            seed.publish(OutgoingMessage::new("processed", br#"{"id":0}"#.as_slice()))
-                .await?;
+            seed.publish(
+                OutgoingMessage::new("processed", br#"{"id":0}"#.as_slice()),
+                None,
+            )
+            .await?;
             // Commit flushes the buffer as one MULTI / EXEC block.
             seed.commit().await
         });

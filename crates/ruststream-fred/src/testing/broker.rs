@@ -10,7 +10,8 @@ use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
 use ruststream::{
-    Broker, ConnectedBroker, DescribeServer, OutgoingMessage, RawMessage, ServerSpec, Subscribe,
+    Broker, ConnectedBroker, DescribeServer, OutgoingMessage, RawMessage, RedeliveryAddress,
+    ServerSpec, Subscribe,
     testing::{Coordinator, TestableBroker},
 };
 
@@ -233,6 +234,12 @@ impl Subscribe for ConnectedRedisTestBroker {
 
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
         ConnectedRedisTestBroker::subscribe(self, name).await
+    }
+
+    /// The key itself, the answer the real broker gives: the stand-in routes a publish to the
+    /// subscription that opened under the same key.
+    fn redelivery_address(&self, name: &str) -> Option<RedeliveryAddress> {
+        Some(RedeliveryAddress::new(name.to_owned()))
     }
 }
 

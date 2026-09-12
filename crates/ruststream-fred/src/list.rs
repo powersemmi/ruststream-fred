@@ -37,7 +37,7 @@ use ruststream::codec::Codec;
 use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::{
     AckError, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage, PairError,
-    Partitioned, PublishPolicy, SubscriptionSource,
+    Partitioned, PublishPolicy, RedeliveryAddress, SubscriptionSource,
 };
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
@@ -320,6 +320,15 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisList {
     ) -> Result<Self::Subscriber, RedisError> {
         connected.subscribe_list(self).await
     }
+
+    /// The list key: the subscription pops from it and [`RedisListPublish`] pushes onto it, so a
+    /// deferred copy lands in the same queue the delivery came from.
+    fn redelivery_address(
+        &self,
+        _connected: &ConnectedRedisBroker,
+    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, RedisError>> {
+        ready(Ok(Some(RedeliveryAddress::new(self.key.clone()))))
+    }
 }
 
 /// Mounts the production descriptor on the in-process stand-in, which routes by list key alone.
@@ -357,6 +366,14 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisList 
         } else {
             connected.subscribe_unsettleable(self.key()).await
         }
+    }
+
+    /// The same answer the real broker gives, so a scope that starts against Redis starts here.
+    fn redelivery_address(
+        &self,
+        _connected: &crate::testing::ConnectedRedisTestBroker,
+    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, RedisError>> {
+        ready(Ok(Some(RedeliveryAddress::new(self.key.clone()))))
     }
 }
 
@@ -827,8 +844,16 @@ fn ttl_millis(ttl: Duration) -> i64 {
 
 impl ruststream::Publisher for RedisListPublisher {
     type Error = RedisError;
+    /// `LPUSH` carries the key and the value and nothing else, so a call site has no setting of
+    /// its own. The key TTL is a property of the queue, fixed by the policy and re-armed on every
+    /// publish.
+    type Options = ();
 
-    async fn publish(&self, msg: ruststream::OutgoingMessage<'_>) -> Result<(), Self::Error> {
+    async fn publish(
+        &self,
+        msg: ruststream::OutgoingMessage<'_>,
+        _options: Option<&Self::Options>,
+    ) -> Result<(), Self::Error> {
         let pool = self.core.pool()?;
         let body = frame(self.codec.as_ref(), msg.payload(), msg.headers());
         let Some(ttl) = self.ttl else {
