@@ -158,10 +158,10 @@ ZSET 延迟队列能挺过重启。它默认关闭，ZSET 的键由你写明：
 --8<-- "crates/ruststream-fred/examples/fred_delayed_retry.rs:handler"
 ```
 
-延迟的投递用 `ZADD` 以到期时间写进那个 ZSET，原件用 `XACK` 确认。订阅一边读取一边扫这个 ZSET，
-用 `XADD` 把到期的条目放回流里。每次读取扫一遍，因此粒度就是 `block` 间隔，而每扫过一遍，重试次数
-消息头都加一。ZSET 键上的 TTL 清理无人再管的队列，它必须比最长的排期延迟还长，否则条目会在触发
-之前就消失。分值是墙上时钟的纪元毫秒，因此要让各机器的时钟保持同步（NTP）。
+延迟的投递用 `ZADD` 以到期时间写进那个 ZSET，重试次数消息头随之加一，原件用 `XACK` 确认。订阅一边
+读取一边扫这个 ZSET，用 `XADD` 把到期的条目原样放回流里。每次读取扫一遍，因此粒度就是 `block`
+间隔，而一遍最多搬回 128 个到期条目。ZSET 键上的 TTL 清理无人再管的队列，它必须比最长的排期延迟
+还长，否则条目会在触发之前就消失。分值是墙上时钟的纪元毫秒，因此要让各机器的时钟保持同步（NTP）。
 
 ## 分区键 { #partition-keys }
 
@@ -253,4 +253,4 @@ Redis 自己没有分区，因此发布者把定下来的键写进 `redis-partit
 | `RequestReply` | 否 | Redis 没有请求-应答原语：传输过程中没有任何东西存放应答地址，也没有任何东西把应答和请求对应起来。 |
 | `Partitioned` | 是 | 三种传输都从 `redis-partition-key` 消息头读取键，供运行时的 `workers(n, by_key)` 分区使用。发送方用 [`partition_key`](#partition-keys) 步骤设定它。 |
 | `Seekable` + `Positioned` | 是（Streams） | 组的游标用 `XGROUP SETID` 移动，投递则报出能把自己重新投递一次的位置。处理器经由 `keys::SeekHandle` 上下文键拿到句柄；见[重新定位一个组](#repositioning-a-group)。列表读取即销毁，Pub/Sub 不保留历史，因此两者都没有实现它。 |
-| `DescribeServer` | 是 | 报出客户端拨号所用的主机和端口（集群和 sentinel 上是第一个种子节点）。URL 里的凭据、数据库编号和查询参数不会进入生成的文档。 |
+| `DescribeServer` | 是 | 报出客户端拨号所用的主机和端口（集群和 sentinel 上是第一个种子节点）。URL 里的凭据、数据库编号和查询参数不会进入生成的文档。用 `RedisBroker::from_pool` 建的 Broker 根本不报主机：地址在连接池自己的配置里。 |

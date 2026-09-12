@@ -14,7 +14,8 @@ cluster, and `.pattern()` subscribes to a channel pattern instead of one channel
 ```
 
 Sharded delivery (`SSUBSCRIBE`, Redis 7+) stays slot-local, so it scales across a cluster and takes
-no patterns. `.mode(PubSubMode::Sharded)` selects it per subscription:
+no patterns: a descriptor that asks for both is refused when the subscription mounts.
+`.mode(PubSubMode::Sharded)` selects it per subscription:
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_pubsub.rs:sharded"

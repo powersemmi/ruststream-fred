@@ -174,12 +174,12 @@ A ZSET delay queue survives a restart. It is off by default, and you name the ZS
 --8<-- "crates/ruststream-fred/examples/fred_delayed_retry.rs:handler"
 ```
 
-A delayed delivery is `ZADD`ed to that ZSET under its due time, and the original is `XACK`ed. The
-subscription sweeps the ZSET as it reads and `XADD`s due entries back onto the stream. A sweep
-happens once per read, so the `block` interval is the granularity, and
-each pass raises the retry-count header. A TTL on the ZSET key cleans up an abandoned queue and has
-to be longer than the longest scheduled delay, or entries are dropped before they fire. Scores are
-wall-clock epoch milliseconds, so keep clocks synced (NTP).
+A delayed delivery is `ZADD`ed to that ZSET under its due time with the retry-count header raised by
+one, and the original is `XACK`ed. The subscription sweeps the ZSET as it reads and `XADD`s due
+entries back onto the stream unchanged. A sweep happens once per read, so the `block` interval is
+the granularity, and one pass moves at most 128 due entries. A TTL on the ZSET key cleans up an
+abandoned queue and has to be longer than the longest scheduled delay, or entries are dropped before
+they fire. Scores are wall-clock epoch milliseconds, so keep clocks synced (NTP).
 
 ## Partition keys
 
@@ -276,4 +276,4 @@ Lists and Pub/Sub differ from Streams.
 | `RequestReply` | no | Redis has no request-reply primitive: nothing on the wire carries a reply address or correlates a reply with its request. |
 | `Partitioned` | yes | All three transports read the key from the `redis-partition-key` header for the runtime's `workers(n, by_key)` lanes. The sender sets it with the [`partition_key`](#partition-keys) step. |
 | `Seekable` + `Positioned` | yes (Streams) | The group cursor moves with `XGROUP SETID`, and a delivery reports the position that redelivers it. Handlers reach the handle through the `keys::SeekHandle` context key; see [Repositioning a group](#repositioning-a-group). A list is destructive and Pub/Sub keeps no history, so neither implements it. |
-| `DescribeServer` | yes | Reports the host and port a client dials (the first seed on cluster and sentinel). A URL's credentials, database number and query stay out of the generated document. |
+| `DescribeServer` | yes | Reports the host and port a client dials (the first seed on cluster and sentinel). A URL's credentials, database number and query stay out of the generated document. A broker built with `RedisBroker::from_pool` reports no host at all: the address sits inside the pool's own configuration. |

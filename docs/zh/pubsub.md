@@ -12,8 +12,8 @@ Pub/Sub 发完即忘：消息只到达那一刻连着的订阅者，而 `ack` �
 --8<-- "crates/ruststream-fred/examples/fred_pubsub.rs:classic"
 ```
 
-分片投递（`SSUBSCRIBE`，Redis 7+）留在槽内，因此能在集群上横向扩展，并且不接受模式。
-`.mode(PubSubMode::Sharded)` 按订阅选中它：
+分片投递（`SSUBSCRIBE`，Redis 7+）留在槽内，因此能在集群上横向扩展，并且不接受模式：两者都要的
+描述符在订阅挂载时被拒绝。`.mode(PubSubMode::Sharded)` 按订阅选中它：
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_pubsub.rs:sharded"
