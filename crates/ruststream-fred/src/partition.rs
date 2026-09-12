@@ -126,5 +126,8 @@ impl RedisPublishExt for RedisPublisher {}
 impl RedisPublishExt for RedisListPublisher {}
 impl RedisPublishExt for RedisPubSubPublisher {}
 
+// Both stand-in publishers, so the adapter is reachable in a test wherever it is in production.
 #[cfg(feature = "testing")]
 impl RedisPublishExt for crate::testing::RedisTestPublisher {}
+#[cfg(feature = "testing")]
+impl RedisPublishExt for crate::testing::RedisTestPlainPublisher {}

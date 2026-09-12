@@ -3,8 +3,9 @@
 //! Most cases drive the public surface (`RedisTestBroker`, `RedisTestPublisher`,
 //! `RedisTestSubscriber`) directly, to keep failures localised; the `TestApp`-driven cases at the
 //! end exercise the `TestableBroker` quiescence wiring (coordinator install, `enqueued`/`consumed`)
-//! through the harness. Real consumer-group semantics live in `tests/integration_fred.rs` against a
-//! live Redis server.
+//! through the harness, and then what each of the three descriptors does when it is mounted on the
+//! stand-in: the production declaration delivering, and the configurations the stand-in refuses.
+//! Real consumer-group semantics live in `tests/integration_fred.rs` against a live Redis server.
 
 #![cfg(feature = "testing")]
 
@@ -17,12 +18,14 @@ use ruststream::runtime::{AppInfo, HandlerOutcome, PublishExt, RustStream};
 use ruststream::subscriber;
 use ruststream::testing::TestApp;
 use ruststream::{
-    BatchSubscriber, Broker, ConnectedBroker, DescribeServer, HeaderMap, IncomingMessage, Outgoing,
-    OutgoingMessage, OwnedTransactions, Partitioned, Publisher, RawMessage, Serialized, Subscriber,
-    Transaction, TransactionalPublisher, nonzero, testing::expect_published,
+    AckError, BatchSubscriber, Broker, ConnectedBroker, DescribeServer, HeaderMap, IncomingMessage,
+    Outgoing, OutgoingMessage, OwnedTransactions, Partitioned, Publisher, RawMessage, Serialized,
+    Subscriber, SubscriptionSource, Transaction, TransactionalPublisher, nonzero,
+    testing::expect_published,
 };
 use ruststream_fred::{
-    PARTITION_KEY_HEADER, RedisError, RedisPublishExt, RedisStream,
+    PARTITION_KEY_HEADER, PubSubMode, RedisError, RedisList, RedisPubSub, RedisPublishExt,
+    RedisStream,
     testing::{ConnectedRedisTestBroker, RedisTestBroker, RedisTestMessage},
 };
 use serde::{Deserialize, Serialize};
@@ -782,4 +785,285 @@ async fn a_reply_without_a_declared_stream_lands_where_the_mount_site_says() {
         .with(&Receipt { id: 2 });
 
     tb.shutdown().await.expect("shutdown");
+}
+
+// The point of `SubscriptionSource<ConnectedRedisTestBroker>`: the declaration a service ships is
+// the declaration the harness mounts, written the way its own routes file writes it, with no bare
+// key string and no remapping at the mount site. The two cases here complete the set; the stream
+// form is already carried by the quiescence tests above.
+
+#[subscriber(RedisList::new("jobs").reliable())]
+async fn drain_job(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::ack()
+}
+
+#[subscriber(RedisPubSub::new("notifications"))]
+async fn note_notification(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::ack()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_app_mounts_a_list_descriptor() {
+    let app =
+        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
+            b.include(drain_job);
+        });
+    let tb = TestApp::start(app).await.expect("start");
+
+    tb.broker::<RedisTestBroker>()
+        .publish("jobs", &Order { id: 3 })
+        .await
+        .expect("publish");
+
+    tb.broker::<RedisTestBroker>()
+        .subscriber("jobs")
+        .assert_called_once()
+        .with(&Order { id: 3 })
+        .settled(HandlerOutcome::ack());
+
+    tb.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_app_mounts_a_pubsub_descriptor() {
+    let app =
+        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
+            b.include(note_notification);
+        });
+    let tb = TestApp::start(app).await.expect("start");
+
+    tb.broker::<RedisTestBroker>()
+        .publish("notifications", &Order { id: 5 })
+        .await
+        .expect("publish");
+
+    tb.broker::<RedisTestBroker>()
+        .subscriber("notifications")
+        .assert_called_once()
+        .with(&Order { id: 5 })
+        .settled(HandlerOutcome::ack());
+
+    tb.shutdown().await.expect("shutdown");
+}
+
+// The other half of mounting the production declaration: a descriptor a real server would refuse
+// at startup has to be refused here too, or the harness green-lights a service that cannot deploy.
+
+#[subscriber(RedisStream::new("ungrouped"))]
+async fn ungrouped(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::ack()
+}
+
+#[subscriber(RedisList::new("orphans").recovery_zset("orphans.claims"))]
+async fn recover_orphan(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::ack()
+}
+
+#[subscriber(RedisPubSub::new("events.*").pattern().mode(PubSubMode::Sharded))]
+async fn sharded_pattern(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::ack()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stream_without_a_group_is_refused_in_process_too() {
+    let app =
+        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
+            b.include(ungrouped);
+        });
+    let err = TestApp::start(app)
+        .await
+        .expect_err("the subscription must be refused at startup");
+    assert!(
+        format!("{err}").contains("requires a consumer group"),
+        "got {err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_list_recovery_without_min_idle_is_refused_in_process_too() {
+    let app =
+        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
+            b.include(recover_orphan);
+        });
+    let err = TestApp::start(app)
+        .await
+        .expect_err("the subscription must be refused at startup");
+    assert!(format!("{err}").contains("needs a min_idle"), "got {err}");
+}
+
+// The narrower misconfiguration keeps its own message: a sharded pattern is wrong on any broker,
+// so it must not be reported as a limitation of the stand-in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sharded_pattern_is_refused_in_process_too() {
+    let app =
+        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
+            b.include(sharded_pattern);
+        });
+    let err = TestApp::start(app)
+        .await
+        .expect_err("the subscription must be refused at startup");
+    assert!(format!("{err}").contains("classic-only"), "got {err}");
+}
+
+// What the stand-in refuses rather than reinterprets. Both would otherwise mount and deliver
+// something the real subscription never delivers, so the mount fails loudly instead.
+
+#[subscriber(RedisStream::reclaim("recovered", Duration::from_secs(30)).group("workers"))]
+async fn reclaim_stale(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::ack()
+}
+
+#[subscriber(RedisPubSub::new("events.*").pattern())]
+async fn glob_events(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::ack()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reclaim_subscription_does_not_mount_in_process() {
+    let app =
+        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
+            b.include(reclaim_stale);
+        });
+    let err = TestApp::start(app)
+        .await
+        .expect_err("the subscription must be refused at startup");
+    assert!(
+        format!("{err}").contains("keeps no pending list"),
+        "got {err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pattern_subscription_does_not_mount_in_process() {
+    let app =
+        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
+            b.include(glob_events);
+        });
+    let err = TestApp::start(app)
+        .await
+        .expect_err("the subscription must be refused at startup");
+    assert!(
+        format!("{err}").contains("matches channel names exactly"),
+        "got {err}"
+    );
+}
+
+// The two places the stand-in used to be more capable than the transport it stands in for. Both
+// are contract behaviour the conformance suites now check in process; these cases name them
+// directly, so a regression reads as itself rather than as a suite failure.
+
+/// The twin of `publisher_errors_after_shutdown` in the live integration tests: a handle that
+/// outlived the connection must refuse, not write into a router nobody is reading.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_publisher_errors_after_shutdown() {
+    let broker = connected().await;
+    let publisher = broker.publisher();
+    publisher
+        .publish(OutgoingMessage::new("post.shutdown", b"before"))
+        .await
+        .expect("publish before shutdown");
+
+    broker.clone().shutdown().await.expect("shutdown");
+
+    let err = publisher
+        .publish(OutgoingMessage::new("post.shutdown", b"after"))
+        .await
+        .expect_err("publishing through a handle aliasing a closed connection must error");
+    assert!(matches!(err, RedisError::ShutDown), "got {err}");
+
+    // The same for a subscription: the connected form is gone, so opening one is refused too.
+    let err = broker
+        .subscribe("post.shutdown")
+        .await
+        .expect_err("subscribing after shutdown must error");
+    assert!(matches!(err, RedisError::ShutDown), "got {err}");
+}
+
+/// Pub/Sub cannot acknowledge on a real server, so it must not acknowledge here either.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pubsub_delivery_cannot_be_settled() {
+    let broker = connected().await;
+    let mut sub = SubscriptionSource::subscribe(RedisPubSub::new("unsettleable.pubsub"), &broker)
+        .await
+        .expect("subscribe");
+
+    broker
+        .publisher()
+        .publish(OutgoingMessage::new("unsettleable.pubsub", b"e"))
+        .await
+        .expect("publish");
+
+    let msg = next_message(&mut Box::pin(sub.stream())).await;
+    assert!(matches!(msg.ack().await, Err(AckError::Unsupported)));
+}
+
+/// A simple list is at-most-once for the same reason, and a refused requeue must not redeliver.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_simple_list_delivery_cannot_be_settled_or_requeued() {
+    let broker = connected().await;
+    let mut sub = SubscriptionSource::subscribe(RedisList::new("unsettleable.list"), &broker)
+        .await
+        .expect("subscribe");
+
+    broker
+        .publisher()
+        .publish(OutgoingMessage::new("unsettleable.list", b"j"))
+        .await
+        .expect("publish");
+
+    let mut stream = Box::pin(sub.stream());
+    let msg = next_message(&mut stream).await;
+    assert!(matches!(msg.nack(true).await, Err(AckError::Unsupported)));
+
+    // A transport that cannot acknowledge cannot redeliver, so nothing comes back.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), stream.next())
+            .await
+            .is_err(),
+        "a refused requeue must not redeliver"
+    );
+}
+
+/// The forms that do settle on a real server keep settling here, so the split is a mirror of the
+/// transport rather than a blanket refusal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stream_and_a_reliable_list_still_settle() {
+    let broker = connected().await;
+    for (name, source) in [
+        ("settleable.stream", Settleable::Stream),
+        ("settleable.list", Settleable::List),
+    ] {
+        let mut sub = match source {
+            Settleable::Stream => {
+                SubscriptionSource::subscribe(RedisStream::new(name).group("workers"), &broker)
+                    .await
+            }
+            Settleable::List => {
+                SubscriptionSource::subscribe(RedisList::new(name).reliable(), &broker).await
+            }
+        }
+        .expect("subscribe");
+
+        broker
+            .publisher()
+            .publish(OutgoingMessage::new(name, b"x"))
+            .await
+            .expect("publish");
+
+        let msg = next_message(&mut Box::pin(sub.stream())).await;
+        msg.ack().await.expect("a settleable form must acknowledge");
+    }
+}
+
+/// Which settleable form a case in the loop above opens.
+enum Settleable {
+    Stream,
+    List,
 }

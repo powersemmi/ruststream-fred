@@ -196,6 +196,26 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisPubSub {
     }
 }
 
+/// Mounts the production descriptor on the in-process stand-in, which routes by channel name
+/// alone.
+///
+/// The descriptor is validated exactly as [`ConnectedRedisBroker::subscribe_pubsub`] validates it,
+/// so a subscription that a real server would refuse at startup is refused here too rather than
+/// passing a test and failing on deployment: a pattern in [`PubSubMode::Sharded`] is rejected.
+///
+/// [`pattern`](RedisPubSub::pattern) is rejected on its own as well. The stand-in matches channel
+/// names exactly, so a glob subscription would go silent on every channel it is meant to catch
+/// while still matching its own literal spelling: a mount that neither delivers what production
+/// delivers nor fails where production fails. Exercise `PSUBSCRIBE` against a real server.
+///
+/// The rest of the descriptor is inert here: [`mode`](RedisPubSub::mode) selects between commands
+/// the stand-in does not issue, and the envelope [`codec`](RedisPubSub::codec) never runs, since
+/// deliveries carry their headers natively instead of framed into the payload, so a framing
+/// mismatch between a subscription and its publisher cannot surface in process.
+///
+/// Settlement matches the real transport: deliveries here report [`AckError::Unsupported`] and a
+/// requeue is refused rather than performed, so a test cannot assert on an acknowledgement Pub/Sub
+/// is unable to make.
 #[cfg(feature = "testing")]
 impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisPubSub {
     type Subscriber = crate::testing::RedisTestSubscriber;
@@ -208,7 +228,18 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisPubSu
         self,
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> Result<Self::Subscriber, RedisError> {
-        connected.subscribe(self.channel()).await
+        // Ordered so the narrower misconfiguration keeps its own message: a sharded pattern is
+        // wrong on any broker, the blanket pattern rejection below is only about this one.
+        self.validate()?;
+        if self.is_pattern() {
+            return Err(RedisError::InvalidOptions(format!(
+                "pattern subscription on `{}` cannot mount on the in-process test broker: it \
+                 matches channel names exactly, so the subscription would miss every channel the \
+                 glob is meant to catch; test PSUBSCRIBE against a real Redis server",
+                self.channel
+            )));
+        }
+        connected.subscribe_unsettleable(self.channel()).await
     }
 }
 
@@ -455,6 +486,33 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisPubSubPublish {
         connected: &ConnectedRedisBroker,
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(connected.pubsub_publisher(self)))
+    }
+}
+
+/// Pairs the production policy against the in-process stand-in, so a routes file's
+/// `.out(Reply, Publish)` mounts on both without naming a second type.
+///
+/// Both options the policy carries are inert in process: [`mode`](RedisPubSubPublish::mode)
+/// selects between `PUBLISH` and `SPUBLISH`, neither of which the stand-in issues, and it delivers
+/// headers natively rather than framed into the payload, so the envelope
+/// [`codec`](RedisPubSubPublish::codec) never runs. A published message therefore reads back as
+/// the bare payload here and as a frame on a real server, which is what a `published(..)`
+/// assertion sees.
+///
+/// The capability surface matches: this pairs into
+/// [`RedisTestPlainPublisher`](crate::testing::RedisTestPlainPublisher), which offers [`Publisher`]
+/// and nothing more, exactly as [`RedisPubSubPublisher`] does. A slot bounded on a transaction
+/// capability therefore fails to compile here too, rather than passing in process and breaking on
+/// the production build.
+#[cfg(feature = "testing")]
+impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisPubSubPublish {
+    type Live = crate::testing::RedisTestPlainPublisher;
+
+    fn pair(
+        self,
+        connected: &crate::testing::ConnectedRedisTestBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(connected.plain_publisher()))
     }
 }
 

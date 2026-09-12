@@ -105,12 +105,28 @@ async fn handle_pubsub_notification(payment: &Payment) -> HandlerOutcome {
 }
 // --8<-- [end:pubsub-handler]
 
+/// The reply a settled payment publishes to the `receipts` stream.
+#[derive(Debug, Deserialize, Outgoing, Serialize, PartialEq)]
+struct Receipt {
+    id: u64,
+}
+
+// --8<-- [start:reply-handler]
+// A handler that replies: it returns a value and the `publish(..)` clause names where the value
+// goes. The mount below binds this crate's own policy to the reply, with no test-only type in it.
+#[subscriber(RedisStream::new("settled").group("workers"), publish("receipts"))]
+async fn settle_payment(payment: &Payment) -> Receipt {
+    Receipt { id: payment.id }
+}
+// --8<-- [end:reply-handler]
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     test_payment_processing().await?;
     test_stream_delivery().await?;
     test_list_delivery().await?;
     test_pubsub_delivery().await?;
+    test_reply_delivery().await?;
     test_conformance_suite().await?;
 
     Ok(())
@@ -224,6 +240,31 @@ async fn test_pubsub_delivery() -> Result<(), Box<dyn std::error::Error>> {
 
     tb.shutdown().await?;
     // --8<-- [end:pubsub-test]
+    Ok(())
+}
+
+async fn test_reply_delivery() -> Result<(), Box<dyn std::error::Error>> {
+    // --8<-- [start:reply-test]
+    let app =
+        RustStream::new(AppInfo::new("test", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
+            // The same policy value a routes file names against a real server. This file spans all
+            // three forms, so it globs the crate prelude and reaches the policy through its form
+            // module; a file on one form globs that form's prelude and writes the bare `Publish`.
+            b.include(settle_payment).out(Reply, stream::Publish);
+        });
+
+    let tb = TestApp::start(app).await?;
+    tb.broker::<RedisTestBroker>()
+        .publish("settled", &payment(1, 100))
+        .await?;
+
+    tb.broker::<RedisTestBroker>()
+        .published::<Receipt>("receipts")
+        .assert_called_once()
+        .with(&Receipt { id: 1 });
+
+    tb.shutdown().await?;
+    // --8<-- [end:reply-test]
     Ok(())
 }
 

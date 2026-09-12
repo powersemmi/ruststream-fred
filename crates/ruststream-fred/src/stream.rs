@@ -308,6 +308,22 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisStream {
     }
 }
 
+/// Mounts the production descriptor on the in-process stand-in, which routes by stream key alone.
+///
+/// The descriptor is validated exactly as [`ConnectedRedisBroker::subscribe`] validates it, so a
+/// subscription that a real server would refuse at startup is refused here too rather than passing
+/// a test and failing on deployment: a descriptor naming no consumer group is rejected.
+///
+/// [`RedisStream::reclaim`] is rejected as well. It asks for another consumer's stale pending
+/// entries, and the stand-in keeps no pending list, so honouring the mount would feed the handler
+/// fresh entries instead: the opposite set, and a test that passes on a delivery the real
+/// subscription could never make. Exercise recovery against a real server.
+///
+/// Everything else the descriptor carries is inert here, because the stand-in has one queue per
+/// key, delivers on publish, and settles in memory: the group and consumer names, `start_id`,
+/// `block`, `dead_letter`, `max_deliveries` and `delayed_retry`. Nothing about a group cursor,
+/// `XAUTOCLAIM` redelivery, trimming, poison routing or a delayed replay can be asserted in
+/// process; those belong in a live-server test.
 #[cfg(feature = "testing")]
 impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisStream {
     type Subscriber = crate::testing::RedisTestSubscriber;
@@ -320,6 +336,15 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisStrea
         self,
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> Result<Self::Subscriber, RedisError> {
+        self.group_or_err()?;
+        if let ReadMode::Reclaim { .. } = self.mode {
+            return Err(RedisError::InvalidOptions(format!(
+                "reclaim subscription on `{}` cannot mount on the in-process test broker: it \
+                 keeps no pending list, so the subscription would read fresh entries instead of \
+                 the stale ones XAUTOCLAIM returns; test reclaim against a real Redis server",
+                self.key
+            )));
+        }
         connected.subscribe(self.key()).await
     }
 }
