@@ -34,13 +34,17 @@ use ruststream_fred::{
     RedisPubSub, RedisPubSubPublish, RedisPublishExt, RedisStream, StreamStart,
 };
 
+mod live;
+
 const WAIT: Duration = Duration::from_secs(5);
 
 /// Master/service name monitored by the sentinel topology in `docker-compose.test.yml`.
 const SENTINEL_SERVICE: &str = "mymaster";
 
+/// The URL of one topology, or `None` to skip. Under `RUSTSTREAM_REQUIRE_LIVE` a missing variable
+/// fails the test instead, so a job that started the stand cannot report a suite that never ran.
 fn env(key: &str) -> Option<String> {
-    std::env::var(key).ok()
+    live::url(key)
 }
 
 /// An opaque payload: the partition-key case asserts on the header the keyed handle contributes,
