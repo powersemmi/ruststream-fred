@@ -19,6 +19,12 @@ You name a publish policy when you register a handler: `RedisPublish` for stream
 publisher from that policy on the connected broker, so publishing before connect is not
 representable.
 
+The policy is the whole publish configuration. `XADD`, `LPUSH` and `PUBLISH` carry the key or the
+channel and the value, so a single message has no setting of its own to adjust: a handler body
+writes `.message(&value).publish()` and nothing else. Brokers with a per-message quality of
+service, priority or ordering key add steps to that builder; on Redis there are none, and a handler
+body needs no import from this crate.
+
 ## Scaffold a service
 
 Generate a runnable starter with [`cargo generate`](https://github.com/cargo-generate/cargo-generate),
