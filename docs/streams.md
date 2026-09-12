@@ -235,4 +235,4 @@ implements the most of the three transports; the notes name where Lists and Pub/
 | `RequestReply` | no | Redis has no request-reply primitive: nothing on the wire carries a reply address or correlates a reply with its request. |
 | `Partitioned` | yes | All three transports read the key from the `redis-partition-key` header for the runtime's `workers(n, by_key)` lanes. The sender sets it, with [`partition_key`](#partition-keys). |
 | `Seekable` + `Positioned` | yes (Streams) | The group cursor moves with `XGROUP SETID`, and a delivery reports the position that redelivers it. Handlers reach the handle through the `keys::SeekHandle` context key; see [Repositioning a group](#repositioning-a-group). A list is destructive and Pub/Sub keeps no history, so neither implements it. |
-| `DescribeServer` | yes | Reports the configured address (the first seed on cluster and sentinel). |
+| `DescribeServer` | yes | Reports the host and port a client dials (the first seed on cluster and sentinel). A URL's credentials, database number and query stay out of the generated document. |
