@@ -166,7 +166,7 @@ ZSET 延迟队列能挺过重启。它默认关闭，ZSET 的键由你写明：
 ## 分区键 { #partition-keys }
 
 `workers(n, by_key)` 让一个订阅在多个 worker 上运行，并保持每个键内部的顺序：分区键相同的投递进入
-同一条处理通道。`partition_key` 是发布上的一个步骤，因此它给单条消息设键：
+同一个分区。`partition_key` 是发布上的一个步骤，因此它给单条消息设键：
 
 <!-- inline-rust: two-publish fragment isolating the step; the compiled call sites are the crate's `partition_key` doctests, which need a connected broker and so cannot double as a snippet source here -->
 ```rust
@@ -251,6 +251,6 @@ Redis 自己没有分区，因此发布者把定下来的键写进 `redis-partit
 | `TransactionalPublisher` | 是（Streams，standalone 和 sentinel） | 流的发布者在句柄上缓冲，并把缓冲作为一个 `MULTI` / `EXEC` 提交。集群上的发布者拒绝它，因为一个 `MULTI` 块不能跨哈希槽。列表和 Pub/Sub 的发布者没有事务。见[事务](transactions.md)。 |
 | `OwnedTransactions` | 是（Streams，standalone 和 sentinel） | `publisher.transaction()` 返回一个自己持有缓冲的值，因此一个句柄上可以同时开任意多个；在集群上出于同样的原因拒绝。 |
 | `RequestReply` | 否 | Redis 没有请求-应答原语：传输过程中没有任何东西存放应答地址，也没有任何东西把应答和请求对应起来。 |
-| `Partitioned` | 是 | 三种传输都从 `redis-partition-key` 消息头读取键，供运行时的 `workers(n, by_key)` 处理通道使用。发送方用 [`partition_key`](#partition-keys) 步骤设定它。 |
+| `Partitioned` | 是 | 三种传输都从 `redis-partition-key` 消息头读取键，供运行时的 `workers(n, by_key)` 分区使用。发送方用 [`partition_key`](#partition-keys) 步骤设定它。 |
 | `Seekable` + `Positioned` | 是（Streams） | 组的游标用 `XGROUP SETID` 移动，投递则报出能把自己重新投递一次的位置。处理器经由 `keys::SeekHandle` 上下文键拿到句柄；见[重新定位一个组](#repositioning-a-group)。列表读取即销毁，Pub/Sub 不保留历史，因此两者都没有实现它。 |
 | `DescribeServer` | 是 | 报出客户端拨号所用的主机和端口（集群和 sentinel 上是第一个种子节点）。URL 里的凭据、数据库编号和查询参数不会进入生成的文档。 |
