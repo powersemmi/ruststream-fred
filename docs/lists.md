@@ -11,12 +11,15 @@ ack):
 --8<-- "crates/ruststream-fred/examples/fred_list.rs:simple"
 ```
 
-Reliable mode moves each entry to a processing list and removes it on ack (at-least-once), so a
-crashed handler does not silently lose its job:
+Reliable mode moves each entry to a processing list and removes it on ack, so a crash means the entry
+is delivered again rather than lost (at-least-once):
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_list.rs:reliable"
 ```
+
+`nack(requeue = true)` puts the entry back on the main list, where any consumer can take it.
+`nack(requeue = false)` removes it without running the work again.
 
 Publish with the `RedisListPublish` policy (`LPUSH`): attach it where the handler is mounted and the
 runtime pairs it with the connected broker, or call

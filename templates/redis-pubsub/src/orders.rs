@@ -3,8 +3,8 @@
 //! The first parameter is the decoded payload; the macro turns each function into a mountable
 //! definition (a value named after the function) that `routes` collects into a `Router`. `on_event`
 //! binds to a [`RedisPubSub`] channel and just consumes: Pub/Sub has no acknowledgement, so there is
-//! no reply path here (its `ack` / `nack` report `Unsupported`). Returning `Ack` simply marks the
-//! delivery handled; the runtime tolerates the unsupported settle.
+//! no reply path here (its `ack` / `nack` report `Unsupported`). Returning `HandlerOutcome::ack()`
+//! simply marks the delivery handled; the runtime tolerates the unsupported settle.
 
 use ruststream_fred::pubsub::prelude::*;
 use schemars::JsonSchema;

@@ -199,6 +199,13 @@ every publish for that key:
 <!-- inline-rust: two-publish fragment isolating the keyed handle; the compiled call sites are the crate's `partition_key` doctests, which need a connected broker and so cannot double as a snippet source here -->
 ```rust
 use ruststream_fred::stream::prelude::*;
+use serde::Serialize;
+
+#[derive(Serialize, Outgoing)]
+#[outgoing(name = "orders")]
+struct Order {
+    id: u64,
+}
 
 let tenant = publisher.partition_key("tenant-a");
 tenant.message(&Order { id: 7 }).publish().await?;
@@ -209,9 +216,20 @@ The key rides underneath the publish's own headers, so it composes with a declar
 
 <!-- inline-rust: isolates the contract-plus-key chain; the compiled form is the `partition_key_step_composes_with_a_header_contract` test, whose broker setup would bury the four lines that matter -->
 ```rust
+#[derive(Serialize, Outgoing)]
+#[outgoing(name = "orders.keyed", headers = OrderMeta)]
+struct KeyedOrder {
+    id: u64,
+}
+
+#[derive(Serialize)]
+struct OrderMeta {
+    region: String,
+}
+
 publisher
     .partition_key("tenant-a")
-    .message(&Order { id: 7 })
+    .message(&KeyedOrder { id: 7 })
     .with_headers(&OrderMeta { region: "eu".into() })
     .publish()
     .await?;
