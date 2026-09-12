@@ -37,7 +37,11 @@ Pub/Sub delivers one message at a time, so a batch handler here is served by bat
 assembles on the client; it still names its size with `batch(n)` at the mount site and never sees a
 longer batch (see [Batches](streams.md#batches)).
 
-Headers travel in a frame around the payload: a lossless binary frame by default, or - when you set a
-codec on both the publisher and the subscriber (`.codec(JsonCodec)`) - a readable codec-serialized
-`{headers, payload}` envelope (so the wire value is legible JSON in tools like RedisInsight). A raw
-value an external client published is delivered as the payload with empty headers.
+Headers travel in a frame around the payload: a binary frame by default, or - when you set a codec on
+both the publisher and the subscriber (`.codec(JsonCodec)`) - a readable codec-serialized
+`{headers, payload}` envelope (so the wire value is legible JSON in tools like RedisInsight).
+
+Both framings are lossless. In the envelope, a payload that is valid UTF-8 is written as text, which
+is what makes the JSON form readable, and any other bytes are written as themselves, so a message
+arrives as it was published whichever framing you choose. A raw value an external client published is
+delivered as the payload with empty headers.

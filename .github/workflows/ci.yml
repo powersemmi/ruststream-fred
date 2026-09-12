@@ -162,11 +162,13 @@ jobs:
           # serde <= 1.0.102 declares `serde_derive = "1.0"` instead of pinning it in lockstep, so
           # minimal resolution pairs it with a serde_derive built on syn 0.11, which panics on a
           # modern struct. Those releases also lack `BorrowedStrDeserializer` and the i128 methods
-          # that `ruststream`'s typed_headers uses. 1.0.103 is the first lockstep release.
-          cargo update -p serde --precise 1.0.103
-          # tracing-attributes declares `syn = "1"` but calls `LitInt::base10_parse`, which syn
-          # 1.0.0 does not have. Disambiguated by version because syn 2 and 3 are in the graph too.
-          cargo update -p syn@1.0.0 --precise 1.0.4
+          # that `ruststream`'s typed_headers uses. 1.0.103 is the first lockstep release, and
+          # 1.0.136 is what rmp-serde (the msgpack codec the envelope tests exercise) requires, so
+          # nothing below it is selectable anyway.
+          cargo update -p serde --precise 1.0.136
+          # No syn pin: tracing-attributes declares `syn = "1"` yet calls `LitInt::base10_parse`
+          # (syn 1.0.4), and the serde pin above already drags syn 1.x to 1.0.60 through
+          # serde_derive, so minimal resolution cannot pick anything lower.
           # fred declares `tokio-stream = "0.1"` but uses `tokio_stream::wrappers`, added in 0.1.1.
           cargo update -p tokio-stream --precise 0.1.1
           # native-tls' floor selects an openssl that predates OpenSSL 3.x and binds FFI symbols

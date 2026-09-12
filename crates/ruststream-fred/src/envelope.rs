@@ -3,14 +3,20 @@
 //! Streams keep headers as native entry fields, but a Pub/Sub message or list entry is one value, so
 //! headers need a frame around the payload. Two framings, chosen per publisher/subscriber:
 //!
-//! * **No codec (default)** - a compact, lossless binary frame ([`binary_encode`]). It never
-//!   corrupts arbitrary payload bytes, but the on-the-wire value is not human-readable.
+//! * **No codec (default)** - a compact binary frame ([`binary_encode`]); the wire value is not
+//!   human-readable.
 //! * **A codec** - the `{headers, payload}` envelope is serialized with a [`Codec`], so with the
-//!   JSON codec the wire value is readable JSON (e.g. in `RedisInsight`). This path treats headers
-//!   and payload as UTF-8 text (the JSON/text case it exists for); for binary data use the default.
+//!   JSON codec the wire value is readable JSON (e.g. in `RedisInsight`).
 //!
-//! [`decode`](unframe) is tolerant: a value that is not a well-formed frame (for example one a raw
-//! external client published) is delivered as the payload with empty headers.
+//! Both framings are lossless. In the envelope a field whose bytes are valid UTF-8 is written as
+//! text, which is what makes the JSON form readable, and any other bytes are written as the byte
+//! sequence itself ([`Content`]), so a payload arrives exactly as it left. A text field is on the
+//! wire in the form it has always had, so an envelope written by an earlier version reads back
+//! unchanged.
+//!
+//! A subscriber that carries a codec reads either framing: a value that does not parse as an
+//! envelope is tried as a binary frame. A value that is neither (one a raw external client
+//! published) is delivered as the payload with empty headers.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -38,10 +44,11 @@ impl<C: Codec> EnvelopeCodec for C {
     }
 
     fn decode(&self, bytes: &[u8]) -> (Bytes, HeaderMap) {
-        Codec::decode::<Envelope>(self, bytes).map_or_else(
-            |_| (Bytes::copy_from_slice(bytes), HeaderMap::new()),
-            Envelope::into_parts,
-        )
+        // A value that is not an envelope may still be a binary frame: `encode` writes one when the
+        // codec cannot serialize, and a service that switches framings leaves such values behind in
+        // a list. `binary_decode` delivers anything that is neither as a raw payload.
+        Codec::decode::<Envelope>(self, bytes)
+            .map_or_else(|_| binary_decode(bytes), Envelope::into_parts)
     }
 }
 
@@ -63,38 +70,61 @@ pub(crate) fn unframe(codec: Option<&SharedEnvelope>, bytes: &[u8]) -> (Bytes, H
     codec.map_or_else(|| binary_decode(bytes), |codec| codec.decode(bytes))
 }
 
-/// The codec-serialized envelope. Headers and payload are UTF-8 text so the JSON form stays
-/// readable; non-UTF-8 bytes are replaced (use the binary framing for binary data).
+/// One envelope field: text when its bytes are valid UTF-8, the bytes themselves otherwise.
+///
+/// The representation is untagged, so a text field is serialized as the plain string it always
+/// was and nothing distinguishes an envelope of text fields from one an earlier version wrote.
+/// Bytes that are not text keep their own form (a JSON array of numbers, a byte string in a
+/// binary codec) instead of passing through a lossy conversion to text.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum Content {
+    Text(String),
+    Bytes(Vec<u8>),
+}
+
+impl Content {
+    fn from_bytes(bytes: &[u8]) -> Self {
+        std::str::from_utf8(bytes).map_or_else(
+            |_| Self::Bytes(bytes.to_vec()),
+            |text| Self::Text(text.to_owned()),
+        )
+    }
+
+    fn into_bytes(self) -> Bytes {
+        match self {
+            Self::Text(text) => Bytes::from(text.into_bytes()),
+            Self::Bytes(bytes) => Bytes::from(bytes),
+        }
+    }
+}
+
+/// The codec-serialized envelope. Readable where the data is text, lossless where it is not.
 #[derive(Serialize, Deserialize)]
 struct Envelope {
     #[serde(default)]
-    headers: BTreeMap<String, String>,
-    payload: String,
+    headers: BTreeMap<String, Content>,
+    payload: Content,
 }
 
 impl Envelope {
     fn from_parts(payload: &[u8], headers: &HeaderMap) -> Self {
         let headers = headers
             .iter()
-            .map(|(name, value)| {
-                (
-                    name.to_string(),
-                    String::from_utf8_lossy(value).into_owned(),
-                )
-            })
+            .map(|(name, value)| (name.to_string(), Content::from_bytes(value)))
             .collect();
         Self {
             headers,
-            payload: String::from_utf8_lossy(payload).into_owned(),
+            payload: Content::from_bytes(payload),
         }
     }
 
     fn into_parts(self) -> (Bytes, HeaderMap) {
         let mut headers = HeaderMap::new();
         for (name, value) in self.headers {
-            headers.insert(name, Bytes::from(value.into_bytes()));
+            headers.insert(name, value.into_bytes());
         }
-        (Bytes::from(self.payload.into_bytes()), headers)
+        (self.payload.into_bytes(), headers)
     }
 }
 
@@ -162,7 +192,7 @@ fn try_binary_decode(bytes: &[u8]) -> Option<(Bytes, HeaderMap)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ruststream::codec::JsonCodec;
+    use ruststream::codec::{CborCodec, JsonCodec, MsgpackCodec};
 
     fn sample_headers() -> HeaderMap {
         let mut headers = HeaderMap::new();
@@ -207,5 +237,103 @@ mod tests {
         let (payload, headers) = unframe(Some(&codec), b"not-json");
         assert_eq!(payload.as_ref(), b"not-json");
         assert!(headers.is_empty());
+    }
+
+    /// Bytes that are not text (a lone 0xff is invalid UTF-8, and a NUL byte survives the trip
+    /// only if nothing re-encodes it) come back byte for byte through the readable envelope.
+    #[test]
+    fn codec_round_trips_a_payload_that_is_not_text() {
+        let codec: SharedEnvelope = Arc::new(JsonCodec);
+        let blob: &[u8] = &[0xff, 0x00, 0x1f, 0xfe, b'{'];
+
+        let framed = frame(Some(&codec), blob, &sample_headers());
+        let (payload, decoded) = unframe(Some(&codec), &framed);
+
+        assert_eq!(payload.as_ref(), blob);
+        assert_eq!(decoded.content_type(), Some("application/json"));
+    }
+
+    /// A header value is framed the same way as the payload, so a binary one survives too.
+    #[test]
+    fn codec_round_trips_a_header_value_that_is_not_text() {
+        let codec: SharedEnvelope = Arc::new(JsonCodec);
+        let mut headers = HeaderMap::new();
+        headers.insert("signature", Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]));
+
+        let framed = frame(Some(&codec), b"{}", &headers);
+        let (payload, decoded) = unframe(Some(&codec), &framed);
+
+        assert_eq!(payload.as_ref(), b"{}");
+        assert_eq!(
+            decoded.get("signature").map(<[u8]>::to_vec),
+            Some(vec![0xde, 0xad, 0xbe, 0xef])
+        );
+    }
+
+    /// The wire form of a text payload is the one earlier versions wrote, so values already in
+    /// Redis (and subscribers on an older release) keep reading.
+    #[test]
+    fn a_text_envelope_keeps_its_wire_form() {
+        let codec: SharedEnvelope = Arc::new(JsonCodec);
+        let framed = frame(Some(&codec), br#"{"id":1}"#, &sample_headers());
+        let text = String::from_utf8(framed).expect("utf8");
+
+        assert!(text.contains(r#""payload":"{\"id\":1}""#), "{text}");
+        assert!(
+            text.contains(r#""content-type":"application/json""#),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_text_envelope_from_an_earlier_version_still_decodes() {
+        let codec: SharedEnvelope = Arc::new(JsonCodec);
+        let wire = br#"{"headers":{"content-type":"application/json"},"payload":"{\"id\":1}"}"#;
+
+        let (payload, decoded) = unframe(Some(&codec), wire);
+
+        assert_eq!(payload.as_ref(), br#"{"id":1}"#);
+        assert_eq!(decoded.content_type(), Some("application/json"));
+    }
+
+    /// A subscriber configured with a codec still reads a binary frame, which is what `encode`
+    /// falls back to when the codec cannot serialize, and what a list holds after a switch of
+    /// framings. Headers survive instead of the whole frame arriving as an opaque payload.
+    #[test]
+    fn a_codec_subscriber_reads_a_binary_frame() {
+        let codec: SharedEnvelope = Arc::new(JsonCodec);
+        let framed = frame(None, b"{}", &sample_headers());
+
+        let (payload, decoded) = unframe(Some(&codec), &framed);
+
+        assert_eq!(payload.as_ref(), b"{}");
+        assert_eq!(decoded.content_type(), Some("application/json"));
+    }
+
+    /// The envelope carries whatever codec a service picked, so the untagged text-or-bytes field
+    /// has to survive each one, not only JSON.
+    #[test]
+    fn every_codec_round_trips_bytes_that_are_not_text() {
+        let blob: &[u8] = &[0xff, 0x00, 0xfe];
+
+        for (name, codec) in [
+            ("json", Arc::new(JsonCodec) as SharedEnvelope),
+            ("cbor", Arc::new(CborCodec) as SharedEnvelope),
+            ("msgpack", Arc::new(MsgpackCodec) as SharedEnvelope),
+        ] {
+            let framed = frame(Some(&codec), blob, &sample_headers());
+            let (payload, decoded) = unframe(Some(&codec), &framed);
+
+            assert_eq!(
+                payload.as_ref(),
+                blob,
+                "the {name} envelope lost the payload"
+            );
+            assert_eq!(
+                decoded.content_type(),
+                Some("application/json"),
+                "the {name} envelope lost a header"
+            );
+        }
     }
 }

@@ -15,9 +15,10 @@
 //! such orphans to the main list; without it (the default) reliable lists have no orphan recovery,
 //! and Redis Streams ([`crate::RedisStream`]) remain the recommended durable path.
 //!
-//! Headers travel in a frame around the payload: a lossless binary frame
-//! by default, or a readable codec-serialized envelope when a codec is set with
-//! [`RedisList::codec`] / [`RedisListPublish::codec`].
+//! Headers travel in a frame around the payload: a binary frame by default, or a readable
+//! codec-serialized envelope when a codec is set with [`RedisList::codec`] /
+//! [`RedisListPublish::codec`]. Both framings are lossless; the envelope writes a field whose
+//! bytes are valid UTF-8 as text and any other bytes as themselves.
 
 use std::fmt::{Debug, Formatter};
 use std::future::{Future, ready};
@@ -186,7 +187,7 @@ impl RedisList {
     }
 
     /// Decodes the header/payload envelope with `codec` (must match the publisher). Without it the
-    /// default lossless binary framing is used.
+    /// default binary framing is used. Either way the payload arrives as it was published.
     pub fn codec(mut self, codec: impl Codec + 'static) -> Self {
         self.codec = Some(Arc::new(codec));
         self
@@ -705,8 +706,9 @@ impl RedisListPublish {
         Self::default()
     }
 
-    /// Serializes the header/payload envelope with `codec` (must match the subscriber). Without it
-    /// the default lossless binary framing is used.
+    /// Serializes the header/payload envelope with `codec` (must match the subscriber), which makes
+    /// the wire value readable while the data is text. Without it the default binary framing is
+    /// used. Either way a payload that is not text is published byte for byte.
     pub fn codec(mut self, codec: impl Codec + 'static) -> Self {
         self.codec = Some(Arc::new(codec));
         self
