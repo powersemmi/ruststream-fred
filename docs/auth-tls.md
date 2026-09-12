@@ -1,26 +1,26 @@
 # Authentication and TLS
 
-The standalone URL carries credentials (`redis://user:pass@host`), but the bare `cluster` /
-`sentinel` seed lists cannot. Builders set them on every topology, mapping onto fred's config:
+A standalone URL carries credentials (`redis://user:pass@host`); a cluster or sentinel seed list has
+nowhere to put them. `.credentials(user, pass)` sets them on every topology:
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_auth.rs:credentials"
 ```
 
-For a password-only `AUTH` (the legacy `requirepass` form, no ACL user) use `.password(...)`:
+`.password(..)` sets a password-only `AUTH`, the legacy `requirepass` form with no ACL user:
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_auth.rs:password"
 ```
 
-Credentials set programmatically override any in a standalone URL.
+Credentials set this way override the ones in a standalone URL.
 
 ## TLS
 
-TLS lives behind additive, off-by-default features that map onto fred's TLS backends - `tls-rustls`
-(rustls with aws-lc-rs), `tls-rustls-ring` (rustls with ring), and `tls-native-tls`. With one
-enabled, pass a `TlsConfig` (or any `TlsConnector`) on any topology; a standalone broker can also
-use a `rediss://` / `valkeys://` URL:
+Three off-by-default features carry TLS: `tls-rustls` (rustls with aws-lc-rs), `tls-rustls-ring`
+(rustls with ring), and `tls-native-tls`. With one of them on, `.tls(..)` takes a `TlsConfig` or a
+`TlsConnector` on any topology, and a standalone broker can also switch TLS on with a `rediss://`
+or `valkeys://` URL:
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_tls.rs:tls"
@@ -28,13 +28,13 @@ use a `rediss://` / `valkeys://` URL:
 
 ## Further auth features
 
-Two further auth features are off by default:
+Two more auth features, also off by default:
 
-- `sentinel-auth` adds `.sentinel_credentials(user, pass)` / `.sentinel_password(pass)` for
-  credentials that authenticate to the sentinels, distinct from the data-node credentials.
-- `credential-provider` accepts `.credential_provider(provider)`, a callback that supplies and can
-  rotate the username/password on each `AUTH` / `HELLO` (IAM-style auth); it takes precedence over
-  static credentials.
+- `sentinel-auth` adds `.sentinel_credentials(user, pass)` and `.sentinel_password(pass)`, the
+  credentials that authenticate to the sentinels rather than to the data nodes.
+- `credential-provider` adds `.credential_provider(provider)`, a callback that supplies and can
+  rotate the username and password on each `AUTH` or `HELLO` (IAM-style auth). It takes precedence
+  over static credentials.
 
-For full control (custom reconnection, performance, or TLS policy beyond these builders), build a
-fred `Pool` yourself and wrap it with `RedisBroker::from_pool`.
+For settings these builders do not reach (a reconnection policy, performance tuning, a TLS setup of
+your own), build a fred `Pool` yourself and wrap it with `RedisBroker::from_pool`.

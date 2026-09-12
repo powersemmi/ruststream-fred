@@ -1,21 +1,19 @@
 # Transactions
 
-The stream publisher offers both framework transaction kinds on standalone and sentinel. Both hold
-the buffer client-side while the transaction is open and commit it as one `MULTI` / `EXEC` block, in
-publish order, so subscribers see the whole batch or none of it. They differ only in who owns that
-buffer.
+A transaction sends a group of publishes as one `MULTI` / `EXEC` block, in publish order, so
+subscribers see the whole group or none of it. The stream publisher offers both kinds the framework
+defines, on standalone and sentinel. They differ in who owns the buffer.
 
 ## Borrowed: one transaction on the handle
 
 `begin_transaction` claims the handle's transaction and starts buffering, `commit` flushes the
-buffer, and `abort` discards it. Clones of a handle share the same open transaction.
+buffer, and `abort` discards it. A clone of the handle works with the same open transaction.
 
-The idiomatic way to use it is a batch-publishing handler wired with a `.transactional()` publisher:
-every reply of one batch is committed together. The batch shape is read off the signature - a slice
-payload is what makes a handler a batch handler - so nothing in the attribute says it, and the mount
-site names the batch size (see [Batches](streams.md#batches)). `.out(Reply, TransactionalPublish)`
-names the policy the replies leave through, and `.transactional()` after it is what puts one batch's
-replies in one `MULTI` / `EXEC` block.
+The usual shape is a batch handler whose replies are committed together. A slice parameter is what
+makes a handler a batch handler, and the mount site names the batch size (see
+[Batches](streams.md#batches)). `.out(Reply, TransactionalPublish)` names the policy the replies
+leave through, and `.transactional()` after it puts one batch's replies in one `MULTI` / `EXEC`
+block.
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_transaction.rs:batch"
@@ -25,40 +23,37 @@ replies in one `MULTI` / `EXEC` block.
 --8<-- "crates/ruststream-fred/examples/fred_transaction.rs:mount"
 ```
 
-Misuse errors rather than passing silently: a second `begin_transaction` while one is open leaves
-the open one untouched and reports it, and a `commit` or `abort` with no open transaction is an
-error.
+A second `begin_transaction` while one is open returns an error and leaves the open transaction
+untouched. So does a `commit` or an `abort` with nothing open.
 
 ## Owned: a transaction value per call
 
-`publisher.transaction()` returns a `RedisTransaction` that owns its own buffer, so any number can
-be open on one handle at a time and the handle keeps publishing directly meanwhile. Settling one
-never touches another, and `commit` / `abort` consume the value, which makes a double commit or a
-publish after settling a compile error rather than a runtime check.
+`publisher.transaction()` returns a `RedisTransaction` with a buffer of its own. Any number of them
+can be open on one handle, settling one never touches another, and the handle keeps publishing
+directly meanwhile. `commit` and `abort` consume the value, so a double commit and a publish after
+settling do not compile.
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_transaction.rs:owned"
 ```
 
-Dropping an unsettled transaction discards the buffer like an abort and logs a warning, because a
-vanishing buffer is almost always a missing `commit`. A failed commit has still consumed the
-transaction and its buffer is lost: recovery is redelivery of the inputs, not resubmission of the
-buffer.
+Dropping an unsettled transaction discards the buffer like an abort and writes a warning to the log.
+A commit that returns an error has consumed the transaction and its buffer is gone: recover by
+redelivering the inputs, not by resubmitting the buffer.
 
-`publisher.owned_transaction()` is the typed sugar over this kind: it encodes each value with the
-crate's default codec before buffering, so a call publishes a value rather than bytes.
+`publisher.owned_transaction()` buffers values instead of bytes: it encodes each one with the
+default codec.
 
 ## What Redis does and does not guarantee
 
 Two properties apply to both kinds, because both are `MULTI` / `EXEC`:
 
-- **No cluster.** A `MULTI` block cannot span hash slots, so a cluster publisher rejects either kind
-  with an error rather than committing a batch that is not atomic.
-- **No rollback.** A command that fails at *runtime* inside `EXEC` does not undo the commands before
-  it - Redis has no rollback. For a block of `XADD`s against stream keys that is practically limited
-  to running out of memory or a key holding a non-stream type. A command the server refuses to
-  *queue* discards the whole block instead.
+- **No cluster.** A `MULTI` block cannot span hash slots, so opening a transaction on a cluster
+  returns an error instead of committing a group that is not atomic.
+- **No rollback.** A command that returns an error at *runtime* inside `EXEC` leaves the commands
+  before it committed. For a group of `XADD`s against stream keys that happens when Redis runs out
+  of memory or the key holds a non-stream type. A command the server refuses to *queue* discards the
+  whole block instead.
 
-Pipelining is a separate, broker-specific throughput tool (the list publisher batches its `LPUSH`
-and `PEXPIRE` that way): it saves round trips, it is not a transaction, and nothing here commits
-through one.
+Pipelining is a throughput tool, not a transaction: the list publisher sends its `LPUSH` and
+`PEXPIRE` in one round trip, and they commit separately.
