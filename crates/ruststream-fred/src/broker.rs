@@ -20,7 +20,9 @@ use fred::types::config::CredentialProvider;
 ))]
 use fred::types::config::TlsConfig;
 use fred::types::config::{Config, ServerConfig};
-use ruststream::{Broker, ConnectedBroker, DescribeServer, ServerSpec, Subscribe};
+use ruststream::{
+    Broker, ConnectedBroker, DescribeServer, RedeliveryAddress, ServerSpec, Subscribe,
+};
 
 use crate::{
     error::RedisError,
@@ -478,20 +480,54 @@ impl Broker for RedisBroker {
     }
 }
 
-/// `DescribeServer` reports the configured Redis address (the first seed for cluster/sentinel).
+/// `DescribeServer` reports the host and port a client dials (the first seed for cluster and
+/// sentinel). Nothing else a configured address may carry reaches the description: a broker built
+/// from an already-connected pool describes no host at all.
 impl DescribeServer for RedisBroker {
     fn describe_server(&self) -> ServerSpec {
         let host = match &self.topology {
-            Topology::Standalone(url) => url
-                .trim_start_matches("rediss://")
-                .trim_start_matches("redis://")
-                .to_owned(),
-            Topology::Cluster(nodes) => nodes.first().cloned().unwrap_or_default(),
-            Topology::Sentinel { hosts, .. } => hosts.first().cloned().unwrap_or_default(),
+            Topology::Standalone(url) => describe_address(url, 6379),
+            Topology::Cluster(nodes) => nodes
+                .first()
+                .map_or_else(String::new, |node| describe_address(node, 6379)),
+            Topology::Sentinel { hosts, .. } => hosts
+                .first()
+                .map_or_else(String::new, |host| describe_address(host, 26379)),
+            // A caller-supplied pool carries its address inside `fred`'s own config, which this
+            // description does not reach into.
             Topology::Preconnected(_) => String::new(),
         };
         ServerSpec::new(host, "redis")
     }
+}
+
+/// The `host:port` a client dials, with everything else an address may carry stripped: the scheme,
+/// any `user:password@`, the database path and the query.
+///
+/// [`ServerSpec::host_from_url`] does the stripping, so the rule that keeps a credential out of a
+/// published `AsyncAPI` document lives in one place for every broker. What is added here is the
+/// Redis default port, which the core cannot know.
+fn describe_address(addr: &str, default_port: u16) -> String {
+    let host = ServerSpec::host_from_url(addr.trim());
+    if host.is_empty() {
+        return String::new();
+    }
+    if has_port(&host) {
+        host
+    } else {
+        format!("{host}:{default_port}")
+    }
+}
+
+/// Whether an address already names a port, allowing for a bracketed IPv6 literal (`[::1]:6379`).
+fn has_port(host: &str) -> bool {
+    host.rsplit_once(']').map_or_else(
+        || {
+            host.rsplit_once(':')
+                .is_some_and(|(_, port)| !port.is_empty())
+        },
+        |(_, after_bracket)| after_bracket.starts_with(':'),
+    )
 }
 
 /// The live connection shared by the connected broker and every handle derived from it.
@@ -732,6 +768,13 @@ impl Subscribe for ConnectedRedisBroker {
         })?;
         ConnectedRedisBroker::subscribe(self, RedisStream::new(name).group(group)).await
     }
+
+    /// The stream key itself. A bare name opens a consumer group over that key, and an `XADD`
+    /// there reaches the group again, so `#[subscriber("orders")]` composes with a scope's
+    /// deferred retry publisher.
+    fn redelivery_address(&self, name: &str) -> Option<RedeliveryAddress> {
+        Some(RedeliveryAddress::new(name.to_owned()))
+    }
 }
 
 /// Creates the consumer group, treating an already-existing group as success.
@@ -761,6 +804,79 @@ mod tests {
         let spec = broker.describe_server();
         assert_eq!(spec.protocol, "redis");
         assert_eq!(spec.host.as_deref(), Some("localhost:6379"));
+    }
+
+    /// Every address shape this crate accepts reduces to the host and the port a client dials.
+    #[test]
+    fn a_description_is_the_host_and_port_of_every_address_shape() {
+        let cases = [
+            ("redis://localhost:6379", "localhost:6379"),
+            ("rediss://redis.example.com:6380", "redis.example.com:6380"),
+            ("redis://localhost", "localhost:6379"),
+            ("redis://localhost:6379/3", "localhost:6379"),
+            ("redis://localhost:6379/?timeout=5s", "localhost:6379"),
+            (
+                "valkeys://valkey.example.com:6380",
+                "valkey.example.com:6380",
+            ),
+            ("10.0.0.1:6379", "10.0.0.1:6379"),
+            ("  redis://localhost:6379  ", "localhost:6379"),
+            ("redis://[::1]:6379", "[::1]:6379"),
+            ("redis://[::1]", "[::1]:6379"),
+        ];
+
+        for (url, expected) in cases {
+            let spec = RedisBroker::standalone(url).describe_server();
+            assert_eq!(
+                spec.host.as_deref(),
+                Some(expected),
+                "the description of {url:?} is wrong"
+            );
+        }
+
+        let cluster = RedisBroker::cluster(["10.0.0.1", "10.0.0.2:7001"]).describe_server();
+        assert_eq!(cluster.host.as_deref(), Some("10.0.0.1:6379"));
+
+        let sentinel = RedisBroker::sentinel("mymaster", ["10.0.0.9"]).describe_server();
+        assert_eq!(sentinel.host.as_deref(), Some("10.0.0.9:26379"));
+    }
+
+    /// The description ends up in the generated `AsyncAPI` document, which teams publish, so a URL
+    /// carrying credentials must leave neither the user name nor the password behind. The password
+    /// here holds an `@` of its own, the case a split on the first separator gets wrong.
+    #[test]
+    fn a_description_never_carries_the_credentials_of_a_url() {
+        let cases = [
+            (
+                RedisBroker::standalone("redis://alice:p@ss@redis.example.com:6379/0"),
+                "redis.example.com:6379",
+            ),
+            (
+                RedisBroker::cluster(["redis://alice:p@ss@10.0.0.1:7000"]),
+                "10.0.0.1:7000",
+            ),
+            (
+                RedisBroker::sentinel("mymaster", ["redis://alice:p@ss@10.0.0.9:26379"]),
+                "10.0.0.9:26379",
+            ),
+        ];
+
+        for (broker, expected) in cases {
+            let host = broker.describe_server().host.expect("a described host");
+            assert_eq!(host, expected, "the description kept more than the address");
+            assert!(
+                !host.contains('@'),
+                "{host:?} still carries a userinfo part"
+            );
+            assert!(
+                !host.contains("alice"),
+                "{host:?} still carries the user name"
+            );
+            assert!(
+                !host.contains("p@ss"),
+                "{host:?} still carries the password"
+            );
+        }
     }
 
     // Credentials must reach the fred config on every topology, not just the standalone URL.

@@ -3,8 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
+  # No base filter: a pull request stacked on another one has a branch for its base, and a filter
+  # naming `main` leaves it with no checks at all - which reads as a conflicting branch rather
+  # than as a workflow that declined to run.
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -104,7 +106,7 @@ jobs:
           workspaces: ruststream-fred
 
       - name: Install cargo-hack
-        uses: taiki-e/install-action@v2.86.5
+        uses: taiki-e/install-action@v2.87.6
         with:
           tool: cargo-hack
 
@@ -160,11 +162,13 @@ jobs:
           # serde <= 1.0.102 declares `serde_derive = "1.0"` instead of pinning it in lockstep, so
           # minimal resolution pairs it with a serde_derive built on syn 0.11, which panics on a
           # modern struct. Those releases also lack `BorrowedStrDeserializer` and the i128 methods
-          # that `ruststream`'s typed_headers uses. 1.0.103 is the first lockstep release.
-          cargo update -p serde --precise 1.0.103
-          # tracing-attributes declares `syn = "1"` but calls `LitInt::base10_parse`, which syn
-          # 1.0.0 does not have. Disambiguated by version because syn 2 and 3 are in the graph too.
-          cargo update -p syn@1.0.0 --precise 1.0.4
+          # that `ruststream`'s typed_headers uses. 1.0.103 is the first lockstep release, and
+          # 1.0.136 is what rmp-serde (the msgpack codec the envelope tests exercise) requires, so
+          # nothing below it is selectable anyway.
+          cargo update -p serde --precise 1.0.136
+          # No syn pin: tracing-attributes declares `syn = "1"` yet calls `LitInt::base10_parse`
+          # (syn 1.0.4), and the serde pin above already drags syn 1.x to 1.0.60 through
+          # serde_derive, so minimal resolution cannot pick anything lower.
           # fred declares `tokio-stream = "0.1"` but uses `tokio_stream::wrappers`, added in 0.1.1.
           cargo update -p tokio-stream --precise 0.1.1
           # native-tls' floor selects an openssl that predates OpenSSL 3.x and binds FFI symbols
@@ -210,6 +214,10 @@ jobs:
         working-directory: ruststream-fred
         run: docker compose -f docker-compose.test.yml up -d --wait
 
+      # RUSTSTREAM_REQUIRE_LIVE is this job's contract with the suites: the servers are up, so a
+      # test that skips is a defect rather than a convenience. Without it a gated test returns
+      # before its first assertion and reports ok, which reads exactly like a run that did the
+      # work - and this job gates on four addresses, so it has four ways to go quietly green.
       - name: Run Redis integration tests (standalone + cluster + sentinel)
         working-directory: ruststream-fred
         env:
@@ -217,12 +225,14 @@ jobs:
           REDIS_AUTH_TEST_URL: redis://127.0.0.1:6385
           REDIS_CLUSTER_TEST_URL: 127.0.0.1:7000
           REDIS_SENTINEL_TEST_URL: 127.0.0.1:26379
+          RUSTSTREAM_REQUIRE_LIVE: "1"
         run: cargo test -p ruststream-fred --test integration_fred -- --test-threads=1
 
       - name: Run Redis conformance suite
         working-directory: ruststream-fred
         env:
           REDIS_TEST_URL: redis://127.0.0.1:6379
+          RUSTSTREAM_REQUIRE_LIVE: "1"
         run: cargo test -p ruststream-fred --features testing --test conformance_fred -- --test-threads=1
 
       - name: Stop Redis topologies
@@ -256,7 +266,7 @@ jobs:
           workspaces: ruststream-fred
 
       - name: Install cargo-generate
-        uses: taiki-e/install-action@v2.86.5
+        uses: taiki-e/install-action@v2.87.6
         with:
           tool: cargo-generate
 
@@ -298,7 +308,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@v2.86.5
+        uses: taiki-e/install-action@v2.87.6
         with:
           tool: cargo-deny
 

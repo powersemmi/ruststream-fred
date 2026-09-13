@@ -18,6 +18,7 @@ use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use bytes::Bytes;
 use fred::interfaces::{ClientLike, KeysInterface};
 use fred::types::InfoKind;
 use futures::StreamExt;
@@ -31,20 +32,24 @@ use ruststream::{
 use ruststream_fred::{
     ConnectedRedisBroker, DEAD_LETTER_REASON_HEADER, DELIVERY_COUNT_HEADER, DelayedRetry,
     IDLE_MS_HEADER, RedisBroker, RedisError, RedisGroupPosition, RedisList, RedisListPublish,
-    RedisPubSub, RedisPubSubPublish, RedisPublishExt, RedisStream, StreamStart,
+    RedisPubSub, RedisPubSubPublish, RedisPublishSteps, RedisStream, StreamStart,
 };
+
+mod live;
 
 const WAIT: Duration = Duration::from_secs(5);
 
 /// Master/service name monitored by the sentinel topology in `docker-compose.test.yml`.
 const SENTINEL_SERVICE: &str = "mymaster";
 
+/// The URL of one topology, or `None` to skip. Under `RUSTSTREAM_REQUIRE_LIVE` a missing variable
+/// fails the test instead, so a job that started the stand cannot report a suite that never ran.
 fn env(key: &str) -> Option<String> {
-    std::env::var(key).ok()
+    live::url(key)
 }
 
-/// An opaque payload: the partition-key case asserts on the header the keyed handle contributes,
-/// not on what a codec would make of the body, so the bytes leave as they are.
+/// An opaque payload: the partition-key case asserts on the header the step resolves into, not on
+/// what a codec would make of the body, so the bytes leave as they are.
 #[derive(Outgoing, Serialized)]
 struct Payload(Vec<u8>);
 
@@ -93,7 +98,10 @@ async fn round_trip(broker: &ConnectedRedisBroker, key: &str) {
     headers.insert("content-type", "application/json");
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key, b"hello").with_headers(headers))
+        .publish(
+            OutgoingMessage::new(key, b"hello").with_headers(headers),
+            None,
+        )
         .await
         .expect("publish");
 
@@ -126,7 +134,7 @@ async fn publisher_errors_after_shutdown() {
     let key = unique_key("post_shutdown");
     let publisher = broker.publisher();
     publisher
-        .publish(OutgoingMessage::new(key.as_str(), b"before"))
+        .publish(OutgoingMessage::new(key.as_str(), b"before"), None)
         .await
         .expect("publish before shutdown");
 
@@ -134,7 +142,7 @@ async fn publisher_errors_after_shutdown() {
     assert!(closed.connections_closed() > 0);
 
     let err = publisher
-        .publish(OutgoingMessage::new(key.as_str(), b"after"))
+        .publish(OutgoingMessage::new(key.as_str(), b"after"), None)
         .await
         .expect_err("publishing through a handle aliasing a closed connection must error");
     assert!(matches!(err, RedisError::ShutDown), "got {err}");
@@ -161,7 +169,7 @@ async fn bare_string_subscription_needs_default_group() {
         .expect("subscribe with the default group");
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key.as_str(), b"hello"))
+        .publish(OutgoingMessage::new(key.as_str(), b"hello"), None)
         .await
         .expect("publish");
     let mut stream = Box::pin(sub.stream());
@@ -218,7 +226,7 @@ async fn standalone_nack_requeue_republishes_to_same_stream() {
         .expect("subscribe");
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key.as_str(), b"retry-me"))
+        .publish(OutgoingMessage::new(key.as_str(), b"retry-me"), None)
         .await
         .expect("publish");
 
@@ -252,7 +260,7 @@ async fn standalone_reclaim_picks_up_pending_entries() {
         .expect("subscribe worker");
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key.as_str(), b"orphan"))
+        .publish(OutgoingMessage::new(key.as_str(), b"orphan"), None)
         .await
         .expect("publish");
     {
@@ -318,7 +326,7 @@ async fn stream_drop_routes_to_dead_letter() {
         .expect("subscribe");
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key.as_str(), b"poison"))
+        .publish(OutgoingMessage::new(key.as_str(), b"poison"), None)
         .await
         .expect("publish");
 
@@ -332,8 +340,8 @@ async fn stream_drop_routes_to_dead_letter() {
     broker.shutdown().await.expect("shutdown");
 }
 
-/// The partition key set on the publisher survives the `XADD` entry-field encoding, which is what
-/// the in-process broker cannot prove: headers travel as prefixed entry fields on a real stream.
+/// The partition key the step set survives the `XADD` entry-field encoding, which is what the
+/// in-process broker cannot prove: headers travel as prefixed entry fields on a real stream.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stream_partition_key_survives_the_round_trip() {
     let Some(url) = env("REDIS_TEST_URL") else {
@@ -349,9 +357,9 @@ async fn stream_partition_key_survives_the_round_trip() {
 
     broker
         .publisher()
-        .partition_key("tenant-a")
         .message(&Payload(b"payload".to_vec()))
         .to(key.as_str())
+        .partition_key("tenant-a")
         .publish()
         .await
         .expect("publish");
@@ -392,7 +400,7 @@ async fn stream_max_deliveries_dead_letters_after_cap() {
         .expect("subscribe");
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key.as_str(), b"poison"))
+        .publish(OutgoingMessage::new(key.as_str(), b"poison"), None)
         .await
         .expect("publish");
 
@@ -432,7 +440,7 @@ async fn stream_reclaim_exposes_delivery_count_and_idle() {
         .expect("subscribe worker");
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key.as_str(), b"stuck"))
+        .publish(OutgoingMessage::new(key.as_str(), b"stuck"), None)
         .await
         .expect("publish");
     {
@@ -481,7 +489,7 @@ async fn stream_reclaim_caps_to_dead_letter() {
         .expect("subscribe worker");
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key.as_str(), b"poison"))
+        .publish(OutgoingMessage::new(key.as_str(), b"poison"), None)
         .await
         .expect("publish");
     {
@@ -527,7 +535,7 @@ async fn reliable_list_drop_routes_to_dead_letter() {
 
     broker
         .list_publisher(RedisListPublish::new())
-        .publish(OutgoingMessage::new(key.as_str(), b"poison"))
+        .publish(OutgoingMessage::new(key.as_str(), b"poison"), None)
         .await
         .expect("lpush");
 
@@ -575,7 +583,7 @@ async fn reliable_list_max_deliveries_dead_letters() {
 
     broker
         .list_publisher(RedisListPublish::new())
-        .publish(OutgoingMessage::new(key.as_str(), b"poison"))
+        .publish(OutgoingMessage::new(key.as_str(), b"poison"), None)
         .await
         .expect("lpush");
 
@@ -627,7 +635,7 @@ async fn reliable_list_recovery_returns_orphaned_entry() {
 
     broker
         .list_publisher(RedisListPublish::new())
-        .publish(OutgoingMessage::new(key.as_str(), b"job-x"))
+        .publish(OutgoingMessage::new(key.as_str(), b"job-x"), None)
         .await
         .expect("lpush");
 
@@ -684,7 +692,7 @@ async fn delayed_retry_zset_redelivers_after_delay_with_incremented_count() {
         .expect("subscribe");
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key.as_str(), b"retry-me"))
+        .publish(OutgoingMessage::new(key.as_str(), b"retry-me"), None)
         .await
         .expect("publish");
 
@@ -750,7 +758,10 @@ async fn pubsub_classic_round_trip() {
     let mut got = None;
     for _ in 0..25 {
         publisher
-            .publish(OutgoingMessage::new(channel.as_str(), b"hello").with_headers(headers.clone()))
+            .publish(
+                OutgoingMessage::new(channel.as_str(), b"hello").with_headers(headers.clone()),
+                None,
+            )
             .await
             .expect("publish");
         if let Ok(Some(item)) =
@@ -783,7 +794,10 @@ async fn list_codec_envelope_round_trips_headers() {
     // Codec on both ends: the wire value is a readable JSON envelope, headers and payload survive.
     broker
         .list_publisher(RedisListPublish::new().codec(JsonCodec))
-        .publish(OutgoingMessage::new(key.as_str(), br#"{"id":1}"#).with_headers(headers))
+        .publish(
+            OutgoingMessage::new(key.as_str(), br#"{"id":1}"#).with_headers(headers),
+            None,
+        )
         .await
         .expect("lpush");
 
@@ -800,6 +814,104 @@ async fn list_codec_envelope_round_trips_headers() {
     broker.shutdown().await.expect("shutdown");
 }
 
+/// The readable envelope carries data that is not text without touching it: these bytes are not
+/// valid UTF-8, and the earlier envelope replaced them on the way out.
+const NOT_TEXT: &[u8] = &[0xff, 0x00, 0x1f, 0xfe, 0x80];
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_codec_envelope_round_trips_bytes_that_are_not_text() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("list_codec_binary");
+
+    let mut headers = HeaderMap::new();
+    headers.insert("signature", Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]));
+
+    broker
+        .list_publisher(RedisListPublish::new().codec(JsonCodec))
+        .publish(
+            OutgoingMessage::new(key.as_str(), NOT_TEXT).with_headers(headers),
+            None,
+        )
+        .await
+        .expect("lpush");
+
+    let mut sub = broker
+        .subscribe_list(RedisList::new(&key).codec(JsonCodec))
+        .await
+        .expect("subscribe list");
+    let mut stream = Box::pin(sub.stream());
+    let msg = next(&mut stream).await.expect("delivery ok");
+
+    assert_eq!(
+        msg.payload(),
+        NOT_TEXT,
+        "the list envelope changed the payload"
+    );
+    assert_eq!(
+        msg.headers().get("signature").map(<[u8]>::to_vec),
+        Some(vec![0xde, 0xad, 0xbe, 0xef]),
+        "the list envelope changed a header value"
+    );
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pubsub_codec_envelope_round_trips_bytes_that_are_not_text() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let channel = unique_key("pubsub_codec_binary");
+
+    let mut sub = broker
+        .subscribe_pubsub(RedisPubSub::new(&channel).codec(JsonCodec))
+        .await
+        .expect("subscribe pubsub");
+    let publisher = broker.pubsub_publisher(RedisPubSubPublish::new().codec(JsonCodec));
+    let mut stream = Box::pin(sub.stream());
+
+    let mut headers = HeaderMap::new();
+    headers.insert("signature", Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]));
+
+    // Pub/Sub keeps nothing, and SUBSCRIBE registers asynchronously, so publish until one lands.
+    let mut got = None;
+    for _ in 0..25 {
+        publisher
+            .publish(
+                OutgoingMessage::new(channel.as_str(), NOT_TEXT).with_headers(headers.clone()),
+                None,
+            )
+            .await
+            .expect("publish");
+        if let Ok(Some(item)) =
+            tokio::time::timeout(Duration::from_millis(200), stream.next()).await
+        {
+            let msg = item.expect("delivery ok");
+            assert_eq!(
+                msg.headers().get("signature").map(<[u8]>::to_vec),
+                Some(vec![0xde, 0xad, 0xbe, 0xef]),
+                "the Pub/Sub envelope changed a header value"
+            );
+            got = Some(msg.payload().to_vec());
+            break;
+        }
+    }
+
+    assert_eq!(
+        got.as_deref(),
+        Some(NOT_TEXT),
+        "the Pub/Sub envelope changed the payload"
+    );
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_simple_round_trip() {
     let Some(url) = env("REDIS_TEST_URL") else {
@@ -810,7 +922,7 @@ async fn list_simple_round_trip() {
 
     broker
         .list_publisher(RedisListPublish::new())
-        .publish(OutgoingMessage::new(key.as_str(), b"job-1"))
+        .publish(OutgoingMessage::new(key.as_str(), b"job-1"), None)
         .await
         .expect("lpush");
 
@@ -848,7 +960,7 @@ async fn list_batches_are_capped_at_the_size_they_opened_with() {
     let publisher = broker.list_publisher(RedisListPublish::new());
     for i in 0..COUNT {
         publisher
-            .publish(OutgoingMessage::new(key.as_str(), &[i]))
+            .publish(OutgoingMessage::new(key.as_str(), &[i]), None)
             .await
             .expect("lpush");
     }
@@ -886,7 +998,7 @@ async fn list_publisher_ttl_sets_key_expiry() {
 
     broker
         .list_publisher(RedisListPublish::new().ttl(Duration::from_secs(60)))
-        .publish(OutgoingMessage::new(key.as_str(), b"job"))
+        .publish(OutgoingMessage::new(key.as_str(), b"job"), None)
         .await
         .expect("lpush with ttl");
 
@@ -963,7 +1075,7 @@ async fn seek_to_beginning_replays_retained_history() {
     let publisher = broker.publisher();
     for payload in [b"h1".as_slice(), b"h2"] {
         publisher
-            .publish(OutgoingMessage::new(key.as_str(), payload))
+            .publish(OutgoingMessage::new(key.as_str(), payload), None)
             .await
             .expect("publish");
     }
@@ -993,7 +1105,7 @@ async fn seek_to_beginning_replays_retained_history() {
         .expect("seek to the end");
     none_within(&mut stream, "after seeking to the end").await;
     publisher
-        .publish(OutgoingMessage::new(key.as_str(), b"h3"))
+        .publish(OutgoingMessage::new(key.as_str(), b"h3"), None)
         .await
         .expect("publish after the seek");
     let live = next(&mut stream).await.expect("delivery after the seek");
@@ -1037,7 +1149,7 @@ async fn a_seek_moves_the_whole_group() {
 
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key.as_str(), b"g1"))
+        .publish(OutgoingMessage::new(key.as_str(), b"g1"), None)
         .await
         .expect("publish");
 
@@ -1089,7 +1201,7 @@ async fn a_seek_leaves_the_pending_list_alone() {
 
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key.as_str(), b"in-flight"))
+        .publish(OutgoingMessage::new(key.as_str(), b"in-flight"), None)
         .await
         .expect("publish");
     {
@@ -1150,7 +1262,7 @@ async fn cluster_seek_replays_history() {
 
     broker
         .publisher()
-        .publish(OutgoingMessage::new(key.as_str(), b"c1"))
+        .publish(OutgoingMessage::new(key.as_str(), b"c1"), None)
         .await
         .expect("publish");
 
@@ -1210,7 +1322,7 @@ async fn borrowed_commit_is_one_exec_block() {
     publisher.begin_transaction().await.expect("begin");
     for payload in [b"t1".as_slice(), b"t2", b"t3"] {
         publisher
-            .publish(OutgoingMessage::new(key.as_str(), payload))
+            .publish(OutgoingMessage::new(key.as_str(), payload), None)
             .await
             .expect("buffer");
     }
@@ -1246,11 +1358,11 @@ async fn list_reliable_round_trip_with_ack() {
 
     let publisher = broker.list_publisher(RedisListPublish::new());
     publisher
-        .publish(OutgoingMessage::new(key.as_str(), b"job-a"))
+        .publish(OutgoingMessage::new(key.as_str(), b"job-a"), None)
         .await
         .expect("lpush a");
     publisher
-        .publish(OutgoingMessage::new(key.as_str(), b"job-b"))
+        .publish(OutgoingMessage::new(key.as_str(), b"job-b"), None)
         .await
         .expect("lpush b");
 

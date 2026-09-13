@@ -1,54 +1,57 @@
 # Redis Lists (work queue)
 
-A service on this form globs `ruststream_fred::list::prelude::*`, which carries the descriptor and
-this form's publish policy as `Publish`.
+A Redis list is a work queue with competing consumers: a producer `LPUSH`es an entry, consumers pop
+from the right, and exactly one of them gets it.
 
-A list is a competing-consumers queue: a producer `LPUSH`es, consumers pop from the right, and each
-entry goes to exactly one consumer (no fan-out, no replay). Simple mode is at-most-once (`BRPOP`, no
-ack):
+A list service imports `ruststream_fred::list::prelude::*`: the descriptor and this form's publish
+policy under the name `Publish`.
+
+Simple mode pops with `BRPOP` and settles nothing: a crash loses the entry (at-most-once):
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_list.rs:simple"
 ```
 
-Reliable mode moves each entry to a processing list and removes it on ack (at-least-once), so a
-crashed handler does not silently lose its job:
+Reliable mode moves the entry to a processing list and removes it when the handler acks, so a crash
+means the job is repeated, not lost (at-least-once):
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_list.rs:reliable"
 ```
 
-Publish with the `RedisListPublish` policy (`LPUSH`): attach it where the handler is mounted and the
-runtime pairs it with the connected broker, or call
-`connected.list_publisher(RedisListPublish::new())` outside an app. Headers travel in the same frame
-as Pub/Sub: a lossless binary frame by default, or a readable codec-serialized envelope when a codec
-is set on both ends (`.codec(JsonCodec)`).
+A reliable entry the handler rejects goes back to the main list when the nack asks for a requeue, and
+any consumer takes it from there. A nack without a requeue drops the entry, so the work does not run
+again.
 
-A pop returns one entry, so a batch handler on a list is served by batches the subscriber assembles
-on the client; it still names its size with `batch(n)` at the mount site and never sees a longer
-batch. `block(..)` chains after the size, as it does on a stream (see
-[Batches](streams.md#batches)).
+The `RedisListPublish` policy publishes with `LPUSH`. You name it where the handler is mounted, and
+the runtime constructs the publisher from it on the connected broker; outside an app,
+`connected.list_publisher(RedisListPublish::new())` returns one directly.
+
+A list entry is framed like a [Pub/Sub](pubsub.md) message: a binary frame that carries any bytes, or
+a codec-serialized envelope when the same codec is set on both ends (`.codec(JsonCodec)`).
+
+A pop returns one entry, so the subscriber assembles batches itself. A batch handler names its size
+with `batch(n)` where it is mounted and never sees a longer batch; `block(..)` chains after the size,
+as it does on a stream (see [Batches](streams.md#batches)).
 
 ## Orphan recovery
 
-A dead consumer can strand a reliable entry on its processing list, since Redis lists have no native
-pending tracking. Opt into a recovery watchdog by naming a ZSET key (off by default):
+A consumer that dies mid-handler leaves its entry on the processing list, because Redis lists track
+nothing as pending. Naming a ZSET key turns on a recovery watchdog, off by default:
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_list.rs:recovery"
 ```
 
-Each claim is recorded in the ZSET (score = claim time); a sweeper folded into the subscription's
-read loop returns entries idle past `min_idle` to the main list, where a live consumer re-claims
-them. Like the Streams reclaim path, `min_idle` must exceed the longest legitimate handler runtime,
-or a still-running entry is recovered and processed twice. An optional `recovery_ttl` cleans up an
-abandoned ZSET key but must exceed `min_idle`. Without recovery, Redis Streams remain the recommended
-durable, recoverable path.
+The subscription records each claim in the ZSET under its claim time, and sweeps the ZSET as it
+reads. An entry idle longer than `min_idle` goes back to the main list, where a live consumer takes
+it again. Set `min_idle` above the longest handler runtime: a shorter one recovers an entry that is
+still being processed, and the job runs twice. `recovery_ttl` expires an abandoned ZSET key and has
+to be longer than `min_idle`. For a durable queue that recovers on its own, use Redis Streams.
 
 ## List publisher TTL
 
-An idle list can be bounded with a key TTL: `RedisListPublish::new().ttl(Duration::from_secs(300))`
-re-arms a `PEXPIRE` on the list key on every publish, so an actively used queue never expires and
-only an idle one lapses. It is off by default and per-key (the whole list), not per-entry - Redis
-lists have no per-element expiry. Pub/Sub has no equivalent (`PUBLISH` stores nothing to expire), and
-streams bound their size with trimming rather than a TTL.
+A TTL on the list key bounds an idle queue:
+`RedisListPublish::new().ttl(Duration::from_secs(300))` re-arms a `PEXPIRE` at every publish, so a
+queue in use never expires and an idle one lapses. The TTL is off by default and covers the whole
+list: Redis lists have no per-entry expiry.

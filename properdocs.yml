@@ -63,6 +63,7 @@ markdown_extensions:
 
 hooks:
   - docs/hooks/snippet_titles.py
+  - docs/hooks/i18n_banner.py
 
 plugins:
   - search
@@ -75,7 +76,12 @@ plugins:
   #
   # English is normative; a page with no translation yet falls back to the English text inside
   # the localized site rather than disappearing from it, which is what lets translations land
-  # page by page. No page is translated yet, so today every locale serves the English text.
+  # page by page. Every page is translated today, so the fallback covers only a page added
+  # to the English tree before its translations.
+  #
+  # The guide entries carry no nav title of their own: their label comes from each page's own
+  # heading, so a translated page names itself in the sidebar. The titles listed per locale are
+  # the section names and the two external links, which no page can supply.
   - i18n:
       docs_structure: folder
       fallback_to_default: true

@@ -14,6 +14,7 @@ use ruststream::{
 use tracing::warn;
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
+use crate::partition::{RedisPublishOptions, resolved_headers};
 use crate::{convert::fields_for_publish, error::RedisError};
 
 /// One buffered `XADD` (stream key plus its encoded entry fields), held while a transaction is open.
@@ -85,6 +86,24 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisPublish {
 
 impl DefaultPublish for ConnectedRedisBroker {
     type Policy = RedisPublish;
+}
+
+/// Pairs the production policy against the in-process stand-in, so a routes file's
+/// `.out_reply(Publish)` mounts on both without naming a second type.
+///
+/// The policy carries nothing to honour (`XADD` takes its key from each message), and the
+/// stand-in's publisher offers the same surface the live one does, both transaction kinds
+/// included, so this form loses nothing in process.
+#[cfg(feature = "testing")]
+impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisPublish {
+    type Live = crate::testing::RedisTestPublisher;
+
+    fn pair(
+        self,
+        connected: &crate::testing::ConnectedRedisTestBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(connected.publisher()))
+    }
 }
 
 /// The live stream publisher: [`RedisPublish`] paired with a connection. Cheap to clone.
@@ -169,11 +188,19 @@ impl RedisPublisher {
 
 impl Publisher for RedisPublisher {
     type Error = RedisError;
+    /// `XADD` takes the entry id and the trim threshold per command, and this publisher fixes
+    /// both (`*` and no trim); the stream key is the message's name, not a setting. What is left
+    /// to a call site is the partition key, which leaves as an entry field like any other header.
+    type Options = RedisPublishOptions;
 
-    async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
+    async fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
+    ) -> Result<(), Self::Error> {
         let entry: Buffered = (
             msg.name().to_owned(),
-            fields_for_publish(msg.payload(), msg.headers()),
+            fields_for_publish(msg.payload(), &resolved_headers(msg.headers(), options)),
         );
         if self.buffer_if_in_txn(&entry) {
             return Ok(());
@@ -295,8 +322,8 @@ impl OwnedTransactions for RedisPublisher {
 ///
 /// let mut orders = publisher.transaction().await?;
 /// let mut audit = publisher.transaction().await?; // concurrent with `orders`
-/// orders.publish(OutgoingMessage::new("orders", b"{}".as_slice())).await?;
-/// audit.publish(OutgoingMessage::new("audit", b"{}".as_slice())).await?;
+/// orders.publish(OutgoingMessage::new("orders", b"{}".as_slice()), None).await?;
+/// audit.publish(OutgoingMessage::new("audit", b"{}".as_slice()), None).await?;
 /// orders.commit().await?;
 /// audit.commit().await?;
 /// # Ok(())
@@ -335,15 +362,19 @@ impl Drop for RedisTransaction {
 
 impl Transaction for RedisTransaction {
     type Error = RedisError;
+    /// The same as [`RedisPublisher`]'s: a buffered `XADD` is the same command, queued, so a
+    /// staged message takes a partition key the way a direct one does.
+    type Options = RedisPublishOptions;
 
     /// Buffers the `XADD` locally; nothing reaches the server before [`commit`](Self::commit).
     fn publish(
         &mut self,
         msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
         self.buffered.push((
             msg.name().to_owned(),
-            fields_for_publish(msg.payload(), msg.headers()),
+            fields_for_publish(msg.payload(), &resolved_headers(msg.headers(), options)),
         ));
         ready(Ok(()))
     }

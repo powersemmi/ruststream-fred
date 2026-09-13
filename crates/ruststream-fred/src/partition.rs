@@ -1,86 +1,55 @@
-//! The per-message partition key, carried by a publisher adapter.
+//! The partition key: a per-message option on this crate's publishers, set by a step on the
+//! publish builder.
 //!
-//! Redis has no native partition concept, so the key travels as the well-known
-//! [`PARTITION_KEY_HEADER`] header. [`RedisPublishExt::partition_key`] wraps a publisher in an
-//! adapter that offers the key as its [base headers](ruststream::Publisher::base_headers), so it
-//! sits underneath whatever the publish itself names.
+//! Redis has no partition of its own, so the resolved key travels as the well-known
+//! [`PARTITION_KEY_HEADER`] header - the wire form the consumer side's
+//! [`Partitioned`](ruststream::Partitioned) reads back, on all three transports.
 
-use ruststream::{HeaderMap, OutgoingMessage, Publisher};
+use std::borrow::Cow;
 
-use crate::list::RedisListPublisher;
+use ruststream::HeaderMap;
+use ruststream::runtime::{PublishBuilder, PublishSink};
+
 use crate::message::PARTITION_KEY_HEADER;
-use crate::publisher::RedisPublisher;
-use crate::pubsub::RedisPubSubPublisher;
 
-/// A publisher adapter that carries a partition key under every message sent through it.
+/// The per-message settings of every publisher and transaction in this crate.
 ///
-/// Produced by [`RedisPublishExt::partition_key`]. It borrows the publisher it wraps and is a
-/// [`Publisher`] itself, so the whole core publish builder is available on it.
+/// One field, the partition key, and it is optional like every field of an options type: a publish
+/// that names no step carries no options at all, and nothing is written into its headers.
 ///
-/// The key rides underneath the publish's own headers: a call naming [`PARTITION_KEY_HEADER`]
-/// overrides it, and it survives a call that names any other header.
+/// The type is the bound that keeps this crate's builder steps off another broker's publisher, and
+/// it is what a handler body names when it adjusts a setting
+/// (`Out<impl Publisher<Options = RedisPublishOptions>, Marker>`). A test reads the value back off
+/// the slot view with `with_options`.
 ///
 /// # Examples
 ///
-/// ```no_run
-/// use ruststream::runtime::PublishExt;
-/// use ruststream::{Broker, Outgoing, Publisher, Serialized};
-/// use ruststream_fred::{RedisBroker, RedisPublishExt};
-///
-/// // The entry is already a serialized document, so it declares its own wire and no codec runs.
-/// #[derive(Outgoing, Serialized)]
-/// struct Entry(Vec<u8>);
-///
-/// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-/// let connected = RedisBroker::standalone("redis://localhost:6379").connect().await?;
-/// let keyed = connected.publisher();
-/// let keyed = keyed.partition_key("tenant-a");
-/// keyed.message(&Entry(b"{}".to_vec())).to("orders").publish().await?;
-/// # Ok(())
-/// # }
 /// ```
-#[derive(Debug, Clone)]
-#[must_use = "a keyed publisher does nothing until something is published through it"]
-pub struct PartitionKeyed<'a, P: ?Sized> {
-    inner: &'a P,
-    // Built once at construction; the builder borrows it per publish. Do not move this back into
-    // `publish`, which would clone a header map on the path every message takes.
-    base: HeaderMap,
-}
-
-impl<P: ?Sized> PartitionKeyed<'_, P> {
-    /// The partition key carried under every message published through this handle.
-    #[must_use]
-    pub fn key(&self) -> &[u8] {
-        // The constructor always writes this entry, so the fallback is unreachable.
-        self.base.get(PARTITION_KEY_HEADER).unwrap_or(&[])
-    }
-}
-
-impl<P: Publisher + ?Sized> Publisher for PartitionKeyed<'_, P> {
-    type Error = P::Error;
-
-    async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
-        self.inner.publish(msg).await
-    }
-
-    fn base_headers(&self) -> Option<&HeaderMap> {
-        Some(&self.base)
-    }
-}
-
-/// The Redis-specific publisher adapters, applied ahead of the publish builder.
+/// use ruststream_fred::RedisPublishOptions;
 ///
-/// Import it to reach [`partition_key`](Self::partition_key) on any of this crate's publishers.
-/// The trait is bound to those types, so the adapter does not appear on another broker's
-/// publisher.
+/// let options = RedisPublishOptions {
+///     partition_key: Some(b"tenant-a".to_vec()),
+/// };
+/// assert_eq!(options.partition_key.as_deref(), Some(b"tenant-a".as_slice()));
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RedisPublishOptions {
+    /// The key this one message is partitioned by, or `None` to send it unkeyed.
+    ///
+    /// Opaque bytes: the runtime hashes them to pick a dispatch lane, and never interprets them.
+    pub partition_key: Option<Vec<u8>>,
+}
+
+/// The steps this crate adds to the publish builder.
+///
+/// Import it from any of this crate's preludes to reach [`partition_key`](Self::partition_key) on
+/// a publish over a Redis publisher. The impl is bounded on [`RedisPublishOptions`], so the step
+/// does not appear on a builder over another broker's publisher.
 ///
 /// # Examples
 ///
 /// ```no_run
-/// use ruststream::runtime::PublishExt;
-/// use ruststream::{Broker, Outgoing, Publisher};
-/// use ruststream_fred::{RedisBroker, RedisPublishExt};
+/// use ruststream_fred::stream::prelude::*;
 /// use serde::Serialize;
 ///
 /// #[derive(Outgoing, Serialize)]
@@ -93,38 +62,86 @@ impl<P: Publisher + ?Sized> Publisher for PartitionKeyed<'_, P> {
 /// let connected = RedisBroker::standalone("redis://localhost:6379").connect().await?;
 /// let publisher = connected.publisher();
 ///
-/// // Every order of one tenant lands in the same `workers(n, by_key)` lane, so their
-/// // relative order is preserved while other tenants run in parallel.
-/// let tenant = publisher.partition_key("tenant-a");
-/// tenant.message(&Order { id: 7 }).publish().await?;
-/// tenant.message(&Order { id: 8 }).publish().await?;
+/// // Every order of one tenant lands in the same `workers(n, by_key)` lane, so their relative
+/// // order is preserved while other tenants run in parallel.
+/// publisher.message(&Order { id: 7 }).partition_key("tenant-a").publish().await?;
+/// publisher.message(&Order { id: 8 }).partition_key("tenant-a").publish().await?;
 /// # Ok(())
 /// # }
 /// ```
-pub trait RedisPublishExt: Publisher {
-    /// Returns an adapter carrying `key` as the partition key of everything sent through it.
+pub trait RedisPublishSteps {
+    /// Sends this one message under `key`, whatever the rest of the chain says.
     ///
     /// The key feeds the runtime's keyed worker lanes (`workers(n, by_key)`): deliveries sharing a
     /// key are dispatched to the same lane, so their relative order survives concurrency. It
-    /// travels as [`PARTITION_KEY_HEADER`], underneath the publish's own headers, so a call naming
-    /// that header itself overrides the handle's key.
-    ///
-    /// `key` is copied into the adapter, so it need not outlive the publisher.
-    fn partition_key<K>(&self, key: &K) -> PartitionKeyed<'_, Self>
-    where
-        K: AsRef<[u8]> + ?Sized,
-    {
-        let mut base = HeaderMap::new();
-        base.insert(PARTITION_KEY_HEADER, key.as_ref().to_vec());
-        PartitionKeyed { inner: self, base }
+    /// reaches the consumer as the [`PARTITION_KEY_HEADER`](crate::PARTITION_KEY_HEADER) header,
+    /// written over whatever the call site itself put under that name.
+    #[must_use]
+    fn partition_key(self, key: impl AsRef<[u8]>) -> Self;
+}
+
+impl<Sink, Body, Enc, Hdrs, Dest> RedisPublishSteps for PublishBuilder<Sink, Body, Enc, Hdrs, Dest>
+where
+    Sink: PublishSink<Options = RedisPublishOptions>,
+{
+    fn partition_key(mut self, key: impl AsRef<[u8]>) -> Self {
+        self.options_mut()
+            .get_or_insert_with(RedisPublishOptions::default)
+            .partition_key = Some(key.as_ref().to_vec());
+        self
     }
 }
 
-// Listed per type rather than blanket over `Publisher`, which would grow the adapter on every
-// other broker's publisher. Not implemented for `PartitionKeyed`, so re-keying does not compile.
-impl RedisPublishExt for RedisPublisher {}
-impl RedisPublishExt for RedisListPublisher {}
-impl RedisPublishExt for RedisPubSubPublisher {}
+/// The headers a publish leaves with, once `options` are resolved over the ones it carries.
+///
+/// A step wins over the header the call site wrote itself, because it names this one message while
+/// the header map may be a contract the message type declares. A publish no step touched keeps its
+/// headers untouched, so writing [`PARTITION_KEY_HEADER`] by hand stays the portable spelling.
+pub(crate) fn resolved_headers<'m>(
+    headers: &'m HeaderMap,
+    options: Option<&RedisPublishOptions>,
+) -> Cow<'m, HeaderMap> {
+    let Some(key) = options.and_then(|options| options.partition_key.as_deref()) else {
+        return Cow::Borrowed(headers);
+    };
+    let mut resolved = headers.clone();
+    resolved.insert(PARTITION_KEY_HEADER, key.to_vec());
+    Cow::Owned(resolved)
+}
 
-#[cfg(feature = "testing")]
-impl RedisPublishExt for crate::testing::RedisTestPublisher {}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unstepped_publish_keeps_its_own_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(PARTITION_KEY_HEADER, "call-site");
+
+        let resolved = resolved_headers(&headers, None);
+        assert!(matches!(resolved, Cow::Borrowed(_)));
+        assert_eq!(
+            resolved.get(PARTITION_KEY_HEADER),
+            Some(b"call-site".as_slice())
+        );
+    }
+
+    #[test]
+    fn a_step_writes_over_the_call_sites_own_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(PARTITION_KEY_HEADER, "call-site");
+        headers.insert("trace-id", "abc");
+
+        let options = RedisPublishOptions {
+            partition_key: Some(b"tenant-a".to_vec()),
+        };
+        let resolved = resolved_headers(&headers, Some(&options));
+
+        assert_eq!(
+            resolved.get(PARTITION_KEY_HEADER),
+            Some(b"tenant-a".as_slice())
+        );
+        // Unrelated entries travel untouched next to the key.
+        assert_eq!(resolved.get("trace-id"), Some(b"abc".as_slice()));
+    }
+}

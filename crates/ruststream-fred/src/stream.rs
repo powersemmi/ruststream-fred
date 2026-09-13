@@ -11,10 +11,11 @@
 //! silently stop fresh delivery), so the mode is part of the constructor name. Recovery is a
 //! separate `reclaim` subscriber on the same group: "two handlers per group".
 
+use std::future::{Future, ready};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use ruststream::SubscriptionSource;
+use ruststream::{RedeliveryAddress, SubscriptionSource};
 
 use crate::broker::ConnectedRedisBroker;
 use crate::deadletter::PoisonPolicy;
@@ -67,7 +68,7 @@ pub mod prelude {
     pub use crate::context::{StreamBatchContext, StreamContext, keys};
     pub use crate::{
         DelayedRetry, PARTITION_KEY_HEADER, RedisBroker, RedisGroupPosition, RedisGroupSeeker,
-        RedisPublishExt, RedisSubscribeExt,
+        RedisPublishOptions, RedisPublishSteps, RedisSubscribeExt,
     };
 
     #[cfg(any(
@@ -239,9 +240,10 @@ impl RedisStream {
     /// Opts this subscription into durable, crash-safe delayed retry backed by a ZSET delay queue.
     ///
     /// Off by default: without it, `retry_after(delay)` / `nack_after(delay)` degrade to the
-    /// runtime's broker-agnostic deferred re-publish (at-most-once over the delay window). With it,
-    /// a delayed delivery is `ZADD`ed to the named ZSET and replayed from there once due, so the
-    /// retry survives a process crash. See [`DelayedRetry`] for the key and TTL requirements.
+    /// runtime's broker-agnostic deferred re-publish, which the mount site binds with `out_retry`
+    /// and which is at-most-once over the delay window. With it, a delayed delivery is `ZADD`ed to
+    /// the named ZSET and replayed from there once due, so the retry survives a process crash. See
+    /// [`DelayedRetry`] for the key and TTL requirements.
     ///
     /// The sweeper that replays due entries runs inside this subscription's read loop, so its
     /// granularity is the read [`block`](Self::block) interval.
@@ -291,6 +293,16 @@ impl RedisStream {
     pub(crate) fn delay_config(&self) -> Option<DelayConfig> {
         self.delayed_retry.as_ref().map(DelayConfig::from_retry)
     }
+
+    /// Where a publisher reaches this subscription again, shared by both broker forms.
+    fn redelivery_key(&self) -> Option<RedeliveryAddress> {
+        match self.mode {
+            ReadMode::Fresh => Some(RedeliveryAddress::new(self.key.clone())),
+            // `XAUTOCLAIM` hands out entries already pending on another consumer, so an entry
+            // appended now is read by the live subscription instead, never by this one.
+            ReadMode::Reclaim { .. } => None,
+        }
+    }
 }
 
 impl SubscriptionSource<ConnectedRedisBroker> for RedisStream {
@@ -306,8 +318,35 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisStream {
     ) -> Result<Self::Subscriber, RedisError> {
         connected.subscribe(self).await
     }
+
+    /// The stream key, which is where a publisher on this broker reaches the group again, except
+    /// under [`reclaim`](RedisStream::reclaim): that subscription reads another consumer's stale
+    /// pending entries, so a fresh `XADD` never arrives there and a deferred copy sent to the key
+    /// would be lost.
+    fn redelivery_address(
+        &self,
+        _connected: &ConnectedRedisBroker,
+    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, RedisError>> {
+        ready(Ok(self.redelivery_key()))
+    }
 }
 
+/// Mounts the production descriptor on the in-process stand-in, which routes by stream key alone.
+///
+/// The descriptor is validated exactly as [`ConnectedRedisBroker::subscribe`] validates it, so a
+/// subscription that a real server would refuse at startup is refused here too rather than passing
+/// a test and failing on deployment: a descriptor naming no consumer group is rejected.
+///
+/// [`RedisStream::reclaim`] is rejected as well. It asks for another consumer's stale pending
+/// entries, and the stand-in keeps no pending list, so honouring the mount would feed the handler
+/// fresh entries instead: the opposite set, and a test that passes on a delivery the real
+/// subscription could never make. Exercise recovery against a real server.
+///
+/// Everything else the descriptor carries is inert here, because the stand-in has one queue per
+/// key, delivers on publish, and settles in memory: the group and consumer names, `start_id`,
+/// `block`, `dead_letter`, `max_deliveries` and `delayed_retry`. Nothing about a group cursor,
+/// `XAUTOCLAIM` redelivery, trimming, poison routing or a delayed replay can be asserted in
+/// process; those belong in a live-server test.
 #[cfg(feature = "testing")]
 impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisStream {
     type Subscriber = crate::testing::RedisTestSubscriber;
@@ -320,7 +359,24 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisStrea
         self,
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> Result<Self::Subscriber, RedisError> {
+        self.group_or_err()?;
+        if let ReadMode::Reclaim { .. } = self.mode {
+            return Err(RedisError::InvalidOptions(format!(
+                "reclaim subscription on `{}` cannot mount on the in-process test broker: it \
+                 keeps no pending list, so the subscription would read fresh entries instead of \
+                 the stale ones XAUTOCLAIM returns; test reclaim against a real Redis server",
+                self.key
+            )));
+        }
         connected.subscribe(self.key()).await
+    }
+
+    /// The same answer the real broker gives, so a scope that starts against Redis starts here.
+    fn redelivery_address(
+        &self,
+        _connected: &crate::testing::ConnectedRedisTestBroker,
+    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, RedisError>> {
+        ready(Ok(self.redelivery_key()))
     }
 }
 

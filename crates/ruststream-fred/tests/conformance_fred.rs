@@ -1,6 +1,12 @@
-//! Conformance suites for the Redis broker. `run_suite` proves routing against the in-process
-//! `RedisTestBroker` (no server, runs everywhere); `lifecycle` and the capability suites prove the
-//! broker contract against the real `RedisBroker` and are gated behind `REDIS_TEST_URL`.
+//! Conformance suites for the Redis broker, run twice wherever the transport allows it: once
+//! against the in-process `RedisTestBroker`, which needs no server and runs everywhere, and once
+//! against the real `RedisBroker` behind `REDIS_TEST_URL`.
+//!
+//! Both legs matter. The in-process leg applies the framework's own definition of correct broker
+//! behaviour to the stand-in, which is what keeps a passing handler test meaningful; the live leg
+//! is what proves the stand-in is not lying about the contract it reproduces.
+//!
+//! One suite is live-only, and the reason is written above `passes_seeking`.
 //!
 //! Run locally with a running Redis server:
 //!
@@ -17,11 +23,113 @@ use std::time::Duration;
 
 use ruststream::conformance::{capabilities, harness};
 use ruststream_fred::testing::RedisTestBroker;
-use ruststream_fred::{RedisBroker, RedisPubSub, RedisPubSubPublish, RedisStream};
+use ruststream_fred::{
+    RedisBroker, RedisList, RedisListPublish, RedisPubSub, RedisPubSubPublish, RedisStream,
+};
+
+mod live;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redis_test_broker_passes_conformance_suite() {
     harness::run_suite(RedisTestBroker::new).await;
+}
+
+// The in-process legs. Each names the descriptor and the publisher a service would, so the
+// contract is applied to the wiring the crate ships rather than to a shape written for the suite.
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broker_passes_lifecycle() {
+    harness::lifecycle(
+        RedisTestBroker::new,
+        |key| RedisStream::new(key).group("conformance"),
+        |connected| connected.publisher(),
+    )
+    .await;
+}
+
+// The other two forms through the same ladder. Each reports a redelivery address, and the suite
+// publishes to it and expects the subscription that reported it to receive the copy, so these legs
+// are what holds the list key and the Pub/Sub channel to their promise.
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broker_passes_list_lifecycle() {
+    harness::lifecycle(
+        RedisTestBroker::new,
+        |key| RedisList::new(key).reliable(),
+        |connected| connected.plain_publisher(),
+    )
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broker_passes_pubsub_lifecycle() {
+    harness::lifecycle(
+        RedisTestBroker::new,
+        |channel| RedisPubSub::new(channel),
+        |connected| connected.plain_publisher(),
+    )
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broker_passes_batches() {
+    capabilities::batches(
+        RedisTestBroker::new,
+        |key| RedisStream::new(key).group("conformance"),
+        |connected| connected.publisher(),
+    )
+    .await;
+}
+
+// The two forms whose real deliveries cannot settle. The suite accepts an unsupported ack and
+// rejects any other ack error, so these legs prove the batching contract holds on a subscription
+// that refuses settlement; that the refusal happens at all is asserted in `testing_core`.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broker_passes_pubsub_batches() {
+    capabilities::batches(
+        RedisTestBroker::new,
+        |channel| RedisPubSub::new(channel),
+        |connected| connected.plain_publisher(),
+    )
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broker_passes_list_batches() {
+    capabilities::batches(
+        RedisTestBroker::new,
+        |key| RedisList::new(key),
+        |connected| connected.plain_publisher(),
+    )
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broker_passes_transactions() {
+    Box::pin(capabilities::transactions(
+        RedisTestBroker::new,
+        |key| RedisStream::new(key).group("conformance"),
+        |connected| connected.publisher(),
+    ))
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broker_passes_owned_transactions() {
+    capabilities::owned_transactions(
+        RedisTestBroker::new,
+        |key| RedisStream::new(key).group("conformance"),
+        |connected| connected.publisher(),
+    )
+    .await;
 }
 
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
@@ -30,10 +138,43 @@ async fn passes_lifecycle() {
     let Some(url) = redis_url() else {
         return;
     };
-    harness::lifecycle(
+    // Boxed like the transaction suites: the live subscriber holds its own buffers, so the
+    // ladder's future is too large to keep on the stack.
+    Box::pin(harness::lifecycle(
         || RedisBroker::standalone(url.clone()),
         |key| RedisStream::new(key).group("conformance"),
         |connected| connected.publisher(),
+    ))
+    .await;
+}
+
+// The live halves of the two extra ladders: a real `LPUSH` to the reported list key and a real
+// `PUBLISH` to the reported channel have to reach the subscription that named them.
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passes_list_lifecycle() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    harness::lifecycle(
+        || RedisBroker::standalone(url.clone()),
+        |key| RedisList::new(key).reliable(),
+        |connected| connected.list_publisher(RedisListPublish::new()),
+    )
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passes_pubsub_lifecycle() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    harness::lifecycle(
+        || RedisBroker::standalone(url.clone()),
+        |channel| RedisPubSub::new(channel),
+        |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
     )
     .await;
 }
@@ -108,6 +249,14 @@ async fn passes_owned_transactions() {
 // Repositioning is a single-key operation (`XGROUP SETID`), so it works on every topology; the
 // suite runs on standalone like the others, and the cluster leg is covered by
 // `cluster_seek_replays_history` in the integration tests, where the stream key's slot matters.
+//
+// This is the one suite with no in-process leg, and the reason is a capability the stand-in does
+// not claim rather than an assertion it fails: `seeking` requires `Src::Subscriber: Seekable` with
+// positions that round-trip through `Positioned`, and `RedisTestSubscriber` implements neither, so
+// the leg would not compile. Claiming it would mean giving the stand-in a replayable cursor over
+// its per-key log - a consumer-group cursor in all but name, and the one Redis behaviour the
+// stand-in states outright that it does not simulate. Seeking is proven here against a real server
+// and, on the cluster topology, in the integration tests.
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn passes_seeking() {
@@ -130,6 +279,8 @@ async fn passes_seeking() {
     .await;
 }
 
+/// The server URL, or `None` to skip. Under `RUSTSTREAM_REQUIRE_LIVE` a missing variable fails the
+/// test instead, so a job that started a server cannot report a suite that never ran.
 fn redis_url() -> Option<String> {
-    std::env::var("REDIS_TEST_URL").ok()
+    live::url("REDIS_TEST_URL")
 }

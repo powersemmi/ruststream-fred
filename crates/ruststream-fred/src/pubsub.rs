@@ -9,9 +9,10 @@
 //! * [`PubSubMode::Sharded`] - `SSUBSCRIBE` / `SPUBLISH` (Redis 7+), slot-local so it scales across
 //!   a cluster, but has no pattern support.
 //!
-//! Headers travel in a frame around the payload: a lossless binary frame
-//! by default, or a readable codec-serialized envelope when a codec is set with
-//! [`RedisPubSub::codec`] / [`RedisPubSubPublish::codec`].
+//! Headers travel in a frame around the payload: a binary frame by default, or a readable
+//! codec-serialized envelope when a codec is set with [`RedisPubSub::codec`] /
+//! [`RedisPubSubPublish::codec`]. Both framings are lossless; the envelope writes a field whose
+//! bytes are valid UTF-8 as text and any other bytes as themselves.
 
 use std::fmt::{Debug, Formatter};
 use std::future::{Future, ready};
@@ -27,12 +28,13 @@ use futures::stream::unfold;
 use ruststream::codec::Codec;
 use ruststream::{
     AckError, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage, OutgoingMessage,
-    PairError, Partitioned, PublishPolicy, Publisher, SubscriptionSource,
+    PairError, Partitioned, PublishPolicy, Publisher, RedeliveryAddress, SubscriptionSource,
 };
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::envelope::{SharedEnvelope, frame, unframe};
+use crate::partition::{RedisPublishOptions, resolved_headers};
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
 
 /// This form's publish policy, [`RedisPubSubPublish`], under the mount-site name every form gives
@@ -68,7 +70,7 @@ pub mod prelude {
     // `keys` arrives as the module, not as a glob: its members are short words a service also uses
     // for its own types, and `Ctx<keys::Channel>` reads as what it is at the use site.
     pub use crate::context::{PubSubContext, keys};
-    pub use crate::{PARTITION_KEY_HEADER, RedisBroker, RedisPublishExt};
+    pub use crate::{PARTITION_KEY_HEADER, RedisBroker, RedisPublishOptions, RedisPublishSteps};
 
     #[cfg(any(
         feature = "tls-rustls",
@@ -145,7 +147,7 @@ impl RedisPubSub {
     }
 
     /// Decodes the header/payload envelope with `codec` (must match the publisher). Without it the
-    /// default lossless binary framing is used.
+    /// default binary framing is used. Either way the payload arrives as it was published.
     pub fn codec(mut self, codec: impl Codec + 'static) -> Self {
         self.codec = Some(Arc::new(codec));
         self
@@ -167,6 +169,11 @@ impl RedisPubSub {
 
     pub(crate) fn codec_handle(&self) -> Option<SharedEnvelope> {
         self.codec.clone()
+    }
+
+    /// Where a publisher reaches this subscription again, shared by both broker forms.
+    fn redelivery_channel(&self) -> Option<RedeliveryAddress> {
+        (!self.pattern).then(|| RedeliveryAddress::new(self.channel.clone()))
     }
 
     pub(crate) fn validate(&self) -> Result<(), RedisError> {
@@ -193,8 +200,42 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisPubSub {
     ) -> Result<Self::Subscriber, RedisError> {
         connected.subscribe_pubsub(self).await
     }
+
+    /// The channel, and nothing for a [`pattern`](RedisPubSub::pattern) subscription: a glob is
+    /// what `PSUBSCRIBE` matches against, never a channel a `PUBLISH` can name, so a deferred
+    /// copy sent there would reach no one.
+    ///
+    /// The reply is about the address, not about the command: reaching a
+    /// [`PubSubMode::Sharded`] subscription still takes a publisher in the same mode, which is
+    /// the policy the mount site names with `out_retry`.
+    fn redelivery_address(
+        &self,
+        _connected: &ConnectedRedisBroker,
+    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, RedisError>> {
+        ready(Ok(self.redelivery_channel()))
+    }
 }
 
+/// Mounts the production descriptor on the in-process stand-in, which routes by channel name
+/// alone.
+///
+/// The descriptor is validated exactly as [`ConnectedRedisBroker::subscribe_pubsub`] validates it,
+/// so a subscription that a real server would refuse at startup is refused here too rather than
+/// passing a test and failing on deployment: a pattern in [`PubSubMode::Sharded`] is rejected.
+///
+/// [`pattern`](RedisPubSub::pattern) is rejected on its own as well. The stand-in matches channel
+/// names exactly, so a glob subscription would go silent on every channel it is meant to catch
+/// while still matching its own literal spelling: a mount that neither delivers what production
+/// delivers nor fails where production fails. Exercise `PSUBSCRIBE` against a real server.
+///
+/// The rest of the descriptor is inert here: [`mode`](RedisPubSub::mode) selects between commands
+/// the stand-in does not issue, and the envelope [`codec`](RedisPubSub::codec) never runs, since
+/// deliveries carry their headers natively instead of framed into the payload, so a framing
+/// mismatch between a subscription and its publisher cannot surface in process.
+///
+/// Settlement matches the real transport: deliveries here report [`AckError::Unsupported`] and a
+/// requeue is refused rather than performed, so a test cannot assert on an acknowledgement Pub/Sub
+/// is unable to make.
 #[cfg(feature = "testing")]
 impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisPubSub {
     type Subscriber = crate::testing::RedisTestSubscriber;
@@ -207,7 +248,26 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisPubSu
         self,
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> Result<Self::Subscriber, RedisError> {
-        connected.subscribe(self.channel()).await
+        // Ordered so the narrower misconfiguration keeps its own message: a sharded pattern is
+        // wrong on any broker, the blanket pattern rejection below is only about this one.
+        self.validate()?;
+        if self.is_pattern() {
+            return Err(RedisError::InvalidOptions(format!(
+                "pattern subscription on `{}` cannot mount on the in-process test broker: it \
+                 matches channel names exactly, so the subscription would miss every channel the \
+                 glob is meant to catch; test PSUBSCRIBE against a real Redis server",
+                self.channel
+            )));
+        }
+        connected.subscribe_unsettleable(self.channel()).await
+    }
+
+    /// The same answer the real broker gives, so a scope that starts against Redis starts here.
+    fn redelivery_address(
+        &self,
+        _connected: &crate::testing::ConnectedRedisTestBroker,
+    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, RedisError>> {
+        ready(Ok(self.redelivery_channel()))
     }
 }
 
@@ -437,8 +497,9 @@ impl RedisPubSubPublish {
         self
     }
 
-    /// Serializes the header/payload envelope with `codec` (must match the subscriber). Without it
-    /// the default lossless binary framing is used.
+    /// Serializes the header/payload envelope with `codec` (must match the subscriber), which makes
+    /// the wire value readable while the data is text. Without it the default binary framing is
+    /// used. Either way a payload that is not text is published byte for byte.
     pub fn codec(mut self, codec: impl Codec + 'static) -> Self {
         self.codec = Some(Arc::new(codec));
         self
@@ -453,6 +514,33 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisPubSubPublish {
         connected: &ConnectedRedisBroker,
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(connected.pubsub_publisher(self)))
+    }
+}
+
+/// Pairs the production policy against the in-process stand-in, so a routes file's
+/// `.out_reply(Publish)` mounts on both without naming a second type.
+///
+/// Both options the policy carries are inert in process: [`mode`](RedisPubSubPublish::mode)
+/// selects between `PUBLISH` and `SPUBLISH`, neither of which the stand-in issues, and it delivers
+/// headers natively rather than framed into the payload, so the envelope
+/// [`codec`](RedisPubSubPublish::codec) never runs. A published message therefore reads back as
+/// the bare payload here and as a frame on a real server, which is what a `published(..)`
+/// assertion sees.
+///
+/// The capability surface matches: this pairs into
+/// [`RedisTestPlainPublisher`](crate::testing::RedisTestPlainPublisher), which offers [`Publisher`]
+/// and nothing more, exactly as [`RedisPubSubPublisher`] does. A slot bounded on a transaction
+/// capability therefore fails to compile here too, rather than passing in process and breaking on
+/// the production build.
+#[cfg(feature = "testing")]
+impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisPubSubPublish {
+    type Live = crate::testing::RedisTestPlainPublisher;
+
+    fn pair(
+        self,
+        connected: &crate::testing::ConnectedRedisTestBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(connected.plain_publisher()))
     }
 }
 
@@ -491,12 +579,25 @@ impl RedisPubSubPublisher {
 
 impl Publisher for RedisPubSubPublisher {
     type Error = RedisError;
+    /// `PUBLISH` and `SPUBLISH` take a channel and a payload and nothing else, and which of the
+    /// two is issued is the publisher's mode, fixed by the policy, because a sharded publish only
+    /// reaches sharded subscribers. What a call site still says is the partition key, framed into
+    /// the payload with the message's other headers.
+    type Options = RedisPublishOptions;
 
-    async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
+    async fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
+    ) -> Result<(), Self::Error> {
         let pool = self.core.pool()?;
         let client = pool.next();
         let channel = msg.name().to_owned();
-        let body = frame(self.codec.as_ref(), msg.payload(), msg.headers());
+        let body = frame(
+            self.codec.as_ref(),
+            msg.payload(),
+            &resolved_headers(msg.headers(), options),
+        );
         let _: i64 = match self.mode {
             PubSubMode::Classic => client.publish(channel, body).await,
             PubSubMode::Sharded => client.spublish(channel, body).await,

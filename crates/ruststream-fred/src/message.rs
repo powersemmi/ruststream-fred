@@ -17,10 +17,14 @@ use crate::seek::{EntryId, RedisGroupPosition, RedisGroupSeeker};
 
 /// The well-known header key for per-message routing / partitioning.
 ///
-/// Set this header on outgoing messages to control key-based fan-out when the runtime is
-/// configured with `workers(N, by_key)`. The value is opaque bytes; the runtime hashes it to
-/// assign a dispatch lane. Redis has no native partition concept on a single stream, so the key
-/// travels as this header value and the sender is responsible for setting it.
+/// The partition key controls key-based fan-out when the runtime is configured with
+/// `workers(N, by_key)`. The value is opaque bytes; the runtime hashes it to assign a dispatch
+/// lane. Redis has no native partition concept, so the key travels as this header value on all
+/// three transports.
+///
+/// A publish sets it with the [`partition_key`](crate::RedisPublishSteps::partition_key) step,
+/// which resolves into this header. Writing the header at the call site still works, and is the
+/// spelling that carries across brokers.
 pub const PARTITION_KEY_HEADER: &str = "redis-partition-key";
 
 /// Everything a [`RedisMessage`] needs to settle itself against the stream it came from.
@@ -203,7 +207,8 @@ impl IncomingMessage for RedisMessage {
 
     /// Native delayed redelivery is available only when the subscription opted into a durable ZSET
     /// delay queue with [`RedisStream::delayed_retry`](crate::RedisStream::delayed_retry); otherwise
-    /// the runtime applies its broker-agnostic deferred-republish fallback.
+    /// the runtime applies its broker-agnostic deferred-republish fallback, whose publisher the
+    /// mount site binds with `out_retry`.
     fn supports_nack_after(&self) -> bool {
         self.delay.is_some()
     }

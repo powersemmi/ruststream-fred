@@ -20,11 +20,19 @@ brokers-up:
 brokers-down:
     docker compose -f docker-compose.test.yml down -v
 
+# Runs the suites against the whole compose stand: the plain standalone, the password-protected
+# one, the cluster and the sentinel set, at the addresses that file exposes. RUSTSTREAM_REQUIRE_LIVE
+# turns a skipped live test into a failure, so a topology that does not run is reported instead of
+# passing quietly.
 test-brokers: brokers-up
     #!/usr/bin/env bash
     set -euo pipefail
     trap 'just brokers-down' EXIT
     REDIS_TEST_URL=redis://127.0.0.1:6379 \
+    REDIS_AUTH_TEST_URL=redis://127.0.0.1:6385 \
+    REDIS_CLUSTER_TEST_URL=127.0.0.1:7000 \
+    REDIS_SENTINEL_TEST_URL=127.0.0.1:26379 \
+    RUSTSTREAM_REQUIRE_LIVE=1 \
         cargo test --workspace --all-features -- --test-threads=1
 
 fmt:

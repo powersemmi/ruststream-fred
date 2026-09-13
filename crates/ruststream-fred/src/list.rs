@@ -15,9 +15,10 @@
 //! such orphans to the main list; without it (the default) reliable lists have no orphan recovery,
 //! and Redis Streams ([`crate::RedisStream`]) remain the recommended durable path.
 //!
-//! Headers travel in a frame around the payload: a lossless binary frame
-//! by default, or a readable codec-serialized envelope when a codec is set with
-//! [`RedisList::codec`] / [`RedisListPublish::codec`].
+//! Headers travel in a frame around the payload: a binary frame by default, or a readable
+//! codec-serialized envelope when a codec is set with [`RedisList::codec`] /
+//! [`RedisListPublish::codec`]. Both framings are lossless; the envelope writes a field whose
+//! bytes are valid UTF-8 as text and any other bytes as themselves.
 
 use std::fmt::{Debug, Formatter};
 use std::future::{Future, ready};
@@ -36,12 +37,13 @@ use ruststream::codec::Codec;
 use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::{
     AckError, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage, PairError,
-    Partitioned, PublishPolicy, SubscriptionSource,
+    Partitioned, PublishPolicy, RedeliveryAddress, SubscriptionSource,
 };
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::deadletter::{self, PoisonPolicy, REASON_DROPPED, REASON_MAX_DELIVERIES};
 use crate::envelope::{SharedEnvelope, frame, unframe};
+use crate::partition::{RedisPublishOptions, resolved_headers};
 use crate::recovery::{self, RecoveryConfig};
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
 
@@ -73,7 +75,10 @@ pub mod prelude {
     pub use ruststream::prelude::*;
 
     pub use super::{Publish, RedisList};
-    pub use crate::{PARTITION_KEY_HEADER, RedisBroker, RedisPublishExt, RedisSubscribeExt};
+    pub use crate::{
+        PARTITION_KEY_HEADER, RedisBroker, RedisPublishOptions, RedisPublishSteps,
+        RedisSubscribeExt,
+    };
 
     #[cfg(any(
         feature = "tls-rustls",
@@ -186,7 +191,7 @@ impl RedisList {
     }
 
     /// Decodes the header/payload envelope with `codec` (must match the publisher). Without it the
-    /// default lossless binary framing is used.
+    /// default binary framing is used. Either way the payload arrives as it was published.
     pub fn codec(mut self, codec: impl Codec + 'static) -> Self {
         self.codec = Some(Arc::new(codec));
         self
@@ -319,8 +324,34 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisList {
     ) -> Result<Self::Subscriber, RedisError> {
         connected.subscribe_list(self).await
     }
+
+    /// The list key: the subscription pops from it and [`RedisListPublish`] pushes onto it, so a
+    /// deferred copy lands in the same queue the delivery came from.
+    fn redelivery_address(
+        &self,
+        _connected: &ConnectedRedisBroker,
+    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, RedisError>> {
+        ready(Ok(Some(RedeliveryAddress::new(self.key.clone()))))
+    }
 }
 
+/// Mounts the production descriptor on the in-process stand-in, which routes by list key alone.
+///
+/// The descriptor is validated exactly as [`ConnectedRedisBroker::subscribe_list`] validates it,
+/// so a subscription that a real server would refuse at startup is refused here too rather than
+/// passing a test and failing on deployment: a recovery ZSET named without a
+/// [`min_idle`](RedisList::min_idle) is rejected.
+///
+/// The rest of the descriptor is inert here, because the stand-in has one queue per key and
+/// delivers on publish: the processing list behind [`reliable`](RedisList::reliable), `block`,
+/// `dead_letter`, `max_deliveries`, and the orphan-recovery watchdog. The envelope
+/// [`codec`](RedisList::codec) is inert too, since deliveries carry their headers natively instead
+/// of framed into the entry, so a framing mismatch between a subscription and its publisher cannot
+/// surface in process.
+///
+/// What `reliable` does decide is settlement, and that matches the real transport: a reliable list
+/// acknowledges, while a simple one reports [`AckError::Unsupported`] here exactly as it does
+/// against a real server, so a test cannot assert on an acknowledgement the mode cannot make.
 #[cfg(feature = "testing")]
 impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisList {
     type Subscriber = crate::testing::RedisTestSubscriber;
@@ -333,7 +364,20 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisList 
         self,
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> Result<Self::Subscriber, RedisError> {
-        connected.subscribe(self.key()).await
+        self.recovery_config()?;
+        if self.is_reliable() {
+            connected.subscribe(self.key()).await
+        } else {
+            connected.subscribe_unsettleable(self.key()).await
+        }
+    }
+
+    /// The same answer the real broker gives, so a scope that starts against Redis starts here.
+    fn redelivery_address(
+        &self,
+        _connected: &crate::testing::ConnectedRedisTestBroker,
+    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, RedisError>> {
+        ready(Ok(Some(RedeliveryAddress::new(self.key.clone()))))
     }
 }
 
@@ -705,8 +749,9 @@ impl RedisListPublish {
         Self::default()
     }
 
-    /// Serializes the header/payload envelope with `codec` (must match the subscriber). Without it
-    /// the default lossless binary framing is used.
+    /// Serializes the header/payload envelope with `codec` (must match the subscriber), which makes
+    /// the wire value readable while the data is text. Without it the default binary framing is
+    /// used. Either way a payload that is not text is published byte for byte.
     pub fn codec(mut self, codec: impl Codec + 'static) -> Self {
         self.codec = Some(Arc::new(codec));
         self
@@ -733,6 +778,32 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisListPublish {
         connected: &ConnectedRedisBroker,
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(connected.list_publisher(self)))
+    }
+}
+
+/// Pairs the production policy against the in-process stand-in, so a routes file's
+/// `.out_reply(Publish)` mounts on both without naming a second type.
+///
+/// Both options the policy carries are inert in process: the stand-in has no key to expire, so
+/// [`ttl`](RedisListPublish::ttl) has nothing to re-arm, and it delivers headers natively rather
+/// than framed into the entry, so the envelope [`codec`](RedisListPublish::codec) never runs.
+/// A published entry therefore reads back as the bare payload here and as a frame on a real
+/// server, which is what a `published(..)` assertion sees.
+///
+/// The capability surface matches: this pairs into
+/// [`RedisTestPlainPublisher`](crate::testing::RedisTestPlainPublisher), which offers
+/// [`Publisher`](ruststream::Publisher) and nothing more, exactly as [`RedisListPublisher`] does.
+/// A slot bounded on a transaction capability therefore fails to compile here too, rather than
+/// passing in process and breaking on the production build.
+#[cfg(feature = "testing")]
+impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisListPublish {
+    type Live = crate::testing::RedisTestPlainPublisher;
+
+    fn pair(
+        self,
+        connected: &crate::testing::ConnectedRedisTestBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(connected.plain_publisher()))
     }
 }
 
@@ -777,10 +848,22 @@ fn ttl_millis(ttl: Duration) -> i64 {
 
 impl ruststream::Publisher for RedisListPublisher {
     type Error = RedisError;
+    /// `LPUSH` carries the key and the value and nothing else; the key TTL is a property of the
+    /// queue, fixed by the policy and re-armed on every publish. What a call site still says is
+    /// the partition key, framed into the entry with the message's other headers.
+    type Options = RedisPublishOptions;
 
-    async fn publish(&self, msg: ruststream::OutgoingMessage<'_>) -> Result<(), Self::Error> {
+    async fn publish(
+        &self,
+        msg: ruststream::OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
+    ) -> Result<(), Self::Error> {
         let pool = self.core.pool()?;
-        let body = frame(self.codec.as_ref(), msg.payload(), msg.headers());
+        let body = frame(
+            self.codec.as_ref(),
+            msg.payload(),
+            &resolved_headers(msg.headers(), options),
+        );
         let Some(ttl) = self.ttl else {
             let _: i64 = pool
                 .lpush(msg.name(), body)
