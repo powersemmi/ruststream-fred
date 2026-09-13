@@ -14,6 +14,7 @@ use crate::convert::fields_for_publish;
 use crate::deadletter::{self, PoisonPolicy, REASON_DROPPED, REASON_MAX_DELIVERIES};
 use crate::delay::{self, DelayConfig};
 use crate::seek::{EntryId, RedisGroupPosition, RedisGroupSeeker};
+use crate::stream::RequeueMode;
 
 /// The well-known header key for per-message routing / partitioning.
 ///
@@ -41,6 +42,10 @@ struct AckHandle {
 /// re-appends a copy of the entry to the same stream and then acks the original (at-least-once,
 /// so a duplicate is possible if the process crashes between the two); `nack(requeue = false)`
 /// acks the original to drop it.
+///
+/// On a [`claiming`](crate::RedisStream::claiming) subscription the retry is the read mode's own:
+/// `nack(requeue = true)` leaves the entry in the pending entries list, and the subscription's
+/// next read claims it back with the server's delivery count one higher.
 pub struct RedisMessage {
     payload: Bytes,
     headers: HeaderMap,
@@ -54,6 +59,8 @@ pub struct RedisMessage {
     /// The subscription's reposition handle, minted once when it opened. Shared rather than
     /// rebuilt, so carrying it costs one reference-count bump per delivery.
     seeker: Arc<RedisGroupSeeker>,
+    /// What `nack(requeue = true)` does here, which the subscription's read mode decides.
+    requeue: RequeueMode,
 }
 
 impl Debug for RedisMessage {
@@ -83,6 +90,7 @@ impl RedisMessage {
         policy: PoisonPolicy,
         delay: Option<DelayConfig>,
         seeker: Arc<RedisGroupSeeker>,
+        requeue: RequeueMode,
     ) -> Self {
         Self {
             payload,
@@ -97,6 +105,7 @@ impl RedisMessage {
             policy,
             delay,
             seeker,
+            requeue,
         }
     }
 
@@ -166,6 +175,14 @@ impl IncomingMessage for RedisMessage {
 
     async fn nack(mut self, requeue: bool) -> Result<(), AckError> {
         let handle = self.ack.take().expect("RedisMessage settled twice");
+        if requeue && self.requeue == RequeueMode::LeavePending {
+            // The claiming mode retries through the pending entries list: no copy is appended and
+            // the original is not acked, so the subscription's next read claims it back once it
+            // has been idle `min_idle`, with the server's delivery count one higher. The poison
+            // cap is checked there, against that count.
+            drop(handle);
+            return Ok(());
+        }
         if requeue {
             if self.policy.is_active() {
                 let next = next_retry_count(&self.headers);
@@ -318,6 +335,7 @@ mod tests {
             PoisonPolicy::default(),
             None,
             seeker,
+            RequeueMode::Republish,
         )
     }
 
