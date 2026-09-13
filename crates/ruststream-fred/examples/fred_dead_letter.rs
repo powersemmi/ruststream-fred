@@ -1,11 +1,11 @@
-//! Dead-letter routing and a poison cap on Redis Streams: a message that keeps failing is moved to
-//! a dead-letter stream instead of being redelivered forever or silently dropped.
+//! Capping the retries on Redis Streams: a message that keeps failing goes to a dead-letter stream
+//! instead of being redelivered forever or silently dropped.
 //!
 //! ```text
 //! cargo run --example fred_dead_letter --features macros,json -- run
 //! ```
 //!
-//! Enqueue a poison order from another terminal (id 0 keeps failing until the cap dead-letters it):
+//! Enqueue a poison order from another terminal (id 0 keeps failing until the cap moves it):
 //!
 //! ```text
 //! redis-cli XADD orders '*' _payload '{"id":0}'
@@ -20,17 +20,11 @@ struct Order {
 }
 
 // --8<-- [start:handler]
-// Cap redeliveries at 5. On the 5th failed delivery (or an explicit drop) the message is copied to
-// the "orders.dlq" stream, tagged with the reason, rather than retried forever or discarded.
-#[subscriber(
-    RedisStream::new("orders")
-        .group("workers")
-        .dead_letter("orders.dlq")
-        .max_deliveries(5)
-)]
+#[subscriber(RedisStream::new("orders").group("workers"))]
 async fn handle_order(order: &Order) -> HandlerOutcome {
     if order.id == 0 {
-        // A poison message: nack to retry. Once the cap is reached it is dead-lettered for you.
+        // A poison message: ask for a retry. Once the attempts are spent it is carried away for
+        // you, without the handler counting anything itself.
         return HandlerOutcome::retry();
     }
     println!("processed order {}", order.id);
@@ -44,7 +38,11 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
-            b.include(handle_order);
+            // Five deliveries per message, counting the first. The fifth failure sends it to the
+            // "orders.dlq" stream as it arrived, payload and headers, instead of back to "orders".
+            b.include(handle_order)
+                .max_attempts(nonzero!(5u32))
+                .dead_letter("orders.dlq");
         },
     )
 }

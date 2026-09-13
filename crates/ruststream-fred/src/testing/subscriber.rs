@@ -18,10 +18,10 @@ use ruststream::{
 use tokio::sync::mpsc;
 
 use crate::{
-    deadletter::{DELIVERY_COUNT_HEADER, IDLE_MS_HEADER},
     error::RedisError,
+    message::{DELIVERY_COUNT_HEADER, IDLE_MS_HEADER},
     testing::{
-        broker::{Settlement, TestBrokerState},
+        broker::{Settlement, StreamRetry, TestBrokerState},
         router::{Delivery, DeliveryReceiver, DeliverySender, SubscriptionId},
     },
 };
@@ -38,18 +38,21 @@ struct Claiming {
     rx: DeliveryReceiver,
 }
 
-/// What a subscription's `nack(requeue = true)` does with the entry.
+/// What a subscription's retry does with the entry.
 #[derive(Clone, Debug)]
-enum Retry {
-    /// Straight back onto the subscription's own queue, as the fresh tail and a reliable list
-    /// redeliver.
-    Requeue(DeliverySender),
-    /// Left pending: the claiming mode claims it back once it has been idle `min_idle`, with the
-    /// delivery count one higher.
-    Claim {
-        min_idle: Duration,
-        claims: DeliverySender,
-    },
+struct Retry {
+    /// The subscription's own queue: where an entry put back on the stream arrives, as a fresh
+    /// one. This is how the fresh tail and a reliable list redeliver.
+    requeue: DeliverySender,
+    /// Set on a claiming subscription, which retries through its pending entries list instead.
+    claim: Option<Claimback>,
+}
+
+/// Where a claiming subscription's retried entry waits, and for how long.
+#[derive(Clone, Debug)]
+struct Claimback {
+    min_idle: Duration,
+    claims: DeliverySender,
 }
 
 /// Subscriber returned by [`crate::testing::ConnectedRedisTestBroker::subscribe`].
@@ -65,6 +68,9 @@ pub struct RedisTestSubscriber {
     settlement: Settlement,
     /// Set on a claiming subscription, which keeps a pending entries list of its own.
     claiming: Option<Claiming>,
+    /// Whether the descriptor named a delay queue, which is what makes a delay native here as it
+    /// is against a real server.
+    delayed: bool,
 }
 
 impl std::fmt::Debug for RedisTestSubscriber {
@@ -82,12 +88,12 @@ impl RedisTestSubscriber {
         rx: DeliveryReceiver,
         requeue: DeliverySender,
         settlement: Settlement,
-        min_idle: Option<Duration>,
+        retry: StreamRetry,
     ) -> Self {
         // The harness installs its coordinator before any subscription opens, so reading it here
         // captures the live coordinator for the whole subscription.
         let coordinator = state.coordinator();
-        let claiming = min_idle.map(|min_idle| {
+        let claiming = retry.min_idle().map(|min_idle| {
             let (tx, rx) = mpsc::unbounded_channel();
             Claiming { min_idle, tx, rx }
         });
@@ -99,18 +105,19 @@ impl RedisTestSubscriber {
             coordinator,
             settlement,
             claiming,
+            delayed: retry.is_delayed(),
         }
     }
 
-    /// What a `nack(requeue = true)` on this subscription does, handed to every delivery.
+    /// What a retry on this subscription does, handed to every delivery.
     fn retry(&self) -> Retry {
-        self.claiming.as_ref().map_or_else(
-            || Retry::Requeue(self.requeue.clone()),
-            |claiming| Retry::Claim {
+        Retry {
+            requeue: self.requeue.clone(),
+            claim: self.claiming.as_ref().map(|claiming| Claimback {
                 min_idle: claiming.min_idle,
                 claims: claiming.tx.clone(),
-            },
-        )
+            }),
+        }
     }
 
     /// The next delivery for this subscription: a claimed entry before a fresh one, the order the
@@ -154,6 +161,7 @@ impl Subscriber for RedisTestSubscriber {
         let retry = self.retry();
         let coordinator = self.coordinator.clone();
         let settlement = self.settlement;
+        let delayed = self.delayed;
         // Poll the receiver in place rather than wrapping it in an owning stream, so `stream` can
         // be called again after the returned stream is dropped (the runtime and the conformance
         // helpers re-enter it per call).
@@ -165,6 +173,7 @@ impl Subscriber for RedisTestSubscriber {
                         retry.clone(),
                         coordinator.clone(),
                         settlement,
+                        delayed,
                     ))
                 })
             })
@@ -190,6 +199,10 @@ pub struct RedisTestMessage {
     coordinator: Option<Coordinator>,
     /// Inherited from the subscription that yielded this delivery.
     settlement: Settlement,
+    /// Whether the subscription named a delay queue, so a delay is served exactly.
+    delayed: bool,
+    /// The server's own delivery count, counting this delivery, on a claiming subscription.
+    delivered: Option<u64>,
 }
 
 impl Drop for RedisTestMessage {
@@ -220,12 +233,21 @@ impl RedisTestMessage {
         retry: Retry,
         coordinator: Option<Coordinator>,
         settlement: Settlement,
+        delayed: bool,
     ) -> Self {
+        // Only a claiming subscription stamps the counter, and only there does the real broker
+        // report a count of its own.
+        let delivered = retry
+            .claim
+            .is_some()
+            .then(|| next_delivery_count(&delivery.headers));
         Self {
             delivery: Some(delivery),
             retry,
             coordinator,
             settlement,
+            delayed,
+            delivered,
         }
     }
 
@@ -271,6 +293,11 @@ impl IncomingMessage for RedisTestMessage {
         ready(self.settlement_result())
     }
 
+    /// The count a claiming subscription reports, the way the real one reports the server's.
+    fn redelivery_count(&self) -> Option<u64> {
+        self.delivered
+    }
+
     fn nack(mut self, requeue: bool) -> impl Future<Output = Result<(), AckError>> {
         let delivery = self
             .delivery
@@ -279,51 +306,85 @@ impl IncomingMessage for RedisTestMessage {
         // A transport that cannot acknowledge cannot redeliver either: the delivery is dropped and
         // the caller told, rather than quietly re-queued into a subscription the real one would not.
         if requeue && self.settlement == Settlement::Settleable {
-            match self.retry.clone() {
+            match self.retry.claim.clone() {
+                Some(claim) => self.hold(delivery, claim.min_idle, claim.claims, true),
                 // The requeue bypasses `KeyRouter::publish`, so count the re-enqueue here to
                 // balance this message's `Drop` decrement. The redelivered copy is consumed (and
                 // decremented) in turn.
-                Retry::Requeue(tx) => {
-                    if tx.send(delivery).is_ok()
+                None => {
+                    if self.retry.requeue.send(delivery).is_ok()
                         && let Some(coordinator) = &self.coordinator
                     {
                         coordinator.enqueued();
                     }
                 }
-                Retry::Claim { min_idle, claims } => {
-                    self.leave_pending(delivery, min_idle, claims);
-                }
             }
         }
         ready(self.settlement_result())
     }
+
+    /// The answer the real delivery gives: a named delay queue or a claiming read mode holds the
+    /// message back itself, anything else leaves the delay to the runtime's copy.
+    fn supports_nack_after(&self) -> bool {
+        self.settlement == Settlement::Settleable && (self.delayed || self.retry.claim.is_some())
+    }
+
+    /// Holds the delivery back the way the subscription's own mechanism holds it: a delay queue
+    /// serves `delay` exactly and the entry comes back fresh, while a claiming subscription
+    /// without one leaves it pending and claims it back on its `min_idle`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AckError::Unsupported`] on a subscription with neither, the way the real
+    /// delivery reports it.
+    fn nack_after(mut self, delay: Duration) -> impl Future<Output = Result<(), AckError>> {
+        if !self.supports_nack_after() {
+            return ready(Err(AckError::Unsupported));
+        }
+        let delivery = self
+            .delivery
+            .take()
+            .expect("RedisTestMessage ack/nack invoked twice");
+        if self.delayed {
+            // The delay queue re-adds the entry to the stream, so it arrives as a fresh one with
+            // no claim counters of its own.
+            self.hold(delivery, delay, self.retry.requeue.clone(), false);
+        } else if let Some(claim) = self.retry.claim.clone() {
+            self.hold(delivery, claim.min_idle, claim.claims, true);
+        }
+        ready(Ok(()))
+    }
 }
 
 impl RedisTestMessage {
-    /// Leaves the entry in the subscription's pending entries list, the way the claiming mode
-    /// retries on a real server: nothing is appended to the stream and nothing is acknowledged,
-    /// and the entry is claimed back once it has been idle `min_idle`, with the delivery count one
-    /// higher.
+    /// Re-enqueues `delivery` on `queue` after `wait`, stamping the two claim counters when the
+    /// entry is one the subscription left pending.
+    ///
+    /// This is how the claiming mode retries on a real server: nothing is appended to the stream
+    /// and nothing is acknowledged, and the entry is claimed back once it has been idle
+    /// `min_idle`, with the delivery count one higher.
     ///
     /// The wait is off the reaction the harness drives, exactly as a broker's own delayed
     /// redelivery is: the delivery is consumed now and re-enqueued when the timer fires, which
     /// [`TestApp::advance`](ruststream::testing::TestApp::advance) is what moves.
-    fn leave_pending(&self, mut delivery: Delivery, min_idle: Duration, claims: DeliverySender) {
-        let claimed = next_delivery_count(&delivery.headers);
-        delivery
-            .headers
-            .insert(DELIVERY_COUNT_HEADER, claimed.to_string());
-        delivery.headers.insert(
-            IDLE_MS_HEADER,
-            u64::try_from(min_idle.as_millis())
-                .unwrap_or(u64::MAX)
-                .to_string(),
-        );
+    fn hold(&self, mut delivery: Delivery, wait: Duration, queue: DeliverySender, claims: bool) {
+        if claims {
+            let claimed = next_delivery_count(&delivery.headers);
+            delivery
+                .headers
+                .insert(DELIVERY_COUNT_HEADER, claimed.to_string());
+            delivery.headers.insert(
+                IDLE_MS_HEADER,
+                u64::try_from(wait.as_millis())
+                    .unwrap_or(u64::MAX)
+                    .to_string(),
+            );
+        }
         match self.coordinator.clone() {
             Some(coordinator) => {
                 let counted = coordinator.clone();
-                coordinator.schedule_redelivery(min_idle, move || {
-                    if claims.send(delivery).is_ok() {
+                coordinator.schedule_redelivery(wait, move || {
+                    if queue.send(delivery).is_ok() {
                         counted.enqueued();
                     }
                 });
@@ -331,8 +392,8 @@ impl RedisTestMessage {
             // Outside a harness run nothing drives the clock, so the wait is an ordinary timer.
             None => {
                 tokio::spawn(async move {
-                    tokio::time::sleep(min_idle).await;
-                    let _ = claims.send(delivery);
+                    tokio::time::sleep(wait).await;
+                    let _ = queue.send(delivery);
                 });
             }
         }
@@ -359,6 +420,7 @@ impl BatchSubscriber for RedisTestSubscriber {
         let retry = self.retry();
         let coordinator = self.coordinator.clone();
         let settlement = self.settlement;
+        let delayed = self.delayed;
         futures::stream::poll_fn(move |cx| {
             let first = match self.poll_delivery(cx) {
                 Poll::Pending => return Poll::Pending,
@@ -368,6 +430,7 @@ impl BatchSubscriber for RedisTestSubscriber {
                     retry.clone(),
                     coordinator.clone(),
                     settlement,
+                    delayed,
                 ),
             };
             let mut batch = vec![first];
@@ -379,6 +442,7 @@ impl BatchSubscriber for RedisTestSubscriber {
                             retry.clone(),
                             coordinator.clone(),
                             settlement,
+                            delayed,
                         ));
                     }
                     Poll::Ready(None) | Poll::Pending => break,

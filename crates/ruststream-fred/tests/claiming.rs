@@ -215,3 +215,58 @@ async fn a_handler_stops_retrying_at_the_delivery_count_it_caps_on() {
 
     tb.shutdown().await.expect("shutdown");
 }
+
+/// The same stream under a handler that asks for a delay shorter than the mode can give.
+#[derive(Debug, Deserialize, Outgoing, PartialEq, Serialize)]
+#[outgoing(name = "impatient")]
+struct ImpatientOrder {
+    id: u64,
+}
+
+/// Asks for a two-second delay on every delivery. The pending entries list is the only timer this
+/// mode has, so what the subscription can honour is its own `min_idle`.
+#[subscriber(RedisStream::claiming("impatient", MIN_IDLE).group("workers"))]
+async fn handle_impatient(order: &ImpatientOrder) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::retry_after(SHORT_DELAY)
+}
+
+/// Shorter than `MIN_IDLE`, which is what makes the rounding visible.
+const SHORT_DELAY: Duration = Duration::from_secs(2);
+
+/// A delayed retry on this mode is Redis's own: the entry stays pending and comes back on
+/// `min_idle`, so a shorter delay rounds up to it and nothing is published to the stream.
+#[tokio::test(start_paused = true)]
+async fn a_delay_shorter_than_min_idle_rounds_up_to_it() {
+    let app =
+        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
+            b.include(handle_impatient);
+        });
+    let tb = TestApp::start(app).await.expect("start");
+
+    tb.broker::<RedisTestBroker>()
+        .message(&ImpatientOrder { id: 4 })
+        .publish()
+        .await
+        .expect("publish");
+    tb.broker::<RedisTestBroker>()
+        .subscriber("impatient")
+        .assert_called_once();
+
+    // The delay the handler asked for has passed, the threshold the mode works to has not.
+    tb.advance(SHORT_DELAY).await.expect("advance");
+    tb.broker::<RedisTestBroker>()
+        .subscriber("impatient")
+        .assert_called(1);
+
+    tb.advance(MIN_IDLE).await.expect("advance");
+    tb.broker::<RedisTestBroker>()
+        .subscriber("impatient")
+        .assert_called(2);
+    // The entry itself came back: the copy path would have written a second one here.
+    tb.broker::<RedisTestBroker>()
+        .published::<ImpatientOrder>("impatient")
+        .assert_called_once();
+
+    tb.shutdown().await.expect("shutdown");
+}

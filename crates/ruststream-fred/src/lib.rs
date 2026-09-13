@@ -8,8 +8,8 @@
 //!
 //! Settlement follows the republish-retry model: `ack` is `XACK`, `nack(requeue = true)` re-appends
 //! a copy to the same stream then acks the original, and `nack(requeue = false)` acks to drop. A
-//! claiming subscription retries through the pending entries list instead, which is what lets the
-//! server's own delivery count cap the retries.
+//! claiming subscription retries through the pending entries list instead, and reports the
+//! server's own delivery count, which is what a `max_attempts` declaration at the mount site caps.
 //!
 //! The lifecycle is the framework's ladder of consuming transitions: [`RedisBroker`] records the
 //! topology synchronously, [`Broker::connect`](ruststream::Broker::connect) yields the
@@ -25,7 +25,6 @@
 mod broker;
 mod claim;
 mod convert;
-mod deadletter;
 mod delay;
 mod envelope;
 mod error;
@@ -50,18 +49,17 @@ pub mod pubsub;
 pub mod stream;
 
 pub use broker::{ClosedRedisBroker, ConnectedRedisBroker, RedisBroker};
-pub use deadletter::{DEAD_LETTER_REASON_HEADER, DELIVERY_COUNT_HEADER, IDLE_MS_HEADER};
 pub use delay::DelayedRetry;
 pub use error::RedisError;
 pub use list::{
     RedisList, RedisListMessage, RedisListPublish, RedisListPublisher, RedisListSubscriber,
 };
-pub use message::{PARTITION_KEY_HEADER, RedisMessage};
+pub use message::{DELIVERY_COUNT_HEADER, IDLE_MS_HEADER, PARTITION_KEY_HEADER, RedisMessage};
 pub use partition::{RedisPublishOptions, RedisPublishSteps};
 pub use publisher::{RedisPublish, RedisPublisher, RedisTransaction};
 pub use pubsub::{
-    PubSubMode, RedisPubSub, RedisPubSubMessage, RedisPubSubPublish, RedisPubSubPublisher,
-    RedisPubSubSubscriber,
+    PubSubMode, RedisPubSub, RedisPubSubMessage, RedisPubSubPattern, RedisPubSubPublish,
+    RedisPubSubPublisher, RedisPubSubSubscriber,
 };
 pub use seek::{EntryId, RedisGroupPosition, RedisGroupSeeker};
 pub use settings::RedisSubscribeExt;

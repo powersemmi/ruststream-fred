@@ -150,6 +150,9 @@ async fn one_read_returns_the_pending_entry_before_the_fresh_one() {
         claimed.headers().get_str(IDLE_MS_HEADER).is_some(),
         "a claimed entry reports how long it had been pending"
     );
+    // The count the runtime caps on adds the delivery being made, so it is one ahead of the
+    // header, which reports the pending list as it stood before the claim.
+    assert_eq!(claimed.redelivery_count(), Some(2));
     claimed.ack().await.expect("ack");
 
     let fresh = next(&mut stream).await.expect("fresh delivery");
@@ -161,6 +164,11 @@ async fn one_read_returns_the_pending_entry_before_the_fresh_one() {
         ),
         (Some("0"), Some("0")),
         "an entry read off the tail has never been claimed",
+    );
+    assert_eq!(
+        fresh.redelivery_count(),
+        Some(1),
+        "a first delivery counts as one, whatever the read mode",
     );
     fresh.ack().await.expect("ack");
 

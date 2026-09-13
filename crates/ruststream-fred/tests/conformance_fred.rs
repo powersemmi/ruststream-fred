@@ -48,9 +48,7 @@ async fn test_broker_passes_lifecycle() {
     .await;
 }
 
-// The other two forms through the same ladder. Each reports a redelivery address, and the suite
-// publishes to it and expects the subscription that reported it to receive the copy, so these legs
-// are what holds the list key and the Pub/Sub channel to their promise.
+// The other two forms through the same ladder.
 
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -67,6 +65,45 @@ async fn test_broker_passes_list_lifecycle() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_broker_passes_pubsub_lifecycle() {
     harness::lifecycle(
+        RedisTestBroker::new,
+        |channel| RedisPubSub::new(channel),
+        |connected| connected.plain_publisher(),
+    )
+    .await;
+}
+
+// What a descriptor addressing its own copies promises: publish to the address it reports and the
+// subscription that reported it gets the message. Every descriptor of this crate but the pattern
+// one answers, so each gets a leg; a reclaim subscription is the exception among the read modes,
+// because it takes only entries already pending on another consumer, and its copy is read by the
+// group's tail reader instead. That topology is a live-server matter, so it is checked there.
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broker_addresses_stream_copies() {
+    harness::redelivery_address(
+        RedisTestBroker::new,
+        |key| RedisStream::new(key).group("conformance"),
+        |connected| connected.publisher(),
+    )
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broker_addresses_list_copies() {
+    harness::redelivery_address(
+        RedisTestBroker::new,
+        |key| RedisList::new(key).reliable(),
+        |connected| connected.plain_publisher(),
+    )
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broker_addresses_pubsub_copies() {
+    harness::redelivery_address(
         RedisTestBroker::new,
         |channel| RedisPubSub::new(channel),
         |connected| connected.plain_publisher(),
@@ -148,8 +185,7 @@ async fn passes_lifecycle() {
     .await;
 }
 
-// The live halves of the two extra ladders: a real `LPUSH` to the reported list key and a real
-// `PUBLISH` to the reported channel have to reach the subscription that named them.
+// The live halves of the two extra ladders.
 
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -172,6 +208,52 @@ async fn passes_pubsub_lifecycle() {
         return;
     };
     harness::lifecycle(
+        || RedisBroker::standalone(url.clone()),
+        |channel| RedisPubSub::new(channel),
+        |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
+    )
+    .await;
+}
+
+// The live halves of the address promise: a real `XADD` to the reported stream key, `LPUSH` to the
+// reported list key and `PUBLISH` to the reported channel have to reach the subscription that
+// named them.
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn addresses_stream_copies() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    Box::pin(harness::redelivery_address(
+        || RedisBroker::standalone(url.clone()),
+        |key| RedisStream::new(key).group("conformance"),
+        |connected| connected.publisher(),
+    ))
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn addresses_list_copies() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    harness::redelivery_address(
+        || RedisBroker::standalone(url.clone()),
+        |key| RedisList::new(key).reliable(),
+        |connected| connected.list_publisher(RedisListPublish::new()),
+    )
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn addresses_pubsub_copies() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    harness::redelivery_address(
         || RedisBroker::standalone(url.clone()),
         |channel| RedisPubSub::new(channel),
         |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),

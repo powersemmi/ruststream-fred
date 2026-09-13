@@ -18,15 +18,23 @@ use ruststream::{BatchSubscriber, Seekable, Subscriber};
 
 use crate::claim::{self, ClaimedEntry};
 use crate::convert::{HEADER_PREFIX, parts_from_fields};
-use crate::deadletter::{
-    self, DELIVERY_COUNT_HEADER, IDLE_MS_HEADER, PoisonPolicy, REASON_MAX_DELIVERIES,
-};
 use crate::delay::{self, DelayConfig};
+use crate::message::{DELIVERY_COUNT_HEADER, IDLE_MS_HEADER, RedisMessage};
 use crate::seek::{EntryId, RedisGroupSeeker};
-use crate::{error::RedisError, message::RedisMessage, stream::ReadMode};
+use crate::{error::RedisError, stream::ReadMode};
 
-/// One decoded stream entry: its ID and field map.
-type Entry = (String, HashMap<String, Vec<u8>>);
+/// One decoded stream entry: its id, its field map, and the server's delivery count where the read
+/// mode reports one.
+///
+/// The count reaches the delivery as a value rather than only as a header, because the runtime
+/// reads it to apply the registration's `max_attempts` declaration.
+struct Entry {
+    id: String,
+    fields: HashMap<String, Vec<u8>>,
+    /// Deliveries of this entry counting this one, on the two modes that claim. `None` on the
+    /// fresh tail, which claims nothing.
+    delivered: Option<u64>,
+}
 
 /// `XREADGROUP` reply shape parsed as nested arrays rather than maps: the RESP2 reply is an array of
 /// `[key, [[id, [field, value, ...]], ...]]`, which does not convert to fred's map-based
@@ -62,7 +70,6 @@ pub struct RedisSubscriber {
     consumer: String,
     block: Duration,
     mode: ReadMode,
-    policy: PoisonPolicy,
     /// Set when the subscription opted into a durable ZSET delay queue; drives native `nack_after`
     /// on each delivery and the due-entry sweep on each fetch.
     delay: Option<DelayConfig>,
@@ -104,7 +111,6 @@ impl RedisSubscriber {
         consumer: String,
         block: Duration,
         mode: ReadMode,
-        policy: PoisonPolicy,
         delay: Option<DelayConfig>,
     ) -> Self {
         let generation = Arc::new(AtomicU64::new(0));
@@ -121,7 +127,6 @@ impl RedisSubscriber {
             consumer,
             block,
             mode,
-            policy,
             delay,
             cursor: RECLAIM_START.to_owned(),
             buffer: VecDeque::new(),
@@ -138,23 +143,20 @@ impl RedisSubscriber {
     /// Returns [`RedisError::Stream`] when the server sent an id that is not a well-formed
     /// `<milliseconds>-<sequence>` pair, which would leave the delivery unable to report its
     /// position.
-    fn message(
-        &self,
-        id: String,
-        fields: HashMap<String, Vec<u8>>,
-    ) -> Result<RedisMessage, RedisError> {
-        let entry: EntryId = id.parse()?;
-        let (payload, headers) = parts_from_fields(fields);
+    fn message(&self, entry: Entry) -> Result<RedisMessage, RedisError> {
+        let id = entry.id;
+        let parsed: EntryId = id.parse()?;
+        let (payload, headers) = parts_from_fields(entry.fields);
         Ok(RedisMessage::new(
             self.pool.clone(),
             self.key.clone(),
             self.group.clone(),
             id,
-            entry,
+            parsed,
             payload,
             headers,
-            self.policy.clone(),
             self.delay.clone(),
+            entry.delivered,
             Arc::clone(&self.seeker),
             self.mode.requeue(),
         ))
@@ -217,7 +219,11 @@ impl RedisSubscriber {
             .unwrap_or_default();
         Ok(entries
             .into_iter()
-            .map(|(id, fields)| (id, fields.into_iter().collect()))
+            .map(|(id, fields)| Entry {
+                id,
+                fields: fields.into_iter().collect(),
+                delivered: None,
+            })
             .collect())
     }
 
@@ -263,30 +269,30 @@ impl RedisSubscriber {
             .await
             .map_err(RedisError::stream)?;
         let claimed = claim::decode_reply(&frame, &self.key)?;
-        self.annotate_claimed(claimed).await
+        Ok(Self::annotate_claimed(claimed))
     }
 
-    /// Hands each claimed entry its two counters as headers, and dead-letters (or drops) the ones
-    /// whose delivery count has reached `max_deliveries` instead of delivering them again.
+    /// Hands each claimed entry its two counters: as headers a handler can read, and as the
+    /// delivery count the runtime caps on.
     ///
-    /// Unlike the reclaim path this needs no second round trip: `CLAIM` reports both counters with
-    /// the entry. It reports them as of the delivery before this one, though, so a fresh entry
-    /// reports zero and the cap is checked against the delivery this read is about to make. The
-    /// reclaim path reads the same counter after the claim, where it already includes it, so the
-    /// two modes cap at the same attempt.
-    async fn annotate_claimed(&self, claimed: Vec<ClaimedEntry>) -> Result<Vec<Entry>, RedisError> {
-        let mut out = Vec::with_capacity(claimed.len());
-        for entry in claimed {
-            if self.policy.is_poison(entry.delivery_count + 1) {
-                self.dead_letter_reclaimed(&entry.id, &entry.fields).await?;
-                continue;
-            }
-            let mut fields = entry.fields;
-            insert_meta_header(&mut fields, DELIVERY_COUNT_HEADER, entry.delivery_count);
-            insert_meta_header(&mut fields, IDLE_MS_HEADER, entry.idle_ms);
-            out.push((entry.id, fields));
-        }
-        Ok(out)
+    /// Unlike the reclaim path this needs no round trip of its own: `CLAIM` reports both counters
+    /// with the entry. It reports them as of the delivery before this one, so the count this
+    /// delivery makes is added on, which is where the reclaim path's `XPENDING` value already
+    /// stands - the two modes then cap at the same attempt.
+    fn annotate_claimed(claimed: Vec<ClaimedEntry>) -> Vec<Entry> {
+        claimed
+            .into_iter()
+            .map(|entry| {
+                let mut fields = entry.fields;
+                insert_meta_header(&mut fields, DELIVERY_COUNT_HEADER, entry.delivery_count);
+                insert_meta_header(&mut fields, IDLE_MS_HEADER, entry.idle_ms);
+                Entry {
+                    id: entry.id,
+                    fields,
+                    delivered: Some(entry.delivery_count + 1),
+                }
+            })
+            .collect()
     }
 
     async fn fetch_reclaim(
@@ -311,33 +317,32 @@ impl RedisSubscriber {
         // Nothing left to reclaim this pass: avoid a hot loop until more entries go stale.
         if entries.is_empty() {
             tokio::time::sleep(self.block).await;
-            return Ok(entries);
-        }
-        // Plain reclaim with no poison policy: skip the extra XPENDING and deliver as-is.
-        if !self.policy.is_active() {
-            return Ok(entries);
+            return Ok(Vec::new());
         }
         self.enrich_reclaimed(entries, count).await
     }
 
-    /// Annotates reclaimed entries with their native delivery count and idle time, and dead-letters
-    /// (or drops) any that have exceeded `max_deliveries` instead of redelivering them.
+    /// Annotates reclaimed entries with their native delivery count and idle time.
+    ///
+    /// `XAUTOCLAIM` does not report either, so this costs one `XPENDING` per read that found
+    /// something - not per entry. It is what the mode answers `redelivery_count` with, which is
+    /// how a `max_attempts` declaration at the mount site reaches a reclaimed delivery.
     async fn enrich_reclaimed(
         &self,
-        entries: Vec<Entry>,
+        entries: Vec<XReadValue<String, String, Vec<u8>>>,
         limit: u64,
     ) -> Result<Vec<Entry>, RedisError> {
         let meta = self.pending_meta(limit).await?;
         let mut out = Vec::with_capacity(entries.len());
         for (id, mut fields) in entries {
             let (idle, count) = meta.get(&id).copied().unwrap_or((0, 0));
-            if self.policy.is_poison(count) {
-                self.dead_letter_reclaimed(&id, &fields).await?;
-                continue;
-            }
             insert_meta_header(&mut fields, DELIVERY_COUNT_HEADER, count);
             insert_meta_header(&mut fields, IDLE_MS_HEADER, idle);
-            out.push((id, fields));
+            out.push(Entry {
+                id,
+                fields,
+                delivered: Some(count),
+            });
         }
         Ok(out)
     }
@@ -358,31 +363,6 @@ impl RedisSubscriber {
             .into_iter()
             .map(|(id, _consumer, idle, count)| (id, (idle, count)))
             .collect())
-    }
-
-    /// Routes a poison reclaimed entry to its dead-letter stream (or discards it when none is set),
-    /// then `XACK`s it so it leaves the pending list.
-    async fn dead_letter_reclaimed(
-        &self,
-        id: &str,
-        fields: &HashMap<String, Vec<u8>>,
-    ) -> Result<(), RedisError> {
-        let (payload, headers) = parts_from_fields(fields.clone());
-        deadletter::settle_poison_stream(
-            &self.pool,
-            &self.policy,
-            &payload,
-            &headers,
-            REASON_MAX_DELIVERIES,
-        )
-        .await
-        .map_err(RedisError::stream)?;
-        let _: i64 = self
-            .pool
-            .xack(self.key.as_str(), self.group.as_str(), id)
-            .await
-            .map_err(RedisError::stream)?;
-        Ok(())
     }
 }
 
@@ -410,8 +390,8 @@ impl Subscriber for RedisSubscriber {
         unfold(self, |s| async move {
             loop {
                 s.discard_stale();
-                if let Some((id, fields)) = s.buffer.pop_front() {
-                    return Some((s.message(id, fields), s));
+                if let Some(entry) = s.buffer.pop_front() {
+                    return Some((s.message(entry), s));
                 }
                 // An empty fetch (a blocking read that timed out) just loops and reads again.
                 if let Err(err) = s.fetch(PREFETCH).await {
@@ -460,7 +440,7 @@ impl BatchSubscriber for RedisSubscriber {
                     let entries = std::mem::replace(&mut s.buffer, tail);
                     let batch = entries
                         .into_iter()
-                        .map(|(id, fields)| s.message(id, fields))
+                        .map(|entry| s.message(entry))
                         .collect::<Result<Vec<_>, _>>();
                     return Some((batch, s));
                 }

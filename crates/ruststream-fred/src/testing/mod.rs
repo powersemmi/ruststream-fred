@@ -16,11 +16,12 @@
 //!   `nack(requeue = true)` redelivery on a stream or a reliable list, `AckError::Unsupported` and
 //!   no redelivery on Pub/Sub or a simple list.
 //!
-//! All three descriptors and all three publish policies mount here, so a service is tested on the
-//! wiring it ships: the `#[subscriber(RedisStream::new(..).group(..))]` a routes file writes is the
-//! one the harness mounts, the same holds for [`RedisList`](crate::RedisList) and
-//! [`RedisPubSub`](crate::RedisPubSub), and `.out_reply(Publish)` names the production policy on
-//! both brokers. There is no test-only policy type; [`RedisPublish`](crate::RedisPublish) is also
+//! The three channel-addressed descriptors and all three publish policies mount here, so a service
+//! is tested on the wiring it ships: the `#[subscriber(RedisStream::new(..).group(..))]` a routes
+//! file writes is the one the harness mounts, the same holds for [`RedisList`](crate::RedisList)
+//! and [`RedisPubSub`](crate::RedisPubSub), and `.out_reply(Publish)` names the production policy
+//! on both brokers. A [`RedisPubSubPattern`](crate::RedisPubSubPattern) is the exception and says
+//! so at startup: the stand-in matches channel names exactly. There is no test-only policy type; [`RedisPublish`](crate::RedisPublish) is also
 //! the stand-in's default reply publisher.
 //!
 //! A descriptor resolves to its key or channel, which is all the stand-in routes by, and a policy
@@ -36,14 +37,15 @@
 //! no consumer-group cursor to reposition.
 //!
 //! No `redis-server`, no docker, no network. Broker-specific edge cases (consumer-group cursors,
-//! `XAUTOCLAIM` redelivery, idle reclaim, `MAXLEN` trimming, dead-letter routing) are out of scope
-//! here. Exercise them against a real Redis server.
+//! `XAUTOCLAIM` redelivery, idle reclaim, `MAXLEN` trimming) are out of scope here. Exercise them
+//! against a real Redis server.
 
 mod broker;
 mod publisher;
 mod router;
 mod subscriber;
 
+pub(crate) use broker::StreamRetry;
 pub use broker::{ConnectedRedisTestBroker, RedisTestBroker};
 pub use publisher::{RedisTestPlainPublisher, RedisTestPublisher, RedisTestTransaction};
 pub use subscriber::{RedisTestMessage, RedisTestSubscriber};

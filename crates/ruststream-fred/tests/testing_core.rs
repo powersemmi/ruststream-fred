@@ -18,14 +18,14 @@ use ruststream::runtime::{AppInfo, HandlerOutcome, PublishExt, RustStream};
 use ruststream::subscriber;
 use ruststream::testing::TestApp;
 use ruststream::{
-    AckError, BatchSubscriber, Broker, ConnectedBroker, DescribeServer, HeaderMap, IncomingMessage,
-    Outgoing, OutgoingMessage, OwnedTransactions, Partitioned, Publisher, RawMessage, Serialized,
-    Subscribe, Subscriber, SubscriptionSource, Transaction, TransactionalPublisher, nonzero,
-    testing::expect_published,
+    AckError, AddressedCopies, BatchSubscriber, Broker, ConnectedBroker, DescribeServer, HeaderMap,
+    IncomingMessage, NamedCopies, Outgoing, OutgoingMessage, OwnedTransactions, Partitioned,
+    Publisher, RawMessage, RedeliveryAddressed, Serialized, Subscribe, Subscriber,
+    SubscriptionSource, Transaction, TransactionalPublisher, nonzero, testing::expect_published,
 };
 use ruststream_fred::{
-    PARTITION_KEY_HEADER, PubSubMode, RedisError, RedisList, RedisPubSub, RedisPublishSteps,
-    RedisStream,
+    ConnectedRedisBroker, PARTITION_KEY_HEADER, RedisError, RedisList, RedisPubSub,
+    RedisPubSubPattern, RedisPublishSteps, RedisStream,
     testing::{ConnectedRedisTestBroker, RedisTestBroker, RedisTestMessage},
 };
 use serde::{Deserialize, Serialize};
@@ -868,12 +868,6 @@ async fn recover_orphan(order: &Order) -> HandlerOutcome {
     HandlerOutcome::ack()
 }
 
-#[subscriber(RedisPubSub::new("events.*").pattern().mode(PubSubMode::Sharded))]
-async fn sharded_pattern(order: &Order) -> HandlerOutcome {
-    let _ = order;
-    HandlerOutcome::ack()
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stream_without_a_group_is_refused_in_process_too() {
     let app =
@@ -901,20 +895,6 @@ async fn a_list_recovery_without_min_idle_is_refused_in_process_too() {
     assert!(format!("{err}").contains("needs a min_idle"), "got {err}");
 }
 
-// The narrower misconfiguration keeps its own message: a sharded pattern is wrong on any broker,
-// so it must not be reported as a limitation of the stand-in.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_sharded_pattern_is_refused_in_process_too() {
-    let app =
-        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
-            b.include(sharded_pattern);
-        });
-    let err = TestApp::start(app)
-        .await
-        .expect_err("the subscription must be refused at startup");
-    assert!(format!("{err}").contains("classic-only"), "got {err}");
-}
-
 // What the stand-in refuses rather than reinterprets. Both would otherwise mount and deliver
 // something the real subscription never delivers, so the mount fails loudly instead.
 
@@ -924,7 +904,7 @@ async fn reclaim_stale(order: &Order) -> HandlerOutcome {
     HandlerOutcome::ack()
 }
 
-#[subscriber(RedisPubSub::new("events.*").pattern())]
+#[subscriber(RedisPubSubPattern::new("events.*"))]
 async fn glob_events(order: &Order) -> HandlerOutcome {
     let _ = order;
     HandlerOutcome::ack()
@@ -945,17 +925,38 @@ async fn a_reclaim_subscription_does_not_mount_in_process() {
     );
 }
 
+/// A pattern names where its copies go at the mount site, so the registration is complete and the
+/// refusal that follows is the stand-in's own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pattern_subscription_does_not_mount_in_process() {
     let app =
         RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
-            b.include(glob_events);
+            b.include(glob_events)
+                .out_retry(ruststream_fred::pubsub::Publish::new())
+                .to("events.retry");
         });
     let err = TestApp::start(app)
         .await
         .expect_err("the subscription must be refused at startup");
     assert!(
         format!("{err}").contains("matches channel names exactly"),
+        "got {err}"
+    );
+}
+
+/// The other half: a pattern registration that names no destination refuses to start, because the
+/// descriptor addresses none itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pattern_registration_without_a_destination_refuses_to_start() {
+    let app =
+        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
+            b.include(glob_events);
+        });
+    let err = TestApp::start(app)
+        .await
+        .expect_err("the registration must be refused at startup");
+    assert!(
+        format!("{err}").contains("names no destination"),
         "got {err}"
     );
 }
@@ -1073,68 +1074,79 @@ enum Settleable {
     List,
 }
 
-// Where a deferred retry is published. The three forms that can be reached again answer with the
-// key or the channel, and the conformance ladders hold that answer to its promise. The two that
-// cannot stay silent, so a scope wiring a retry publisher over them refuses to start instead of
-// dropping every delayed message into a name nobody reads.
+// Where a retry copy is published. Every descriptor that names one destination answers with its
+// key or channel, and the conformance ladders hold that answer to its promise. The one that reads
+// many, a pattern subscription, declares `NamedCopies` instead, so the mount site owes a
+// destination and nothing here has an address to check.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn every_reachable_form_reports_where_a_retry_is_published() {
+async fn every_addressed_descriptor_reports_where_a_retry_copy_goes() {
     let broker = connected().await;
 
-    assert_eq!(
-        RedisStream::new("orders")
-            .group("workers")
-            .redelivery_address(&broker)
-            .await
-            .expect("reporting an address must not fail")
-            .map(|address| address.to_string()),
-        Some("orders".to_owned()),
-    );
-    assert_eq!(
-        RedisList::new("jobs")
-            .reliable()
-            .redelivery_address(&broker)
-            .await
-            .expect("reporting an address must not fail")
-            .map(|address| address.to_string()),
-        Some("jobs".to_owned()),
-    );
-    assert_eq!(
-        RedisPubSub::new("notifications")
-            .redelivery_address(&broker)
-            .await
-            .expect("reporting an address must not fail")
-            .map(|address| address.to_string()),
-        Some("notifications".to_owned()),
-    );
-    assert_eq!(
-        Subscribe::redelivery_address(&broker, "orders").map(|address| address.to_string()),
-        Some("orders".to_owned()),
-        "a bare-name subscription opens a group over the key, and an XADD there reaches it",
-    );
+    for (reported, expected) in [
+        (
+            RedisStream::new("orders")
+                .group("workers")
+                .redelivery_address(&broker)
+                .await,
+            "orders",
+        ),
+        (
+            RedisStream::reclaim("orders", Duration::from_secs(30))
+                .group("workers")
+                .redelivery_address(&broker)
+                .await,
+            "orders",
+        ),
+        (
+            RedisStream::claiming("orders", Duration::from_secs(30))
+                .group("workers")
+                .redelivery_address(&broker)
+                .await,
+            "orders",
+        ),
+        (
+            RedisList::new("jobs")
+                .reliable()
+                .redelivery_address(&broker)
+                .await,
+            "jobs",
+        ),
+        (
+            RedisPubSub::new("notifications")
+                .redelivery_address(&broker)
+                .await,
+            "notifications",
+        ),
+    ] {
+        assert_eq!(
+            reported
+                .expect("reporting an address must not fail")
+                .as_str(),
+            expected,
+        );
+    }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_reclaim_stream_and_a_pattern_channel_report_nothing() {
-    let broker = connected().await;
+/// The by-name form takes the broker's own answer, so `#[subscriber("orders")]` needs nothing
+/// from the mount site either: the key is both what it reads and what a copy is written to.
+#[test]
+fn a_bare_name_addresses_its_own_copies() {
+    fn addressed<C: Subscribe<Copies = AddressedCopies>>() {}
+    addressed::<ConnectedRedisTestBroker>();
+    addressed::<ConnectedRedisBroker>();
+}
 
-    assert_eq!(
-        RedisStream::reclaim("recovered", Duration::from_secs(30))
-            .group("workers")
-            .redelivery_address(&broker)
-            .await
-            .expect("reporting an address must not fail"),
-        None,
-        "XAUTOCLAIM reads entries already pending elsewhere, so a fresh XADD never arrives here",
-    );
-    assert_eq!(
-        RedisPubSub::new("events.*")
-            .pattern()
-            .redelivery_address(&broker)
-            .await
-            .expect("reporting an address must not fail"),
-        None,
-        "a glob is matched against channel names; it is not a channel a PUBLISH can name",
-    );
+/// A pattern reads many channels and a glob is not a channel a `PUBLISH` can name, so the
+/// descriptor declares that the mount site names the destination.
+#[test]
+fn a_pattern_leaves_the_destination_to_the_mount_site() {
+    fn named<C, S>()
+    where
+        C: ConnectedBroker,
+        S: SubscriptionSource<C, Copies = NamedCopies>,
+    {
+    }
+    named::<ConnectedRedisBroker, RedisPubSubPattern>();
+    named::<ConnectedRedisTestBroker, RedisPubSubPattern>();
 }

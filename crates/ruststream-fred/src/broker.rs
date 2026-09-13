@@ -21,16 +21,15 @@ use fred::types::config::CredentialProvider;
 ))]
 use fred::types::config::TlsConfig;
 use fred::types::config::{Config, ServerConfig};
-use ruststream::{
-    Broker, ConnectedBroker, DescribeServer, RedeliveryAddress, ServerSpec, Subscribe,
-};
+use ruststream::{AddressedCopies, Broker, ConnectedBroker, DescribeServer, ServerSpec, Subscribe};
 
 use crate::{
     error::RedisError,
     list::{RedisList, RedisListPublish, RedisListPublisher, RedisListSubscriber},
     publisher::RedisPublisher,
     pubsub::{
-        PubSubMode, RedisPubSub, RedisPubSubPublish, RedisPubSubPublisher, RedisPubSubSubscriber,
+        PubSubMode, RedisPubSub, RedisPubSubPattern, RedisPubSubPublish, RedisPubSubPublisher,
+        RedisPubSubSubscriber,
     },
     stream::{ReadMode, RedisStream},
     subscriber::RedisSubscriber,
@@ -607,33 +606,51 @@ impl ConnectedRedisBroker {
             consumer,
             def.block_or_default(),
             def.mode(),
-            def.poison_policy(),
             def.delay_config(),
         ))
     }
 
-    /// Opens a Pub/Sub subscription described by `def` on a dedicated client.
+    /// Opens a Pub/Sub subscription on one channel, described by `def`, on a dedicated client.
     ///
     /// # Errors
     ///
-    /// Returns [`RedisError::InvalidOptions`] for an invalid mode/pattern combination,
-    /// [`RedisError::ShutDown`] when the connection was already torn down,
+    /// Returns [`RedisError::ShutDown`] when the connection was already torn down,
     /// [`RedisError::Connect`] when the dedicated client cannot connect, or
     /// [`RedisError::Subscribe`] when the subscribe command fails.
     pub async fn subscribe_pubsub(
         &self,
         def: RedisPubSub,
     ) -> Result<RedisPubSubSubscriber, RedisError> {
-        def.validate()?;
         let codec = def.codec_handle();
         let client = self.new_client().await?;
         let channel = def.channel().to_owned();
-        let result = match (def.delivery_mode(), def.is_pattern()) {
-            (PubSubMode::Classic, true) => client.psubscribe(channel).await,
-            (PubSubMode::Classic, false) => client.subscribe(channel).await,
-            (PubSubMode::Sharded, _) => client.ssubscribe(channel).await,
+        let result = match def.delivery_mode() {
+            PubSubMode::Classic => client.subscribe(channel).await,
+            PubSubMode::Sharded => client.ssubscribe(channel).await,
         };
         result.map_err(RedisError::subscribe)?;
+        let rx = client.message_rx();
+        Ok(RedisPubSubSubscriber::new(client, rx, codec))
+    }
+
+    /// Opens a Pub/Sub subscription on a glob (`PSUBSCRIBE`), described by `def`, on a dedicated
+    /// client.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RedisError::ShutDown`] when the connection was already torn down,
+    /// [`RedisError::Connect`] when the dedicated client cannot connect, or
+    /// [`RedisError::Subscribe`] when the subscribe command fails.
+    pub async fn subscribe_pubsub_pattern(
+        &self,
+        def: RedisPubSubPattern,
+    ) -> Result<RedisPubSubSubscriber, RedisError> {
+        let codec = def.codec_handle();
+        let client = self.new_client().await?;
+        client
+            .psubscribe(def.pattern().to_owned())
+            .await
+            .map_err(RedisError::subscribe)?;
         let rx = client.message_rx();
         Ok(RedisPubSubSubscriber::new(client, rx, codec))
     }
@@ -662,7 +679,6 @@ impl ConnectedRedisBroker {
         let processing = def.processing_or_default();
         let block = def.block_or_default();
         let codec = def.codec_handle();
-        let poison = def.poison_policy();
         ready(Ok(RedisListSubscriber::new(
             pool,
             def.into_key(),
@@ -670,7 +686,6 @@ impl ConnectedRedisBroker {
             processing,
             block,
             codec,
-            poison,
             recovery,
         )))
     }
@@ -764,6 +779,9 @@ impl ClosedRedisBroker {
 )]
 impl Subscribe for ConnectedRedisBroker {
     type Subscriber = RedisSubscriber;
+    /// A bare name opens a consumer group over that stream key, and an `XADD` there is read by the
+    /// group again, so the name is both ends and a retry copy needs nothing from the mount site.
+    type Copies = AddressedCopies;
 
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
         let group = self.core.default_group.clone().ok_or_else(|| {
@@ -774,13 +792,6 @@ impl Subscribe for ConnectedRedisBroker {
             ))
         })?;
         ConnectedRedisBroker::subscribe(self, RedisStream::new(name).group(group)).await
-    }
-
-    /// The stream key itself. A bare name opens a consumer group over that key, and an `XADD`
-    /// there reaches the group again, so `#[subscriber("orders")]` composes with a scope's
-    /// deferred retry publisher.
-    fn redelivery_address(&self, name: &str) -> Option<RedeliveryAddress> {
-        Some(RedeliveryAddress::new(name.to_owned()))
     }
 }
 

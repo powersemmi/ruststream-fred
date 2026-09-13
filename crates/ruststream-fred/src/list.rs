@@ -34,14 +34,13 @@ use fred::types::lists::LMoveDirection;
 use futures::Stream;
 use futures::stream::unfold;
 use ruststream::codec::Codec;
-use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::{
-    AckError, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage, PairError,
-    Partitioned, PublishPolicy, RedeliveryAddress, SubscriptionSource,
+    AckError, AddressedCopies, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage,
+    PairError, Partitioned, PublishPolicy, RedeliveryAddress, RedeliveryAddressed,
+    SubscriptionSource,
 };
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
-use crate::deadletter::{self, PoisonPolicy, REASON_DROPPED, REASON_MAX_DELIVERIES};
 use crate::envelope::{SharedEnvelope, frame, unframe};
 use crate::partition::{RedisPublishOptions, resolved_headers};
 use crate::recovery::{self, RecoveryConfig};
@@ -129,8 +128,6 @@ pub struct RedisList {
     processing: Option<String>,
     block: Option<Duration>,
     codec: Option<SharedEnvelope>,
-    dead_letter: Option<String>,
-    max_deliveries: Option<u64>,
     min_idle: Option<Duration>,
     recovery_zset: Option<String>,
     recovery_ttl: Option<Duration>,
@@ -143,8 +140,6 @@ impl Debug for RedisList {
             .field("reliable", &self.reliable)
             .field("processing", &self.processing)
             .field("codec", &self.codec.is_some())
-            .field("dead_letter", &self.dead_letter)
-            .field("max_deliveries", &self.max_deliveries)
             .field("recovery_zset", &self.recovery_zset)
             .field("recovery_ttl", &self.recovery_ttl)
             .finish_non_exhaustive()
@@ -160,8 +155,6 @@ impl RedisList {
             processing: None,
             block: None,
             codec: None,
-            dead_letter: None,
-            max_deliveries: None,
             min_idle: None,
             recovery_zset: None,
             recovery_ttl: None,
@@ -194,26 +187,6 @@ impl RedisList {
     /// default binary framing is used. Either way the payload arrives as it was published.
     pub fn codec(mut self, codec: impl Codec + 'static) -> Self {
         self.codec = Some(Arc::new(codec));
-        self
-    }
-
-    /// In reliable mode, routes dropped and poison entries to the named dead-letter list (`LPUSH`)
-    /// instead of discarding them, tagged with
-    /// [`DEAD_LETTER_REASON_HEADER`](crate::DEAD_LETTER_REASON_HEADER). Off by default. Has no effect
-    /// on a simple list, which cannot ack. See the
-    /// [dead-letter guide](https://powersemmi.github.io/ruststream-fred/latest/dead-letter/).
-    pub fn dead_letter(mut self, key: impl Into<String>) -> Self {
-        self.dead_letter = Some(key.into());
-        self
-    }
-
-    /// In reliable mode, caps how many times an entry may be `nack(requeue = true)`-ed before it is
-    /// treated as poison (dead-lettered or, with no dead-letter list, discarded). Off by default.
-    ///
-    /// Lists have no native delivery counter, so this tracks the framework retry-count header carried
-    /// in the entry's envelope.
-    pub const fn max_deliveries(mut self, max: u64) -> Self {
-        self.max_deliveries = Some(max);
         self
     }
 
@@ -279,13 +252,6 @@ impl RedisList {
         self.codec.clone()
     }
 
-    pub(crate) fn poison_policy(&self) -> PoisonPolicy {
-        PoisonPolicy {
-            dead_letter: self.dead_letter.clone(),
-            max_deliveries: self.max_deliveries,
-        }
-    }
-
     /// Resolves the recovery settings, or `None` when recovery was not opted into.
     ///
     /// # Errors
@@ -313,6 +279,8 @@ impl RedisList {
 
 impl SubscriptionSource<ConnectedRedisBroker> for RedisList {
     type Subscriber = RedisListSubscriber;
+    /// A retry copy is an `LPUSH` this process makes, and the list key is where it goes.
+    type Copies = AddressedCopies;
 
     fn name(&self) -> &str {
         self.key()
@@ -324,14 +292,16 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisList {
     ) -> Result<Self::Subscriber, RedisError> {
         connected.subscribe_list(self).await
     }
+}
 
-    /// The list key: the subscription pops from it and [`RedisListPublish`] pushes onto it, so a
-    /// deferred copy lands in the same queue the delivery came from.
+/// The list key: the subscription pops from it and [`RedisListPublish`] pushes onto it, so a
+/// deferred copy lands in the same queue the delivery came from.
+impl RedeliveryAddressed<ConnectedRedisBroker> for RedisList {
     fn redelivery_address(
         &self,
         _connected: &ConnectedRedisBroker,
-    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, RedisError>> {
-        ready(Ok(Some(RedeliveryAddress::new(self.key.clone()))))
+    ) -> impl Future<Output = Result<RedeliveryAddress, RedisError>> {
+        ready(Ok(RedeliveryAddress::new(self.key.clone())))
     }
 }
 
@@ -344,7 +314,7 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisList {
 ///
 /// The rest of the descriptor is inert here, because the stand-in has one queue per key and
 /// delivers on publish: the processing list behind [`reliable`](RedisList::reliable), `block`,
-/// `dead_letter`, `max_deliveries`, and the orphan-recovery watchdog. The envelope
+/// and the orphan-recovery watchdog. The envelope
 /// [`codec`](RedisList::codec) is inert too, since deliveries carry their headers natively instead
 /// of framed into the entry, so a framing mismatch between a subscription and its publisher cannot
 /// surface in process.
@@ -355,6 +325,9 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisList {
 #[cfg(feature = "testing")]
 impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisList {
     type Subscriber = crate::testing::RedisTestSubscriber;
+    /// The answer the real broker gives, so a registration that compiles against Redis compiles
+    /// against the stand-in.
+    type Copies = AddressedCopies;
 
     fn name(&self) -> &str {
         self.key()
@@ -371,13 +344,16 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisList 
             connected.subscribe_unsettleable(self.key()).await
         }
     }
+}
 
-    /// The same answer the real broker gives, so a scope that starts against Redis starts here.
+/// The same answer the real broker gives, so a scope that starts against Redis starts here.
+#[cfg(feature = "testing")]
+impl RedeliveryAddressed<crate::testing::ConnectedRedisTestBroker> for RedisList {
     fn redelivery_address(
         &self,
         _connected: &crate::testing::ConnectedRedisTestBroker,
-    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, RedisError>> {
-        ready(Ok(Some(RedeliveryAddress::new(self.key.clone()))))
+    ) -> impl Future<Output = Result<RedeliveryAddress, RedisError>> {
+        ready(Ok(RedeliveryAddress::new(self.key.clone())))
     }
 }
 
@@ -406,7 +382,6 @@ impl RedisListSubscriber {
         processing: String,
         block: Duration,
         codec: Option<SharedEnvelope>,
-        policy: PoisonPolicy,
         recovery: Option<RecoveryConfig>,
     ) -> Self {
         Self(BufferedSubscriber::new(ListWire {
@@ -416,7 +391,6 @@ impl RedisListSubscriber {
             processing,
             block,
             codec,
-            policy,
             recovery,
         }))
     }
@@ -463,7 +437,6 @@ struct ListWire {
     processing: String,
     block: Duration,
     codec: Option<SharedEnvelope>,
-    policy: PoisonPolicy,
     recovery: Option<RecoveryConfig>,
 }
 
@@ -472,7 +445,6 @@ impl Debug for ListWire {
         f.debug_struct("ListWire")
             .field("key", &self.key)
             .field("reliable", &self.reliable)
-            .field("poison", &self.policy.is_active())
             .field("recovery", &self.recovery.is_some())
             .finish_non_exhaustive()
     }
@@ -498,8 +470,6 @@ impl ListWire {
                 main_key: self.key.clone(),
                 processing_key: self.processing.clone(),
                 value: raw,
-                codec: self.codec.clone(),
-                policy: self.policy.clone(),
                 recovery,
             }),
         }
@@ -571,9 +541,6 @@ struct ListAck {
     processing_key: String,
     /// The raw wire value (framed), needed verbatim to `LREM` it from the processing list.
     value: Vec<u8>,
-    /// The framing codec, so a poison-policy requeue can re-frame with an updated retry count.
-    codec: Option<SharedEnvelope>,
-    policy: PoisonPolicy,
     /// Set when orphan recovery is enabled: the ZSET key and the member tracking this claim, so
     /// settling removes its recovery tracking.
     recovery: Option<RecoveryHandle>,
@@ -628,25 +595,9 @@ impl IncomingMessage for RedisListMessage {
             return Err(AckError::Unsupported);
         };
         if requeue {
-            if handle.policy.is_active() {
-                let next = next_retry_count(&self.headers);
-                if handle.policy.is_poison(next) {
-                    list_dead_letter(&handle, &self.payload, &self.headers, REASON_MAX_DELIVERIES)
-                        .await?;
-                } else {
-                    // Re-frame with the incremented retry count and return it to the main list,
-                    // before removing the original from processing (a crash leaves a duplicate).
-                    let mut headers = self.headers.clone();
-                    headers.insert(RETRY_COUNT_HEADER, next.to_string());
-                    let body = frame(handle.codec.as_ref(), &self.payload, &headers);
-                    lpush(&handle.pool, handle.main_key.as_str(), body).await?;
-                }
-            } else {
-                // No poison policy: return the original entry verbatim to the main list.
-                lpush(&handle.pool, handle.main_key.as_str(), handle.value.clone()).await?;
-            }
-        } else if handle.policy.is_active() {
-            list_dead_letter(&handle, &self.payload, &self.headers, REASON_DROPPED).await?;
+            // Return the original entry verbatim to the main list, before removing it from
+            // processing (a crash in between leaves a duplicate rather than a loss).
+            lpush(&handle.pool, handle.main_key.as_str(), handle.value.clone()).await?;
         }
         settle(&handle).await
     }
@@ -656,37 +607,8 @@ fn ack_broker(err: fred::error::Error) -> AckError {
     AckError::Broker(Box::new(err))
 }
 
-/// The next framework retry-count value (the current envelope header plus one, or one when absent).
-fn next_retry_count(headers: &HeaderMap) -> u64 {
-    headers
-        .get_str(RETRY_COUNT_HEADER)
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(0)
-        + 1
-}
-
 async fn lpush(pool: &Pool, key: &str, body: Vec<u8>) -> Result<(), AckError> {
     let _: i64 = pool.lpush(key, body).await.map_err(ack_broker)?;
-    Ok(())
-}
-
-/// `LPUSH`es a tagged copy onto the configured dead-letter list, or does nothing when none is set
-/// (the caller's `LREM` then discards the entry). Runs before the `LREM`, so a crash leaves a
-/// duplicate rather than a loss.
-async fn list_dead_letter(
-    handle: &ListAck,
-    payload: &[u8],
-    headers: &HeaderMap,
-    reason: &'static str,
-) -> Result<(), AckError> {
-    if let Some(dlq) = handle.policy.dead_letter_key() {
-        let body = frame(
-            handle.codec.as_ref(),
-            payload,
-            &deadletter::with_reason(headers, reason),
-        );
-        lpush(&handle.pool, dlq, body).await?;
-    }
     Ok(())
 }
 
