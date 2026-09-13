@@ -3,8 +3,10 @@
 //! `retry_after(delay)` (a handler returning [`HandlerOutcome::retry_after`], or a delivery
 //! `nack_after`-ed) asks the broker to redeliver a message no sooner than `delay` from now. Redis
 //! Streams have no native per-message delay, so without this the runtime falls back to its
-//! broker-agnostic deferred re-publish, which is at-most-once over the delay window (a process
-//! crash before the timer fires loses the deferred copy).
+//! broker-agnostic deferred re-publish: the mount site binds the publisher that copy leaves
+//! through with `out_retry`, and the copy is at-most-once over the delay window (a process crash
+//! before the timer fires loses it). A registration that binds nothing drops the delay and
+//! requeues the message at once.
 //!
 //! This module adds a crash-safe alternative, **opt-in and OFF by default**: when a subscription
 //! names a ZSET key with [`RedisStream::delayed_retry`](crate::RedisStream::delayed_retry),

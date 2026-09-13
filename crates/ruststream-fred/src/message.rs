@@ -207,7 +207,8 @@ impl IncomingMessage for RedisMessage {
 
     /// Native delayed redelivery is available only when the subscription opted into a durable ZSET
     /// delay queue with [`RedisStream::delayed_retry`](crate::RedisStream::delayed_retry); otherwise
-    /// the runtime applies its broker-agnostic deferred-republish fallback.
+    /// the runtime applies its broker-agnostic deferred-republish fallback, whose publisher the
+    /// mount site binds with `out_retry`.
     fn supports_nack_after(&self) -> bool {
         self.delay.is_some()
     }

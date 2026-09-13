@@ -165,10 +165,22 @@ Settlement follows the republish-retry model:
 ## Delayed retry
 
 `HandlerOutcome::retry_after(delay)` asks for a delayed redelivery, for backing off a transient
-error. Redis Streams have no per-message delay, so by default an in-process timer re-publishes the
-message when the delay is up, and a crash before it fires loses that copy.
+error. Redis Streams have no per-message delay, so a subscription gets one of two answers.
 
-A ZSET delay queue survives a restart. It is off by default, and you name the ZSET key:
+The runtime answers by publishing a copy of the message back to the stream once the delay is up:
+
+```rust
+--8<-- "crates/ruststream-fred/examples/fred_delayed_retry.rs:deferred"
+```
+
+That copy leaves through a publisher you name at the mount site with `out_retry`; without it the
+delay is dropped and the message is requeued at once. The copy is at-most-once over the delay
+window: a crash before the timer fires loses it. The position is an ordinary `Out` slot, so a
+`.transform(..)` after it runs on the copy, whose retry-count header is one higher than the
+original's.
+
+A ZSET delay queue is the durable answer: the scheduled entry lives in Redis, so the redelivery
+survives a restart. It is off by default, and you name the ZSET key:
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_delayed_retry.rs:handler"
@@ -180,6 +192,12 @@ entries back onto the stream unchanged. A sweep happens once per read, so the `b
 the granularity, and one pass moves at most 128 due entries. A TTL on the ZSET key cleans up an
 abandoned queue and has to be longer than the longest scheduled delay, or entries are dropped before
 they fire. Scores are wall-clock epoch milliseconds, so keep clocks synced (NTP).
+
+The two mount side by side, and only the subscription without a queue names a publisher:
+
+```rust
+--8<-- "crates/ruststream-fred/examples/fred_delayed_retry.rs:app"
+```
 
 ## Partition keys
 

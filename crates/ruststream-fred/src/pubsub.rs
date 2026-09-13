@@ -207,7 +207,7 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisPubSub {
     ///
     /// The reply is about the address, not about the command: reaching a
     /// [`PubSubMode::Sharded`] subscription still takes a publisher in the same mode, which is
-    /// the policy a scope names in `retry_via`.
+    /// the policy the mount site names with `out_retry`.
     fn redelivery_address(
         &self,
         _connected: &ConnectedRedisBroker,

@@ -149,10 +149,20 @@ Redis 带有载荷里没有的元数据，处理器按键从自己的类型化�
 ## 延迟重试 { #delayed-retry }
 
 `HandlerOutcome::retry_after(delay)` 请求一次延迟的重新投递，用来给暂时性的错误退避。Redis Streams
-没有逐条消息的延迟，因此默认由一个进程内定时器在延迟到期时重新发布这条消息，而定时器触发前的崩溃
-会丢掉这份副本。
+没有逐条消息的延迟，因此一个订阅有两种答案。
 
-ZSET 延迟队列能挺过重启。它默认关闭，ZSET 的键由你写明：
+运行时的答案是：延迟到期时，把这条消息的一份副本发布回流里：
+
+```rust
+--8<-- "crates/ruststream-fred/examples/fred_delayed_retry.rs:deferred"
+```
+
+这份副本经由你在挂载点用 `out_retry` 写明的发布者发出。不写它，延迟就被丢掉，消息立刻重新入队。
+副本在整个延迟窗口里是至多一次：定时器触发前崩溃就会丢掉它。这个位置是普通的 `Out` 槽位，因此它
+后面的 `.transform(..)` 作用在副本上，而副本的重试次数消息头比原件高一。
+
+ZSET 延迟队列是持久的答案：排期的条目存在 Redis 里，因此重新投递能挺过重启。它默认关闭，ZSET 的
+键由你写明：
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_delayed_retry.rs:handler"
@@ -162,6 +172,12 @@ ZSET 延迟队列能挺过重启。它默认关闭，ZSET 的键由你写明：
 读取一边扫这个 ZSET，用 `XADD` 把到期的条目原样放回流里。每次读取扫一遍，因此粒度就是 `block`
 间隔，而一遍最多搬回 128 个到期条目。ZSET 键上的 TTL 清理无人再管的队列，它必须比最长的排期延迟
 还长，否则条目会在触发之前就消失。分值是墙上时钟的纪元毫秒，因此要让各机器的时钟保持同步（NTP）。
+
+两个订阅并排挂载，只有没有队列的那个写明发布者：
+
+```rust
+--8<-- "crates/ruststream-fred/examples/fred_delayed_retry.rs:app"
+```
 
 ## 分区键 { #partition-keys }
 

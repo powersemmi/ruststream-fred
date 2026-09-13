@@ -240,9 +240,10 @@ impl RedisStream {
     /// Opts this subscription into durable, crash-safe delayed retry backed by a ZSET delay queue.
     ///
     /// Off by default: without it, `retry_after(delay)` / `nack_after(delay)` degrade to the
-    /// runtime's broker-agnostic deferred re-publish (at-most-once over the delay window). With it,
-    /// a delayed delivery is `ZADD`ed to the named ZSET and replayed from there once due, so the
-    /// retry survives a process crash. See [`DelayedRetry`] for the key and TTL requirements.
+    /// runtime's broker-agnostic deferred re-publish, which the mount site binds with `out_retry`
+    /// and which is at-most-once over the delay window. With it, a delayed delivery is `ZADD`ed to
+    /// the named ZSET and replayed from there once due, so the retry survives a process crash. See
+    /// [`DelayedRetry`] for the key and TTL requirements.
     ///
     /// The sweeper that replays due entries runs inside this subscription's read loop, so its
     /// granularity is the read [`block`](Self::block) interval.
