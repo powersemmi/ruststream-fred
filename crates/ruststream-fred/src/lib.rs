@@ -22,6 +22,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "asyncapi")]
+mod asyncapi;
 mod broker;
 mod claim;
 mod convert;

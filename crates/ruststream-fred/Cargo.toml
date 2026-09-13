@@ -55,6 +55,8 @@ ruststream = { workspace = true, features = [
     "msgpack",
 ] }
 serde = { version = "1", features = ["derive"] }
+# The document tests read the generated AsyncAPI back as JSON to assert on the crate's bindings.
+serde_json = "1"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 # Only the credential-provider unit test implements fred's async CredentialProvider trait.
 # 0.1.77 is the real floor, not 0.1: earlier releases declare `quote = "0.6"` yet do not compile

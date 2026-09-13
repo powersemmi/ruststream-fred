@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 
 use fred::interfaces::{StreamsInterface, TransactionInterface};
 use fred::types::Value;
+#[cfg(feature = "asyncapi")]
+use ruststream::asyncapi::Bindings;
 use ruststream::{
     DefaultPublish, OutgoingMessage, OwnedTransactions, PairError, PublishPolicy, Publisher,
     Transaction, TransactionalPublisher,
@@ -82,6 +84,13 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisPublish {
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(connected.publisher()))
     }
+
+    /// An `XADD` carries its headers as entry fields and the policy has no settings of its own, so
+    /// what the document learns from here is which Redis structure the channel is.
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        crate::asyncapi::channel(&crate::asyncapi::Publish::stream())
+    }
 }
 
 impl DefaultPublish for ConnectedRedisBroker {
@@ -103,6 +112,13 @@ impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisPublish {
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(connected.publisher()))
+    }
+
+    /// An `XADD` carries its headers as entry fields and the policy has no settings of its own, so
+    /// what the document learns from here is which Redis structure the channel is.
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        crate::asyncapi::channel(&crate::asyncapi::Publish::stream())
     }
 }
 

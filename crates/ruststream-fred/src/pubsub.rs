@@ -29,6 +29,8 @@ use fred::interfaces::{ClientLike, PubsubInterface};
 use fred::types::{Message, MessageKind};
 use futures::Stream;
 use futures::stream::unfold;
+#[cfg(feature = "asyncapi")]
+use ruststream::asyncapi::Bindings;
 use ruststream::codec::Codec;
 use ruststream::{
     AckError, AddressedCopies, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage,
@@ -93,6 +95,17 @@ pub enum PubSubMode {
     Classic,
     /// `SSUBSCRIBE` / `SPUBLISH` (Redis 7+): slot-local sharded delivery, no patterns.
     Sharded,
+}
+
+impl PubSubMode {
+    /// The word the generated `AsyncAPI` document names this mode by.
+    #[cfg(feature = "asyncapi")]
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::Sharded => "sharded",
+        }
+    }
 }
 
 /// Describes one Pub/Sub subscription on a single channel, against a [`ConnectedRedisBroker`].
@@ -167,6 +180,17 @@ impl RedisPubSub {
     fn redelivery_channel(&self) -> RedeliveryAddress {
         RedeliveryAddress::new(self.channel.clone())
     }
+
+    /// What this subscription adds to its channel in the generated `AsyncAPI` document, shared by
+    /// both broker forms: the delivery mode it subscribes in and how headers are framed.
+    #[cfg(feature = "asyncapi")]
+    fn describe(&self) -> Bindings {
+        crate::asyncapi::channel(&crate::asyncapi::PubSubSubscription::new(
+            self.mode.as_str(),
+            false,
+            crate::asyncapi::Envelope::of(self.codec.as_ref()),
+        ))
+    }
 }
 
 /// Describes one Pub/Sub subscription on a glob pattern (`PSUBSCRIBE`), against a
@@ -224,6 +248,16 @@ impl RedisPubSubPattern {
     pub(crate) fn codec_handle(&self) -> Option<SharedEnvelope> {
         self.codec.clone()
     }
+
+    /// Patterns are classic-only, so the mode in the document is the only one they have.
+    #[cfg(feature = "asyncapi")]
+    fn describe(&self) -> Bindings {
+        crate::asyncapi::channel(&crate::asyncapi::PubSubSubscription::new(
+            PubSubMode::Classic.as_str(),
+            true,
+            crate::asyncapi::Envelope::of(self.codec.as_ref()),
+        ))
+    }
 }
 
 impl SubscriptionSource<ConnectedRedisBroker> for RedisPubSub {
@@ -241,6 +275,11 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisPubSub {
         connected: &ConnectedRedisBroker,
     ) -> Result<Self::Subscriber, RedisError> {
         connected.subscribe_pubsub(self).await
+    }
+
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        self.describe()
     }
 }
 
@@ -275,6 +314,11 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisPubSubPattern {
     ) -> Result<Self::Subscriber, RedisError> {
         connected.subscribe_pubsub_pattern(self).await
     }
+
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        self.describe()
+    }
 }
 
 /// Mounts the production descriptor on the in-process stand-in, which routes by channel name
@@ -304,6 +348,13 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisPubSu
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> Result<Self::Subscriber, RedisError> {
         connected.subscribe_unsettleable(self.channel()).await
+    }
+
+    /// The same body the real broker's descriptor writes, so a document built in a test is the
+    /// document the service publishes.
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        self.describe()
     }
 }
 
@@ -342,6 +393,13 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisPubSu
              meant to catch; test PSUBSCRIBE against a real Redis server",
             self.pattern
         ))))
+    }
+
+    /// The same body the real broker's descriptor writes, so a document built in a test is the
+    /// document the service publishes.
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        self.describe()
     }
 }
 
@@ -589,6 +647,15 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisPubSubPublish {
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(connected.pubsub_publisher(self)))
     }
+
+    /// The delivery mode a `PUBLISH` goes out in, and how headers are framed beside the payload.
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        crate::asyncapi::channel(&crate::asyncapi::Publish::pubsub(
+            self.mode.as_str(),
+            crate::asyncapi::Envelope::of(self.codec.as_ref()),
+        ))
+    }
 }
 
 /// Pairs the production policy against the in-process stand-in, so a routes file's
@@ -615,6 +682,16 @@ impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisPubSubPubl
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(connected.plain_publisher()))
+    }
+
+    /// The same body the real broker's policy writes, so a document built in a test is the
+    /// document the service publishes.
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        crate::asyncapi::channel(&crate::asyncapi::Publish::pubsub(
+            self.mode.as_str(),
+            crate::asyncapi::Envelope::of(self.codec.as_ref()),
+        ))
     }
 }
 

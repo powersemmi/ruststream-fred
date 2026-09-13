@@ -19,8 +19,12 @@ use std::future::{Future, ready};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+#[cfg(feature = "asyncapi")]
+use ruststream::asyncapi::Bindings;
 use ruststream::{AddressedCopies, RedeliveryAddress, RedeliveryAddressed, SubscriptionSource};
 
+#[cfg(feature = "asyncapi")]
+use crate::asyncapi;
 use crate::broker::ConnectedRedisBroker;
 use crate::delay::{DelayConfig, DelayedRetry};
 #[cfg(feature = "testing")]
@@ -355,6 +359,24 @@ impl RedisStream {
     fn redelivery_key(&self) -> RedeliveryAddress {
         RedeliveryAddress::new(self.key.clone())
     }
+
+    /// What this subscription adds to its channel in the generated `AsyncAPI` document, shared by
+    /// both broker forms: the group and consumer it reads through, its read mode and, on the two
+    /// modes that claim, the idle threshold they claim at.
+    #[cfg(feature = "asyncapi")]
+    fn describe(&self) -> Bindings {
+        let (mode, min_idle) = match self.mode {
+            ReadMode::Fresh => (asyncapi::ReadMode::Fresh, None),
+            ReadMode::Reclaim { min_idle } => (asyncapi::ReadMode::Reclaim, Some(min_idle)),
+            ReadMode::Claiming { min_idle } => (asyncapi::ReadMode::Claiming, Some(min_idle)),
+        };
+        asyncapi::channel(&asyncapi::StreamSubscription::new(
+            self.group.as_deref(),
+            self.consumer.as_deref(),
+            mode,
+            min_idle.map(|idle| u64::try_from(idle.as_millis()).unwrap_or(u64::MAX)),
+        ))
+    }
 }
 
 impl SubscriptionSource<ConnectedRedisBroker> for RedisStream {
@@ -371,6 +393,11 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisStream {
         connected: &ConnectedRedisBroker,
     ) -> Result<Self::Subscriber, RedisError> {
         connected.subscribe(self).await
+    }
+
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        self.describe()
     }
 }
 
@@ -451,6 +478,13 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisStrea
                     .await
             }
         }
+    }
+
+    /// The same body the real broker's descriptor writes, so a document built in a test is the
+    /// document the service publishes.
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        self.describe()
     }
 }
 

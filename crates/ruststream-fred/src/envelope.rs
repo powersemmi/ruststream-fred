@@ -34,9 +34,17 @@ pub(crate) type SharedEnvelope = Arc<dyn EnvelopeCodec>;
 pub(crate) trait EnvelopeCodec: Send + Sync {
     fn encode(&self, payload: &[u8], headers: &HeaderMap) -> Vec<u8>;
     fn decode(&self, bytes: &[u8]) -> (Bytes, HeaderMap);
+    /// The media type of the framed value, for the generated `AsyncAPI` document.
+    #[cfg(feature = "asyncapi")]
+    fn content_type(&self) -> &'static str;
 }
 
 impl<C: Codec> EnvelopeCodec for C {
+    #[cfg(feature = "asyncapi")]
+    fn content_type(&self) -> &'static str {
+        C::CONTENT_TYPE
+    }
+
     fn encode(&self, payload: &[u8], headers: &HeaderMap) -> Vec<u8> {
         let envelope = Envelope::from_parts(payload, headers);
         Codec::encode(self, &envelope)

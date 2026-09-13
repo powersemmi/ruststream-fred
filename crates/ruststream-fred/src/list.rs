@@ -33,6 +33,8 @@ use fred::interfaces::{KeysInterface, ListInterface};
 use fred::types::lists::LMoveDirection;
 use futures::Stream;
 use futures::stream::unfold;
+#[cfg(feature = "asyncapi")]
+use ruststream::asyncapi::Bindings;
 use ruststream::codec::Codec;
 use ruststream::{
     AckError, AddressedCopies, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage,
@@ -252,6 +254,19 @@ impl RedisList {
         self.codec.clone()
     }
 
+    /// What this subscription adds to its channel in the generated `AsyncAPI` document, shared by
+    /// both broker forms: whether it acknowledges, the processing list it holds claims on, and
+    /// how headers are framed beside the payload.
+    #[cfg(feature = "asyncapi")]
+    fn describe(&self) -> Bindings {
+        let processing = self.reliable.then(|| self.processing_or_default());
+        crate::asyncapi::channel(&crate::asyncapi::ListSubscription::new(
+            self.reliable,
+            processing.as_deref(),
+            crate::asyncapi::Envelope::of(self.codec.as_ref()),
+        ))
+    }
+
     /// Resolves the recovery settings, or `None` when recovery was not opted into.
     ///
     /// # Errors
@@ -291,6 +306,11 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisList {
         connected: &ConnectedRedisBroker,
     ) -> Result<Self::Subscriber, RedisError> {
         connected.subscribe_list(self).await
+    }
+
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        self.describe()
     }
 }
 
@@ -343,6 +363,13 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisList 
         } else {
             connected.subscribe_unsettleable(self.key()).await
         }
+    }
+
+    /// The same body the real broker's descriptor writes, so a document built in a test is the
+    /// document the service publishes.
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        self.describe()
     }
 }
 
@@ -701,6 +728,17 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisListPublish {
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(connected.list_publisher(self)))
     }
+
+    /// The key expiry the policy re-arms on every push, and how headers are framed beside the
+    /// payload.
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        crate::asyncapi::channel(&crate::asyncapi::Publish::list(
+            self.ttl
+                .map(|ttl| u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX)),
+            crate::asyncapi::Envelope::of(self.codec.as_ref()),
+        ))
+    }
 }
 
 /// Pairs the production policy against the in-process stand-in, so a routes file's
@@ -726,6 +764,17 @@ impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisListPublis
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(connected.plain_publisher()))
+    }
+
+    /// The key expiry the policy re-arms on every push, and how headers are framed beside the
+    /// payload.
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        crate::asyncapi::channel(&crate::asyncapi::Publish::list(
+            self.ttl
+                .map(|ttl| u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX)),
+            crate::asyncapi::Envelope::of(self.codec.as_ref()),
+        ))
     }
 }
 
