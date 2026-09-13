@@ -89,7 +89,7 @@ impl DefaultPublish for ConnectedRedisBroker {
 }
 
 /// Pairs the production policy against the in-process stand-in, so a routes file's
-/// `.out(Reply, Publish)` mounts on both without naming a second type.
+/// `.out_reply(Publish)` mounts on both without naming a second type.
 ///
 /// The policy carries nothing to honour (`XADD` takes its key from each message), and the
 /// stand-in's publisher offers the same surface the live one does, both transaction kinds

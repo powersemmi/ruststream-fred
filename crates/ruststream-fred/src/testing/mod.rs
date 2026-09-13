@@ -19,7 +19,7 @@
 //! All three descriptors and all three publish policies mount here, so a service is tested on the
 //! wiring it ships: the `#[subscriber(RedisStream::new(..).group(..))]` a routes file writes is the
 //! one the harness mounts, the same holds for [`RedisList`](crate::RedisList) and
-//! [`RedisPubSub`](crate::RedisPubSub), and `.out(Reply, Publish)` names the production policy on
+//! [`RedisPubSub`](crate::RedisPubSub), and `.out_reply(Publish)` names the production policy on
 //! both brokers. There is no test-only policy type; [`RedisPublish`](crate::RedisPublish) is also
 //! the stand-in's default reply publisher.
 //!

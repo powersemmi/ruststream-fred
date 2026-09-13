@@ -26,9 +26,9 @@ Pub/Sub 发完即忘：消息只到达那一刻连着的订阅者，而 `ack` �
 --8<-- "crates/ruststream-fred/examples/fred_pubsub.rs:app"
 ```
 
-这种形式的策略你在挂载处理器的地方指定：`.out(Reply, Publish)`，再加 `.mode(PubSubMode::Sharded)`
-去对上分片的订阅者。`Reply` 是该策略绑定的位置，也就是处理器返回的那个值。这个策略用 `PUBLISH`
-发出应答，而不是用 Broker 默认发布者的 `XADD`。
+这种形式的策略你在挂载处理器的地方指定：`.out_reply(Publish)`，再加 `.mode(PubSubMode::Sharded)`
+去对上分片的订阅者。它绑定的位置就是处理器返回的那个值。这个策略用 `PUBLISH` 发出应答，而不是用
+Broker 默认发布者的 `XADD`。
 
 应答发往哪个频道由应答类型决定：上面的 `AuditEntry` 声明了 `audit`。不声明频道的应答类型，发往订阅者
 的 `publish("..")` 写明的地方。

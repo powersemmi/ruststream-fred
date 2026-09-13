@@ -518,7 +518,7 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisPubSubPublish {
 }
 
 /// Pairs the production policy against the in-process stand-in, so a routes file's
-/// `.out(Reply, Publish)` mounts on both without naming a second type.
+/// `.out_reply(Publish)` mounts on both without naming a second type.
 ///
 /// Both options the policy carries are inert in process: [`mode`](RedisPubSubPublish::mode)
 /// selects between `PUBLISH` and `SPUBLISH`, neither of which the stand-in issues, and it delivers

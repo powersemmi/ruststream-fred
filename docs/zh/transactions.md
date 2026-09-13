@@ -9,7 +9,7 @@
 克隆操作的是同一个打开着的事务。
 
 常见的写法是一个批量处理器，它的应答一起提交。把处理器变成批量处理器的是切片参数，批次大小由挂载点
-写明（见[批次](streams.md#batches)）。`.out(Reply, TransactionalPublish)` 写明应答经由哪个策略发出，
+写明（见[批次](streams.md#batches)）。`.out_reply(TransactionalPublish)` 写明应答经由哪个策略发出，
 其后的 `.transactional()` 把一个批次的应答放进一个 `MULTI` / `EXEC` 块。
 
 ```rust

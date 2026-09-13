@@ -104,7 +104,7 @@ async fn the_step_sets_the_key_the_delivery_reports() {
     let app =
         RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
             b.include(forward).out(Ledger, Publish).build();
-            b.include(watch_keyed).out(Reply, Publish);
+            b.include(watch_keyed).out_reply(Publish);
         });
     let tb = TestApp::start(app).await.expect("start");
 
@@ -135,7 +135,7 @@ async fn a_publish_without_the_step_carries_no_key() {
     let app =
         RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
             b.include(forward_unkeyed).out(Notes, Publish).build();
-            b.include(watch_unkeyed).out(Reply, Publish);
+            b.include(watch_unkeyed).out_reply(Publish);
         });
     let tb = TestApp::start(app).await.expect("start");
 

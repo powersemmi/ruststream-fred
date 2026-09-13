@@ -1,7 +1,7 @@
 //! The production routes spelling, mounted on the in-process stand-in.
 //!
 //! One module per transport form, each globbing that form's own prelude and writing the mount the
-//! way a service writes it: `include(handler).out(Reply, Publish)`, with the descriptor and the
+//! way a service writes it: `include(handler).out_reply(Publish)`, with the descriptor and the
 //! policy named by the words the prelude gives them. Nothing here names a test-only type, which is
 //! the contract these cases hold: the same wiring pairs against `RedisBroker` and against
 //! `RedisTestBroker`, so a service is tested on what it ships.
@@ -42,7 +42,7 @@ mod stream_routes {
         let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
             RedisTestBroker::new(),
             |b| {
-                b.include(confirm).out(Reply, Publish);
+                b.include(confirm).out_reply(Publish);
             },
         );
         let tb = TestApp::start(app).await.expect("start");
@@ -90,7 +90,7 @@ mod list_routes {
         let app = RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
             RedisTestBroker::new(),
             |b| {
-                b.include(run_job).out(Reply, Publish::default());
+                b.include(run_job).out_reply(Publish::default());
             },
         );
         let tb = TestApp::start(app).await.expect("start");
@@ -135,7 +135,7 @@ mod pubsub_routes {
         let app = RustStream::new(AppInfo::new("events", "0.1.0")).with_broker(
             RedisTestBroker::new(),
             |b| {
-                b.include(on_event).out(Reply, Publish::default());
+                b.include(on_event).out_reply(Publish::default());
             },
         );
         let tb = TestApp::start(app).await.expect("start");

@@ -250,7 +250,7 @@ async fn test_reply_delivery() -> Result<(), Box<dyn std::error::Error>> {
             // The same policy value a routes file names against a real server. This file spans all
             // three forms, so it globs the crate prelude and reaches the policy through its form
             // module; a file on one form globs that form's prelude and writes the bare `Publish`.
-            b.include(settle_payment).out(Reply, stream::Publish);
+            b.include(settle_payment).out_reply(stream::Publish);
         });
 
     let tb = TestApp::start(app).await?;

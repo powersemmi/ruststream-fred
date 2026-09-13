@@ -28,10 +28,10 @@ time; each handler mounts on its own broker:
 --8<-- "crates/ruststream-fred/examples/fred_pubsub.rs:app"
 ```
 
-You name this form's policy where the handler is mounted: `.out(Reply, Publish)`, with
-`.mode(PubSubMode::Sharded)` to match a sharded subscriber. `Reply` is the position the policy binds
-to - the value the handler returns. That policy sends the reply with `PUBLISH`, not with the `XADD`
-of the broker's default publisher.
+You name this form's policy where the handler is mounted: `.out_reply(Publish)`, with
+`.mode(PubSubMode::Sharded)` to match a sharded subscriber. The position it binds is the value the
+handler returns. That policy sends the reply with `PUBLISH`, not with the `XADD` of the broker's
+default publisher.
 
 The channel the reply goes to comes from the reply type: `AuditEntry` above declares `audit`. A reply
 type that declares no channel goes where the subscriber's `publish("..")` names.

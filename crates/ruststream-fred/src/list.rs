@@ -782,7 +782,7 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisListPublish {
 }
 
 /// Pairs the production policy against the in-process stand-in, so a routes file's
-/// `.out(Reply, Publish)` mounts on both without naming a second type.
+/// `.out_reply(Publish)` mounts on both without naming a second type.
 ///
 /// Both options the policy carries are inert in process: the stand-in has no key to expire, so
 /// [`ttl`](RedisListPublish::ttl) has nothing to re-arm, and it delivers headers natively rather

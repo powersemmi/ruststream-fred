@@ -132,9 +132,9 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
-            // `.out(Reply, ..)` binds the policy the returned value leaves through. A policy holds
+            // `.out_reply(..)` binds the policy the returned value leaves through. A policy holds
             // no connection, so the runtime pairs it with the broker once that connects.
-            b.include(confirm).out(Reply, Publish);
+            b.include(confirm).out_reply(Publish);
         },
     )
 }
@@ -159,13 +159,14 @@ inject one:
 
 ```rust
 use ruststream::testing::TestApp;
-use ruststream_fred::testing::{RedisTestBroker, RedisTestPublish};
+use ruststream_fred::testing::RedisTestBroker;
 
 let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
     RedisTestBroker::new(),
     |b| {
-        // The same handler and the same mount verb: only the policy names the transport.
-        b.include(confirm).out(Reply, RedisTestPublish::default());
+        // The same handler, the same mount and the same policy: only the broker is the
+        // in-process one. This crate ships no test-only policy type.
+        b.include(confirm).out_reply(Publish);
     },
 );
 

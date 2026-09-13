@@ -44,12 +44,12 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         // --8<-- [start:mount]
         // The batch size is the one number the framework hands the subscriber: here it becomes
-        // the `XREADGROUP COUNT` of the read that fetches the batch. `.out(Reply, ..)` names the
+        // the `XREADGROUP COUNT` of the read that fetches the batch. `.out_reply(..)` names the
         // policy the handler's returned value is published through, and .transactional() requires
         // that policy's live form to be transactional, which the stream form's is on standalone
         // and sentinel: the batch's replies are buffered and committed as one MULTI / EXEC block.
         b.include(process.batch(nonzero!(32)))
-            .out(Reply, TransactionalPublish)
+            .out_reply(TransactionalPublish)
             .transactional();
         // --8<-- [end:mount]
 

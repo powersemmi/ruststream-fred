@@ -11,7 +11,7 @@ buffer, and `abort` discards it. A clone of the handle works with the same open 
 
 The usual shape is a batch handler whose replies are committed together. A slice parameter is what
 makes a handler a batch handler, and the mount site names the batch size (see
-[Batches](streams.md#batches)). `.out(Reply, TransactionalPublish)` names the policy the replies
+[Batches](streams.md#batches)). `.out_reply(TransactionalPublish)` names the policy the replies
 leave through, and `.transactional()` after it puts one batch's replies in one `MULTI` / `EXEC`
 block.
 

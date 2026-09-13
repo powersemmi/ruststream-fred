@@ -63,10 +63,10 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("events", "0.1.0"))
         .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
             // The reply names where it goes; this names how it gets there: the Pub/Sub policy
-            // (PUBLISH), not the default stream publisher (XADD). `Reply` is the position the
-            // policy binds to - the value the handler returns - and the policy is pure
-            // declaration: the runtime pairs it with the connected broker at startup.
-            b.include(on_event).out(Reply, Publish::default());
+            // (PUBLISH), not the default stream publisher (XADD). The position `out_reply` binds
+            // is the value the handler returns, and the policy is pure declaration: the runtime
+            // pairs it with the connected broker at startup.
+            b.include(on_event).out_reply(Publish::default());
         })
         .with_broker(RedisBroker::cluster(["redis://localhost:7000"]), |b| {
             b.include(on_event_sharded);
