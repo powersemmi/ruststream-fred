@@ -165,9 +165,10 @@ Settlement follows the republish-retry model:
 ## Delayed retry
 
 `HandlerOutcome::retry_after(delay)` asks for a delayed redelivery, for backing off a transient
-error. Redis Streams have no per-message delay, so a subscription gets one of two answers.
+error. Redis Streams have no per-message delay, so a subscription gets the delay in one of
+two ways.
 
-The runtime answers by publishing a copy of the message back to the stream once the delay is up:
+The runtime's own way is a copy it publishes back to the stream once the delay is up:
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_delayed_retry.rs:deferred"
@@ -179,7 +180,7 @@ window: a crash before the timer fires loses it. The position is an ordinary `Ou
 `.transform(..)` after it runs on the copy, whose retry-count header is one higher than the
 original's.
 
-A ZSET delay queue is the durable answer: the scheduled entry lives in Redis, so the redelivery
+A ZSET delay queue is the durable way: the scheduled entry lives in Redis, so the redelivery
 survives a restart. It is off by default, and you name the ZSET key:
 
 ```rust
