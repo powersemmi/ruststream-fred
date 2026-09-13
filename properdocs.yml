@@ -125,6 +125,7 @@ nav:
       - dead-letter.md
       - auth-tls.md
       - transactions.md
+      - asyncapi.md
       - testing.md
   - RustStream docs: https://powersemmi.github.io/ruststream/
   - API reference: https://docs.rs/ruststream-fred

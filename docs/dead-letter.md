@@ -1,31 +1,65 @@
-# Dead-letter and poison cap
+# Capping the retries
 
-A message that never processes is redelivered forever, and `nack(requeue = false)` discards it
-without a trace. Two settings, both off by default, bound that on a stream and on a reliable list.
+A handler that keeps asking for a retry circulates its message until an operator intervenes. Two
+steps at the mount site end that, and they read the same on every transport this crate offers:
 
-`dead_letter(key)` copies a dropped or poisoned message to the named key instead of discarding it,
-within the same transport family: stream to stream, list to list. `max_deliveries(n)` stops
-redelivering after `n` attempts and dead-letters the message, or discards it when no dead-letter key
-is set.
+```rust
+--8<-- "crates/ruststream-fred/examples/fred_dead_letter.rs:app"
+```
 
-The copy carries the `x-dead-letter-reason` header (`dropped` or `max-deliveries`) and is written
-before the original is acked, so a crash leaves a duplicate rather than a loss.
+`max_attempts(n)` is how many deliveries one message gets, counting the first. `dead_letter(name)`
+is where a delivery goes once they run out: it is published there as it arrived, payload and
+headers. A cap declared without a destination rejects the delivery instead. A destination declared
+without a cap carries away every retry, on the first one.
 
-=== "Redis Stream"
+The handler counts nothing itself:
 
-    ```rust
-    --8<-- "crates/ruststream-fred/examples/fred_dead_letter.rs:handler"
-    ```
+```rust
+--8<-- "crates/ruststream-fred/examples/fred_dead_letter.rs:handler"
+```
 
-=== "Redis List"
+A reliable list reads the same, with a list key as the destination:
 
-    ```rust
-    --8<-- "crates/ruststream-fred/examples/fred_list_dead_letter.rs:handler"
-    ```
+```rust
+--8<-- "crates/ruststream-fred/examples/fred_list_dead_letter.rs:handler"
+```
 
-The cap counts both ways a message poisons a subscription: the framework's retry-count header, which
-the `nack` and republish loop raises, and on the Streams reclaim path the native Redis delivery
-count. A reclaimed delivery also carries the `redis-delivery-count` and `redis-idle-ms` headers, so
-a handler can branch or dead-letter the message itself.
+## Which count the cap reads
 
-Simple List and Pub/Sub cannot ack, so they have no dead-letter path.
+The two stream read modes that claim, `reclaim` and `claiming`, report the delivery count Redis
+keeps in the pending entries list. A message fetched by a worker that died counts towards the cap
+when it is claimed back, without anything in this process having seen it fail.
+
+Every other subscription has no count of its own, so the cap is read from the framework's
+retry-count header, which travels on the copies the runtime publishes. An immediate retry under a
+cap is then a copy rather than a plain `nack`, so the count moves with the message.
+
+A claiming delivery also carries `DELIVERY_COUNT_HEADER` and `IDLE_MS_HEADER`, which report the
+pending entries list as it stood before this delivery. The count the cap reads adds the delivery
+being made, so it is one ahead of that header on a claiming subscription and equal to it on a
+reclaimed one.
+
+## Where a retry copy goes
+
+A copy is published by this process whenever Redis has no redelivery of its own to use, so every
+descriptor says where its copies go.
+
+| Subscription | Where a copy is published |
+|---|---|
+| `RedisStream`, any read mode | the stream key: an `XADD` there is read by the consumer group |
+| `RedisList` | the list key |
+| `RedisPubSub` | the channel |
+| `RedisPubSubPattern` | nowhere the descriptor can name: you name it |
+
+A pattern reads every channel its glob matches, and a glob is not a channel a `PUBLISH` can name,
+so a registration on one names the destination itself with `.out_retry(policy).to("events.retry")`
+or with a publish transform that reads the channel each delivery came in on. A registration that
+names neither refuses to start.
+
+A `reclaim` subscription is the one place where the copy reaches the group rather than the
+subscription that made it: `XAUTOCLAIM` only ever hands out entries already pending on another
+consumer, so a fresh entry is read by the fresh-tail worker beside it. That is the topology the
+mode is written for.
+
+The destination a cap names is a plain name on the same broker, and the generated
+[AsyncAPI document](asyncapi.md) reports it as a channel the service publishes to.

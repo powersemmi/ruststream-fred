@@ -5,15 +5,26 @@ Pub/Sub 发完即忘：消息只到达那一刻连着的订阅者，而 `ack` �
 用 Pub/Sub 的服务导入 `ruststream_fred::pubsub::prelude::*`：描述符、它的模式，以及这种形式的发布
 策略，名字是 `Publish`。
 
-`RedisPubSub` 描述符写明频道和模式。经典投递到达集群的每个节点，而 `.pattern()` 订阅的是频道模式，
-不是单个频道：
+`RedisPubSub` 描述符写明频道和模式。经典投递到达集群的每个节点：
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_pubsub.rs:classic"
 ```
 
-分片投递（`SSUBSCRIBE`，Redis 7+）留在槽内，因此能在集群上横向扩展，并且不接受模式：两者都要的
-描述符在订阅挂载时被拒绝。`.mode(PubSubMode::Sharded)` 按订阅选中它：
+通配模式是 `RedisPubSubPattern`，一个独立的描述符，因为按模式订阅的差别不止一个标志位：它读取模式
+匹配到的每一个频道，自己并没有一个频道。
+
+```rust
+--8<-- "crates/ruststream-fred/examples/fred_pubsub.rs:pattern"
+```
+
+因此挂在模式上的注册要说明这次投递的重试副本发到哪里：或者 `.out_retry(policy).to("name")`，或者
+用一个读取投递所在频道的发布变换。两者都不写的注册会拒绝启动。参见
+[重试次数上限](dead-letter.md#where-a-retry-copy-goes)。
+
+分片投递（`SSUBSCRIBE`，Redis 7+）留在槽内，因此能在集群上横向扩展，并且不接受模式。
+`RedisPubSubPattern` 根本不带模式设置，这个组合因此写不出来；`.mode(PubSubMode::Sharded)` 在按频道
+订阅上选中分片投递：
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_pubsub.rs:sharded"

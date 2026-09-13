@@ -1,5 +1,5 @@
-//! Delayed retry on Redis Streams: the deferred copy the runtime publishes when the delay is up,
-//! and the ZSET delay queue that makes the same retry survive a process crash.
+//! Delayed retry on Redis Streams: the copy the runtime publishes when the delay is up, and the
+//! ZSET delay queue that makes the same retry survive a process crash.
 //!
 //! ```text
 //! cargo run --example fred_delayed_retry --features macros,json -- run
@@ -24,7 +24,7 @@ struct Order {
 
 // --8<-- [start:deferred]
 // A plain subscription has no per-message delay of its own, so the runtime serves the delay with a
-// copy it publishes back to the stream once the delay is up.
+// copy it publishes back to the stream key once the delay is up.
 #[subscriber(RedisStream::new("billing").group("workers"))]
 async fn bill_order(order: &Order) -> HandlerOutcome {
     if order.id == 0 {
@@ -59,10 +59,11 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
-            // `out_retry` names the publisher the deferred copy leaves through. Without it the
-            // delay is dropped and the message is requeued at once.
+            // Every registration already has a publisher for its copies, taken from the broker's
+            // own default policy. `out_retry` replaces it: another policy, another codec, a
+            // transform on the way out.
             b.include(bill_order).out_retry(Publish);
-            // The ZSET queue carries the delay itself, so this registration needs no publisher.
+            // The ZSET queue carries the delay itself, so this one publishes nothing at all.
             b.include(handle_order);
         },
     )

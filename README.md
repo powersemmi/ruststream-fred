@@ -29,13 +29,20 @@
   Payload and headers round-trip as stream entry fields.
 - **Lists and Pub/Sub beside them.** `RedisList` is a competing-consumers work queue: `BRPOP`
   at-most-once, or `reliable()` for at-least-once through a per-consumer processing list.
-  `RedisPubSub` is fire-and-forget fan-out, `Classic` broadcast or `Sharded` (`SSUBSCRIBE`,
-  Redis 7+) so it scales across a cluster.
+  `RedisPubSub` is fire-and-forget fan-out on one channel, `Classic` broadcast or `Sharded`
+  (`SSUBSCRIBE`, Redis 7+) so it scales across a cluster, and `RedisPubSubPattern` is the glob form
+  (`PSUBSCRIBE`), classic-only by construction.
 - **Settlement follows the transport.** On a stream `ack` is `XACK`; `nack(requeue = true)`
   re-appends a copy to the stream then acks the original (at-least-once); `nack(requeue = false)`
   acks to drop. A reliable list `LREM`s the entry off its processing list on ack and returns it to
   the main list on requeue. Simple lists and Pub/Sub have nothing to settle, so they report
   `AckError::Unsupported` rather than silently succeeding.
+- **Retries capped where the handler is mounted.** `b.include(h).max_attempts(nonzero!(5))
+  .dead_letter("orders.dlq")` reads the same on every transport. On the two read modes that claim
+  the cap counts Redis's own delivery count, so a message a dead worker never acked counts towards
+  it; everywhere else the count travels on the copies the runtime publishes. A delay
+  (`retry_after`) is served by Redis itself on a claiming subscription or through the opt-in ZSET
+  delay queue, and by a copy otherwise.
 - **Batches on every transport.** A batch handler names its size where it is mounted
   (`batch(nonzero!(n))`); on a stream that number is the `COUNT` of the `XREADGROUP` that fetches
   the batch, while lists and Pub/Sub pop one entry at a time and assemble the batch on the client.
@@ -189,10 +196,10 @@ tb.shutdown().await?;
 ```
 
 Full compiling example: `crates/ruststream-fred/examples/fred_testing.rs`. Consumer-group cursors,
-`XAUTOCLAIM` redelivery, idle reclaim, and dead-letter routing are deliberately not simulated;
+`XAUTOCLAIM` redelivery, idle reclaim and `MAXLEN` trimming are deliberately not simulated;
 exercise those against a real server with `just test-brokers`. A `RedisStream::claiming`
 subscription does mount here, pending entries list and delivery count included, so a retry cap is
-testable in process.
+testable in process, and so is the ZSET delay queue.
 
 ## Contributing
 

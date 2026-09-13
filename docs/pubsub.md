@@ -7,15 +7,27 @@ A Pub/Sub service imports `ruststream_fred::pubsub::prelude::*`: the descriptor,
 form's publish policy under the name `Publish`.
 
 A `RedisPubSub` descriptor names the channel and the mode. Classic delivery reaches every node of a
-cluster, and `.pattern()` subscribes to a channel pattern instead of one channel:
+cluster:
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_pubsub.rs:classic"
 ```
 
+A glob is `RedisPubSubPattern`, a descriptor of its own, because a pattern subscription differs in
+more than a flag: it reads every channel the glob matches and has none of its own to be reached at.
+
+```rust
+--8<-- "crates/ruststream-fred/examples/fred_pubsub.rs:pattern"
+```
+
+That is why a registration on a pattern says where a retry copy of a delivery goes, either with
+`.out_retry(policy).to("name")` or with a publish transform that reads the channel the delivery came
+in on. A registration that names neither refuses to start. See
+[Capping the retries](dead-letter.md#where-a-retry-copy-goes).
+
 Sharded delivery (`SSUBSCRIBE`, Redis 7+) stays slot-local, so it scales across a cluster and takes
-no patterns: a descriptor that asks for both is refused when the subscription mounts.
-`.mode(PubSubMode::Sharded)` selects it per subscription:
+no patterns. `RedisPubSubPattern` carries no mode, so the combination is not expressible;
+`.mode(PubSubMode::Sharded)` selects sharded delivery on a channel subscription:
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_pubsub.rs:sharded"

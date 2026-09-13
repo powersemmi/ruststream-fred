@@ -72,26 +72,10 @@ fn extension(document: &Value, name: &str) -> Value {
 /// and from what idle threshold on.
 #[test]
 fn a_stream_channel_reports_its_group_and_read_mode() {
-    let document = document();
-    // --8<-- [start:stream_channel]
-    // "channels": { "orders": { "bindings": { "x-ruststream-redis": {
-    //   "form": "stream",
-    //   "group": "workers",
-    //   "consumer": "worker-1",
-    //   "readMode": "claiming",
-    //   "minIdleMs": 30000
-    // } } } }
-    // --8<-- [end:stream_channel]
-    assert_eq!(
-        extension(&document, "orders"),
-        serde_json::json!({
-            "form": "stream",
-            "group": "workers",
-            "consumer": "worker-1",
-            "readMode": "claiming",
-            "minIdleMs": 30_000,
-        }),
-    );
+    // The excerpt the AsyncAPI page shows, so the page cannot drift from the document.
+    let shown: Value = serde_json::from_str(include_str!("fixtures/asyncapi_stream_channel.json"))
+        .expect("the page excerpt is JSON");
+    assert_eq!(extension(&document(), "orders"), shown);
 }
 
 /// A list reports whether it acknowledges, where an unfinished entry sits while it does, and how

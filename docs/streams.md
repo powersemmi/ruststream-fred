@@ -54,7 +54,9 @@ Each of its deliveries reports how long the entry had been pending and how many 
 finish, under the `IDLE_MS_HEADER` and `DELIVERY_COUNT_HEADER` headers; an entry read off the tail
 reports zero for both. A retry leaves the entry in the pending entries list instead of appending a
 copy, so it comes back under its own id, no sooner than `min_idle` later and with the count one
-higher. That count is the retry counter of this mode, and a handler gives up on it:
+higher. That count is the retry counter of this mode: a
+[cap declared at the mount site](dead-letter.md) reads it, and a handler that wants to decide for
+itself reads the header:
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_claiming.rs:cap"
@@ -169,8 +171,8 @@ What a seek does not touch:
 - **scheduled delayed retries.** Copies already sitting in a ZSET delay queue are keyed by their due
   time, so they are appended to the stream when they fall due regardless of where the group reads.
 - **delivery counts.** A replayed entry is delivered again, so its native delivery count grows; a
-  reclaim subscription with `max_deliveries` therefore counts replays towards the poison cap, while
-  the framework retry-count header only moves on an actual `nack`.
+  reclaim subscription therefore counts replays towards a declared cap, while the framework
+  retry-count header only moves on an actual retry.
 
 The cursor changes as soon as the seek returns; a subscription blocked in `XREADGROUP` sees it on
 its next read, within one `block` interval. Entries the old cursor selected are discarded, not
@@ -186,27 +188,25 @@ Settlement follows the republish-retry model:
   a duplicate.
 - `nack(requeue = false)` -> `XACK` to drop.
 
-A claiming subscription retries through the pending entries list instead: `nack(requeue = true)`
-appends nothing and acknowledges nothing, and the subscription's own next read takes the entry back
-once it has been idle `min_idle`. Nothing is duplicated and the entry keeps its id, at the price of
-waiting out the threshold before the next attempt.
+A claiming subscription retries through the pending entries list instead: a retry appends nothing
+and acknowledges nothing, and the subscription's own next read takes the entry back once it has been
+idle `min_idle`. Nothing is duplicated and the entry keeps its id, at the price of waiting out the
+threshold before the next attempt.
 
 ## Delayed retry
 
 `HandlerOutcome::retry_after(delay)` asks for a delayed redelivery, for backing off a transient
-error. Redis Streams have no per-message delay, so a subscription gets the delay in one of
-two ways.
+error. Redis Streams have no per-message delay, so a subscription serves it in one of three ways.
 
-The runtime's own way is a copy it publishes back to the stream once the delay is up:
+The runtime's own way is a copy it publishes back to the stream key once the delay is up:
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_delayed_retry.rs:deferred"
 ```
 
-That copy leaves through a publisher you name at the mount site with `out_retry`; without it the
-delay is dropped and the message is requeued at once. The copy is at-most-once over the delay
-window: a crash before the timer fires loses it. The position is an ordinary `Out` slot, so a
-`.transform(..)` after it runs on the copy, whose retry-count header is one higher than the
+Every registration already has the publisher that copy leaves through, taken from the broker's own
+default policy, so this needs nothing at the mount site. The copy is at-most-once over the delay
+window: a crash before the timer fires loses it, and its retry-count header is one higher than the
 original's.
 
 A ZSET delay queue is the durable way: the scheduled entry lives in Redis, so the redelivery
@@ -223,11 +223,20 @@ the granularity, and one pass moves at most 128 due entries. A TTL on the ZSET k
 abandoned queue and has to be longer than the longest scheduled delay, or entries are dropped before
 they fire. Scores are wall-clock epoch milliseconds, so keep clocks synced (NTP).
 
-The two mount side by side, and only the subscription without a queue names a publisher:
+The claiming mode is the third way, and it needs no queue: the entry stays in the pending entries
+list and the subscription's own next read takes it back. What it can offer is one wait, its
+`min_idle`, so a shorter delay rounds up to it. Name a ZSET queue on a claiming subscription to have
+the delay honoured as asked.
+
+The mount site is where a copy's publisher is replaced, once per registration:
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_delayed_retry.rs:app"
 ```
+
+`out_retry(policy)` names another policy for the copies, and the position is an ordinary `Out` slot:
+a `.codec(..)` or a `.transform(..)` after it applies to every copy. A transform there reads the
+delivery being retried, the way a reply's transforms read the delivery being answered.
 
 ## Partition keys
 

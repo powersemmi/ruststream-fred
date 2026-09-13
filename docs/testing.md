@@ -112,7 +112,7 @@ them in process would deliver what the real subscription never delivers:
 
 - `RedisStream::reclaim(..)` reads another consumer's stale pending entries. The stand-in keeps no
   pending list, so the mount would hand the handler fresh entries instead.
-- `RedisPubSub::pattern()` subscribes to a glob. The stand-in matches channel names exactly, so the
+- `RedisPubSubPattern` subscribes to a glob. The stand-in matches channel names exactly, so the
   mount would go silent on every channel the glob is meant to catch.
 
 Settlement follows the transport. A stream and a reliable list acknowledge, and a requeue redelivers;
