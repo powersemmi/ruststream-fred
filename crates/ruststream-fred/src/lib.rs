@@ -2,12 +2,14 @@
 //!
 //! This crate implements the `RustStream` broker contract over Redis Streams: durable consumer
 //! groups with acknowledgement, redelivery, and crash recovery. Subjects are stream keys; a
-//! subscription reads through a consumer group, either off the fresh tail
-//! ([`RedisStream::new`]) or reclaiming another consumer's stale pending entries
-//! ([`RedisStream::reclaim`]).
+//! subscription reads through a consumer group, off the fresh tail ([`RedisStream::new`]),
+//! reclaiming another consumer's stale pending entries ([`RedisStream::reclaim`]), or doing both
+//! in one read on Redis 8.4 and later ([`RedisStream::claiming`]).
 //!
 //! Settlement follows the republish-retry model: `ack` is `XACK`, `nack(requeue = true)` re-appends
-//! a copy to the same stream then acks the original, and `nack(requeue = false)` acks to drop.
+//! a copy to the same stream then acks the original, and `nack(requeue = false)` acks to drop. A
+//! claiming subscription retries through the pending entries list instead, which is what lets the
+//! server's own delivery count cap the retries.
 //!
 //! The lifecycle is the framework's ladder of consuming transitions: [`RedisBroker`] records the
 //! topology synchronously, [`Broker::connect`](ruststream::Broker::connect) yields the
@@ -21,6 +23,7 @@
 #![forbid(unsafe_code)]
 
 mod broker;
+mod claim;
 mod convert;
 mod deadletter;
 mod delay;

@@ -26,24 +26,43 @@ Broker 级别的默认组（`.default_group`）：
 
 条目把载荷放在一个保留字段里，每个消息头放在 `h:` 前缀下，因此 `XADD` 和 `XREADGROUP` 两者都保留。
 
-## 读取模式：读新条目还是回收 { #read-modes-fresh-tail-vs-reclaim }
+## 读取模式 { #read-modes }
 
-读取模式由构造函数选定，因为这两种模式返回的条目集合互不相交：
+读取模式由构造函数选定，因为这三种模式返回的条目集合各不相同：
 
 - `RedisStream::new(key)` 从流的末尾读新条目（`XREADGROUP >`）。这是普通的工作订阅者。
-- `RedisStream::reclaim(key, min_idle)` 回收另一个消费者取走却没有 ack 的条目（`XAUTOCLAIM`，空闲
-  至少 `min_idle`）。这是崩溃恢复，和同一个组里的 `new` 订阅者并排运行（“每组两个处理器”）。
+- `RedisStream::claiming(key, min_idle)` 在一次调用里先取走消费者组中空闲至少 `min_idle` 的待处理
+  条目，再用这次读取的余量补上新条目（`XREADGROUP ... CLAIM`），陈旧的排在前面。需要 Redis 8.4
+  及以后。
+- `RedisStream::reclaim(key, min_idle)` 只读另一个消费者取走却没有 ack 的待处理条目（`XAUTOCLAIM`
+  回收，空闲至少 `min_idle`）。
 
-`min_idle` 没有默认值。把它设得比处理器最长的运行时间还长，否则回收会拿走健康消费者还在处理的
-消息，这条消息于是处理两次。
+`min_idle` 没有默认值。把它设得比处理器最长的运行时间还长，否则健康消费者还在处理的消息会被拿走，
+于是处理两次。
 
-描述符可以写在 `#[subscriber(..)]` 属性里。读新条目的工作订阅者：
+在 Redis 8.4 及以后写 claiming 模式：一个订阅、一个消费者、一个处理器同时覆盖新的工作和崩溃恢复。
+
+```rust
+--8<-- "crates/ruststream-fred/examples/fred_claiming.rs:claiming"
+```
+
+它的每次投递都报告条目待处理了多久、此前有多少次尝试没有做完，用的是 `IDLE_MS_HEADER` 和
+`DELIVERY_COUNT_HEADER` 两个消息头；从流末尾读到的条目两者都是零。这个模式上的重试把条目留在待处理
+条目列表里，不追加副本，于是条目以自己的标识回来，最早也要等 `min_idle`，而且计数加一。这个计数就是
+该模式的重试计数，处理器读它来放弃：
+
+```rust
+--8<-- "crates/ruststream-fred/examples/fred_claiming.rs:cap"
+```
+
+对 8.4.0 以前的服务器，claiming 订阅拒绝启动，错误里写明订阅、模式和两个版本。在这样的服务器上，
+恢复是同一个组里的第二个订阅。读新条目的工作订阅者：
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_reclaim.rs:worker"
 ```
 
-同一个组里做恢复的处理器，回收空闲超过 30 秒的条目：
+和它并排做恢复的处理器，回收空闲超过 30 秒的条目（“每组两个处理器”）：
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_reclaim.rs:reclaim"
@@ -82,8 +101,9 @@ Redis 带有载荷里没有的元数据，处理器按键从自己的类型化�
 一个批次跨越多次投递，因此 `StreamBatchContext` 只带属于订阅的东西。条目标识和位置属于单次投递，
 从批次自己的元素上读取；在批次上下文上要这样的键无法通过编译。
 
-回收这条路径把投递次数和空闲时间报在 `DELIVERY_COUNT_HEADER` 和 `IDLE_MS_HEADER` 两个消息头里，
-每种传输读它们的方式都一样。Pub/Sub 有自己的 `PubSubContext`（匹配到的频道，以及它是不是经由模式
+回收和 claiming 这两条路径把投递次数和空闲时间报在 `DELIVERY_COUNT_HEADER` 和 `IDLE_MS_HEADER`
+两个消息头里，每种传输读它们的方式都一样。回收得到的投递把自己算进去，claiming 取到的投递只算它
+之前的尝试，因此从流末尾读到的条目在那里是零。Pub/Sub 有自己的 `PubSubContext`（匹配到的频道，以及它是不是经由模式
 而来）；列表除了载荷和消息头什么都不带，因此它的上下文是 `()`。
 
 ## 重新定位一个组 { #repositioning-a-group }
@@ -145,6 +165,10 @@ Redis 带有载荷里没有的元数据，处理器按键从自己的类型化�
 - `nack(requeue = true)` -> 往同一个流里追加一份副本，然后对原件 `XACK`。副本由普通的 `new` 消费者
   重新处理。这是至少一次：两步之间崩溃会留下一份重复。
 - `nack(requeue = false)` -> `XACK` 以丢弃。
+
+claiming 订阅改走待处理条目列表来重试：`nack(requeue = true)` 既不追加也不确认，等条目空闲满
+`min_idle` 之后，这个订阅自己的下一次读取把它取回来。没有重复，条目也保留自己的标识，代价是下一次
+尝试要等过这个阈值。
 
 ## 延迟重试 { #delayed-retry }
 

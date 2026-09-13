@@ -1,4 +1,5 @@
-//! Redis Streams subscriber driving `XREADGROUP` (fresh tail) or `XAUTOCLAIM` (reclaim).
+//! Redis Streams subscriber driving `XREADGROUP` (the fresh tail, or claim-and-read on Redis 8.4
+//! and later) or `XAUTOCLAIM` (reclaim).
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Formatter};
@@ -8,12 +9,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use fred::clients::Pool;
-use fred::interfaces::StreamsInterface;
+use fred::interfaces::{ClientLike, StreamsInterface};
 use fred::types::streams::XReadValue;
+use fred::types::{CustomCommand, Value};
 use futures::Stream;
 use futures::stream::unfold;
 use ruststream::{BatchSubscriber, Seekable, Subscriber};
 
+use crate::claim::{self, ClaimedEntry};
 use crate::convert::{HEADER_PREFIX, parts_from_fields};
 use crate::deadletter::{
     self, DELIVERY_COUNT_HEADER, IDLE_MS_HEADER, PoisonPolicy, REASON_MAX_DELIVERIES,
@@ -34,6 +37,10 @@ type RawStreams = Vec<(String, Vec<(String, Vec<(String, Vec<u8>)>)>)>;
 /// Cursor a fresh reclaim scan starts from (the whole pending list).
 const RECLAIM_START: &str = "0-0";
 
+/// The command the claiming mode sends. It goes out as a custom command because `CLAIM` changes
+/// the reply shape, which the typed `xreadgroup` of `fred` cannot parse.
+const XREADGROUP: &str = "XREADGROUP";
+
 /// `COUNT` for a read on the single-message path, where the framework names no batch size: a read
 /// that fetched one entry per round trip would spend a round trip per message, so the loop
 /// prefetches and drains the buffer between reads. Batches take their own `COUNT` from the size the
@@ -47,7 +54,7 @@ fn duration_to_millis(d: Duration) -> u64 {
 /// A Redis Streams subscription bound to a consumer group.
 ///
 /// Constructed by [`crate::ConnectedRedisBroker::subscribe`] from a [`crate::RedisStream`]
-/// descriptor. The read mode (fresh tail vs reclaim) is fixed at construction.
+/// descriptor. The read mode (fresh tail, reclaim, or claim-and-read) is fixed at construction.
 pub struct RedisSubscriber {
     pool: Pool,
     key: String,
@@ -149,6 +156,7 @@ impl RedisSubscriber {
             self.policy.clone(),
             self.delay.clone(),
             Arc::clone(&self.seeker),
+            self.mode.requeue(),
         ))
     }
 
@@ -177,6 +185,7 @@ impl RedisSubscriber {
         let entries = match self.mode.clone() {
             ReadMode::Fresh => self.fetch_fresh(count).await?,
             ReadMode::Reclaim { min_idle } => self.fetch_reclaim(min_idle, count).await?,
+            ReadMode::Claiming { min_idle } => self.fetch_claiming(min_idle, count).await?,
         };
         if selected_at != self.generation.load(Ordering::Acquire) {
             // A seek overtook this read; drop its entries and let the caller read again.
@@ -210,6 +219,74 @@ impl RedisSubscriber {
             .into_iter()
             .map(|(id, fields)| (id, fields.into_iter().collect()))
             .collect())
+    }
+
+    /// One `XREADGROUP GROUP g c COUNT n BLOCK ms CLAIM min-idle STREAMS key >`: the group's
+    /// entries idle at least `min_idle` first, longest idle first, then fresh ones up to the
+    /// remaining `COUNT`. The read blocks on both a new entry and an entry ageing past the
+    /// threshold.
+    ///
+    /// It goes out as a custom command because `CLAIM` makes every entry `[id, fields, idle-ms,
+    /// delivery-count]`, which the typed `xreadgroup` of `fred` parses as a two-element entry and
+    /// rejects. The two extra fields become the headers the reclaim path already writes, so a
+    /// handler reads them the same way on either mode.
+    async fn fetch_claiming(
+        &self,
+        min_idle: Duration,
+        count: u64,
+    ) -> Result<Vec<Entry>, RedisError> {
+        // The key is hashed into the command's cluster slot: it is not the first argument, so the
+        // default "hash the first key" policy would route the read by the group name.
+        let command = CustomCommand::new_static(XREADGROUP, self.key.as_str(), true);
+        // Every argument goes as a string, which is what a Redis command is on the wire.
+        let args: Vec<Value> = [
+            "GROUP",
+            self.group.as_str(),
+            self.consumer.as_str(),
+            "COUNT",
+            &count.to_string(),
+            "BLOCK",
+            &duration_to_millis(self.block).to_string(),
+            "CLAIM",
+            &duration_to_millis(min_idle).to_string(),
+            "STREAMS",
+            self.key.as_str(),
+            ">",
+        ]
+        .into_iter()
+        .map(Value::from)
+        .collect();
+
+        let frame = self
+            .pool
+            .custom_raw(command, args)
+            .await
+            .map_err(RedisError::stream)?;
+        let claimed = claim::decode_reply(&frame, &self.key)?;
+        self.annotate_claimed(claimed).await
+    }
+
+    /// Hands each claimed entry its two counters as headers, and dead-letters (or drops) the ones
+    /// whose delivery count has reached `max_deliveries` instead of delivering them again.
+    ///
+    /// Unlike the reclaim path this needs no second round trip: `CLAIM` reports both counters with
+    /// the entry. It reports them as of the delivery before this one, though, so a fresh entry
+    /// reports zero and the cap is checked against the delivery this read is about to make. The
+    /// reclaim path reads the same counter after the claim, where it already includes it, so the
+    /// two modes cap at the same attempt.
+    async fn annotate_claimed(&self, claimed: Vec<ClaimedEntry>) -> Result<Vec<Entry>, RedisError> {
+        let mut out = Vec::with_capacity(claimed.len());
+        for entry in claimed {
+            if self.policy.is_poison(entry.delivery_count + 1) {
+                self.dead_letter_reclaimed(&entry.id, &entry.fields).await?;
+                continue;
+            }
+            let mut fields = entry.fields;
+            insert_meta_header(&mut fields, DELIVERY_COUNT_HEADER, entry.delivery_count);
+            insert_meta_header(&mut fields, IDLE_MS_HEADER, entry.idle_ms);
+            out.push((entry.id, fields));
+        }
+        Ok(out)
     }
 
     async fn fetch_reclaim(
@@ -328,7 +405,7 @@ impl Subscriber for RedisSubscriber {
     ///
     /// Dropping the returned stream between items is safe. Dropping it while a read is in flight
     /// drops the read future; entries already delivered to this consumer but not yet acked stay in
-    /// the group's pending list and are redelivered (fresh mode) or reclaimable (reclaim mode).
+    /// the group's pending list, where the reclaim and claiming modes pick them up again.
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
         unfold(self, |s| async move {
             loop {

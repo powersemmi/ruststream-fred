@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use fred::clients::{Client, Pool};
 use fred::interfaces::{ClientLike, EventInterface, PubsubInterface, StreamsInterface};
+use fred::types::Version;
 #[cfg(feature = "credential-provider")]
 use fred::types::config::CredentialProvider;
 #[cfg(any(
@@ -31,12 +32,15 @@ use crate::{
     pubsub::{
         PubSubMode, RedisPubSub, RedisPubSubPublish, RedisPubSubPublisher, RedisPubSubSubscriber,
     },
-    stream::RedisStream,
+    stream::{ReadMode, RedisStream},
     subscriber::RedisSubscriber,
 };
 
 /// Default `fred` connection-pool size when the caller does not set one.
 const DEFAULT_POOL_SIZE: usize = 4;
+
+/// The first Redis release whose `XREADGROUP` takes a `CLAIM` option.
+const CLAIM_MIN_VERSION: Version = Version::new(8, 4, 0);
 
 /// How the broker should connect, recorded synchronously and resolved into a `fred` config at
 /// [`Broker::connect`] time so construction stays I/O- and failure-free.
@@ -592,6 +596,9 @@ impl ConnectedRedisBroker {
         let pool = self.core.pool()?;
         let group = def.group_or_err()?.to_owned();
         let consumer = def.consumer_or_auto();
+        if let ReadMode::Claiming { .. } = def.mode() {
+            require_claim_support(pool.server_version().as_ref(), def.key())?;
+        }
         ensure_group(&pool, def.key(), &group, def.start().as_id()).await?;
         Ok(RedisSubscriber::new(
             pool,
@@ -777,6 +784,29 @@ impl Subscribe for ConnectedRedisBroker {
     }
 }
 
+/// Refuses a [`RedisStream::claiming`] subscription the connected server cannot serve.
+///
+/// The version is the one the `fred` client read from `INFO server` during its handshake, so the
+/// check costs no round trip and runs once, where the subscription resolves against the connected
+/// broker. Without it the mistake surfaces on the first read, as a bare syntax error from a server
+/// that does not know the option.
+///
+/// A server that reports no version is refused the same way: the option either exists or the
+/// service does not start, and a guess is what the check is here to avoid.
+fn require_claim_support(version: Option<&Version>, key: &str) -> Result<(), RedisError> {
+    match version {
+        Some(version) if *version >= CLAIM_MIN_VERSION => Ok(()),
+        Some(version) => Err(RedisError::ServerTooOld(format!(
+            "RedisStream::claiming on {key:?} needs Redis {CLAIM_MIN_VERSION} or later \
+             (XREADGROUP CLAIM); the connected server is {version}"
+        ))),
+        None => Err(RedisError::ServerTooOld(format!(
+            "RedisStream::claiming on {key:?} needs Redis {CLAIM_MIN_VERSION} or later \
+             (XREADGROUP CLAIM); the connected server reports no version"
+        ))),
+    }
+}
+
 /// Creates the consumer group, treating an already-existing group as success.
 async fn ensure_group(
     pool: &Pool,
@@ -797,6 +827,52 @@ async fn ensure_group(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The refusal names the subscription, the mode and both versions, so the operator reads
+    /// what to change without reaching for the source.
+    #[test]
+    fn a_claiming_subscription_names_both_versions_when_it_refuses() {
+        let err = require_claim_support(Some(&Version::new(7, 4, 2)), "orders")
+            .expect_err("a server below 8.4.0 must be refused");
+        assert_eq!(
+            err.to_string(),
+            "RedisStream::claiming on \"orders\" needs Redis 8.4.0 or later (XREADGROUP CLAIM); \
+             the connected server is 7.4.2"
+        );
+    }
+
+    /// A server that reports no version is refused too: the option either exists or the service
+    /// does not start.
+    #[test]
+    fn a_server_with_no_version_is_refused() {
+        let err = require_claim_support(None, "orders")
+            .expect_err("a server reporting no version must be refused");
+        assert!(
+            err.to_string().contains("reports no version"),
+            "the refusal has to say the version is missing: {err}"
+        );
+    }
+
+    /// 8.4.0 is the floor, not a version to be above, and a later release keeps the option.
+    #[test]
+    fn the_floor_release_and_later_are_accepted() {
+        for version in [
+            Version::new(8, 4, 0),
+            Version::new(8, 4, 6),
+            Version::new(9, 0, 0),
+        ] {
+            assert!(
+                require_claim_support(Some(&version), "orders").is_ok(),
+                "{version} has XREADGROUP CLAIM"
+            );
+        }
+        for version in [Version::new(8, 3, 9), Version::new(7, 4, 2)] {
+            assert!(
+                require_claim_support(Some(&version), "orders").is_err(),
+                "{version} does not have XREADGROUP CLAIM"
+            );
+        }
+    }
 
     #[test]
     fn describe_server_reports_redis() {

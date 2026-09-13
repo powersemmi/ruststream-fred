@@ -74,6 +74,9 @@ name = "fred_streams"
 name = "fred_reclaim"
 
 [[example]]
+name = "fred_claiming"
+
+[[example]]
 name = "fred_seek"
 
 [[example]]

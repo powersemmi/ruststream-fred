@@ -7,6 +7,7 @@
 use std::future::{Future, ready};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use bytes::Bytes;
 use ruststream::{
@@ -146,7 +147,22 @@ impl ConnectedRedisTestBroker {
         &self,
         key: impl Into<String>,
     ) -> impl Future<Output = Result<RedisTestSubscriber, RedisError>> {
-        self.open(key, Settlement::Settleable)
+        self.open(key, Settlement::Settleable, None)
+    }
+
+    /// A [`RedisStream::claiming`](crate::RedisStream::claiming) subscription on `key`.
+    ///
+    /// It keeps a pending entries list of its own, so every delivery carries the two counters the
+    /// server sends, a retried entry stays pending instead of being re-queued, and it is claimed
+    /// back once it has been idle `min_idle`, ahead of fresh entries and with its delivery count
+    /// one higher. A test moves that wait with
+    /// [`TestApp::advance`](ruststream::testing::TestApp::advance).
+    pub(crate) fn subscribe_claiming(
+        &self,
+        key: impl Into<String>,
+        min_idle: Duration,
+    ) -> impl Future<Output = Result<RedisTestSubscriber, RedisError>> {
+        self.open(key, Settlement::Settleable, Some(min_idle))
     }
 
     /// The same subscription with settlement refused, for the forms whose real deliveries report
@@ -155,13 +171,14 @@ impl ConnectedRedisTestBroker {
         &self,
         key: impl Into<String>,
     ) -> impl Future<Output = Result<RedisTestSubscriber, RedisError>> {
-        self.open(key, Settlement::Unsupported)
+        self.open(key, Settlement::Unsupported, None)
     }
 
     fn open(
         &self,
         key: impl Into<String>,
         settlement: Settlement,
+        min_idle: Option<Duration>,
     ) -> impl Future<Output = Result<RedisTestSubscriber, RedisError>> {
         if let Err(err) = self.state.alive() {
             return ready(Err(err));
@@ -177,6 +194,7 @@ impl ConnectedRedisTestBroker {
             rx,
             requeue,
             settlement,
+            min_idle,
         )))
     }
 

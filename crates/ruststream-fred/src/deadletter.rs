@@ -27,10 +27,15 @@ use crate::convert::fields_for_publish;
 
 /// Header naming why a message was dead-lettered: `dropped` or `max-deliveries`.
 pub const DEAD_LETTER_REASON_HEADER: &str = "x-dead-letter-reason";
-/// Header exposing the native Redis Streams delivery count on a reclaimed delivery, so a handler can
-/// branch or dead-letter manually.
+/// Header exposing the native Redis Streams delivery count, so a handler can branch or
+/// dead-letter manually.
+///
+/// A [`reclaim`](crate::RedisStream::reclaim) delivery reports the count including itself. A
+/// [`claiming`](crate::RedisStream::claiming) delivery reports the attempts made before it, which
+/// is zero on a fresh entry and one on the first claim back.
 pub const DELIVERY_COUNT_HEADER: &str = "redis-delivery-count";
-/// Header exposing how long (milliseconds) a reclaimed delivery had been pending.
+/// Header exposing how long (milliseconds) the delivery had been pending before this read. Zero on
+/// an entry a [`claiming`](crate::RedisStream::claiming) subscription read off the tail.
 pub const IDLE_MS_HEADER: &str = "redis-idle-ms";
 
 /// [`DEAD_LETTER_REASON_HEADER`] value for a `nack(requeue = false)` / drop.

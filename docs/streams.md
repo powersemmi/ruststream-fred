@@ -28,26 +28,48 @@ Mount it on the broker:
 An entry holds the payload in a reserved field and each header under an `h:` prefix, so `XADD` and
 `XREADGROUP` preserve both.
 
-## Read modes: fresh tail vs reclaim
+## Read modes
 
-A constructor picks the read mode, because the two return disjoint sets of entries:
+A constructor picks the read mode, because the three return different sets of entries:
 
 - `RedisStream::new(key)` reads fresh entries off the tail (`XREADGROUP >`). This is the normal
   worker.
-- `RedisStream::reclaim(key, min_idle)` reclaims entries another consumer fetched but never acked
-  (`XAUTOCLAIM`, idle at least `min_idle`). This is crash recovery, run alongside a `new` subscriber
-  on the same group ("two handlers per group").
+- `RedisStream::claiming(key, min_idle)` reads the group's pending entries idle at least `min_idle`
+  and the fresh tail in one call (`XREADGROUP ... CLAIM`), the stale ones first. Redis 8.4 and
+  later.
+- `RedisStream::reclaim(key, min_idle)` reads only the pending entries another consumer fetched and
+  never acked (`XAUTOCLAIM`, idle at least `min_idle`).
 
 `min_idle` has no default. Set it above the longest handler runtime, or a message a healthy consumer
-is still processing is reclaimed and handled twice.
+is still processing is taken away and handled twice.
 
-A descriptor can be written in the `#[subscriber(..)]` attribute. The fresh-tail worker:
+On Redis 8.4 and later write the claiming mode: one subscription, one consumer and one handler cover
+new work and recovery alike.
+
+```rust
+--8<-- "crates/ruststream-fred/examples/fred_claiming.rs:claiming"
+```
+
+Each of its deliveries reports how long the entry had been pending and how many attempts did not
+finish, under the `IDLE_MS_HEADER` and `DELIVERY_COUNT_HEADER` headers; an entry read off the tail
+reports zero for both. A retry leaves the entry in the pending entries list instead of appending a
+copy, so it comes back under its own id, no sooner than `min_idle` later and with the count one
+higher. That count is the retry counter of this mode, and a handler gives up on it:
+
+```rust
+--8<-- "crates/ruststream-fred/examples/fred_claiming.rs:cap"
+```
+
+A claiming subscription refuses to start against a server older than 8.4.0, and the error names the
+subscription, the mode and both versions. Recovery on such a server is a second subscription on the
+same group. The fresh-tail worker:
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_reclaim.rs:worker"
 ```
 
-The recovery handler on the same group, reclaiming entries idle for over 30 seconds:
+The recovery handler beside it, reclaiming entries idle for over 30 seconds ("two handlers per
+group"):
 
 ```rust
 --8<-- "crates/ruststream-fred/examples/fred_reclaim.rs:reclaim"
@@ -90,8 +112,10 @@ A batch spans many deliveries, so `StreamBatchContext` carries only what belongs
 subscription. An entry id or a position belongs to one delivery and is read off the batch's own
 elements; asking for one on a batch context does not compile.
 
-The reclaim path reports its delivery count and idle time as the `DELIVERY_COUNT_HEADER` and
-`IDLE_MS_HEADER` headers, which every transport reads the same way. Pub/Sub has its own
+The reclaim and claiming paths report their delivery count and idle time as the
+`DELIVERY_COUNT_HEADER` and `IDLE_MS_HEADER` headers, which every transport reads the same way. A
+reclaimed delivery counts itself; a claimed one counts the attempts before it, so it reports zero
+on an entry read off the tail. Pub/Sub has its own
 `PubSubContext` (the matched channel, and whether it came through a pattern); a list carries nothing
 beyond payload and headers, so its context stays `()`.
 
@@ -161,6 +185,11 @@ Settlement follows the republish-retry model:
   is reprocessed by the normal `new` consumer. This is at-least-once: a crash between the two leaves
   a duplicate.
 - `nack(requeue = false)` -> `XACK` to drop.
+
+A claiming subscription retries through the pending entries list instead: `nack(requeue = true)`
+appends nothing and acknowledges nothing, and the subscription's own next read takes the entry back
+once it has been idle `min_idle`. Nothing is duplicated and the entry keeps its id, at the price of
+waiting out the threshold before the next attempt.
 
 ## Delayed retry
 
