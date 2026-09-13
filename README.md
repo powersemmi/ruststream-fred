@@ -24,7 +24,8 @@
 ## Features
 
 - **Redis Streams with consumer groups.** Subscribe through a group off the fresh tail
-  (`RedisStream::new`), or reclaim a crashed consumer's pending entries (`RedisStream::reclaim`).
+  (`RedisStream::new`), reclaim a crashed consumer's pending entries (`RedisStream::reclaim`), or do
+  both in one read on Redis 8.4 and later (`RedisStream::claiming`, `XREADGROUP ... CLAIM`).
   Payload and headers round-trip as stream entry fields.
 - **Lists and Pub/Sub beside them.** `RedisList` is a competing-consumers work queue: `BRPOP`
   at-most-once, or `reliable()` for at-least-once through a per-consumer processing list.
@@ -189,7 +190,9 @@ tb.shutdown().await?;
 
 Full compiling example: `crates/ruststream-fred/examples/fred_testing.rs`. Consumer-group cursors,
 `XAUTOCLAIM` redelivery, idle reclaim, and dead-letter routing are deliberately not simulated;
-exercise those against a real server with `just test-brokers`.
+exercise those against a real server with `just test-brokers`. A `RedisStream::claiming`
+subscription does mount here, pending entries list and delivery count included, so a retry cap is
+testable in process.
 
 ## Contributing
 
