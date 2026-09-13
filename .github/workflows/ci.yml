@@ -190,7 +190,7 @@ jobs:
           cargo test --locked --workspace --all-features --no-fail-fast
 
   broker-integration:
-    name: "Broker integration (Redis: standalone, cluster, sentinel)"
+    name: "Broker integration (Redis: standalone, 8.4, cluster, sentinel)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -206,8 +206,8 @@ jobs:
         with:
           workspaces: ruststream-fred
 
-      # The compose file brings up all three topologies (standalone, a 6-node cluster, and a
-      # sentinel set) on host networking, so every node announces and reaches its peers on
+      # The compose file brings up every topology (standalone on 7.x and on 8.4, a 6-node cluster,
+      # and a sentinel set) on host networking, so every node announces and reaches its peers on
       # 127.0.0.1 - the same addresses the test process uses. `--wait` blocks until every service is
       # healthy and the one-shot cluster-init has formed the cluster.
       - name: Start Redis topologies
@@ -218,15 +218,20 @@ jobs:
       # test that skips is a defect rather than a convenience. Without it a gated test returns
       # before its first assertion and reports ok, which reads exactly like a run that did the
       # work - and this job gates on four addresses, so it has four ways to go quietly green.
-      - name: Run Redis integration tests (standalone + cluster + sentinel)
+      # The claiming suite is a second binary because it runs against a second server: the 8.4
+      # standalone for the mode itself, and the 7.x one for the startup refusal.
+      - name: Run Redis integration tests (standalone + 8.4 + cluster + sentinel)
         working-directory: ruststream-fred
         env:
           REDIS_TEST_URL: redis://127.0.0.1:6379
+          REDIS_84_TEST_URL: redis://127.0.0.1:6386
           REDIS_AUTH_TEST_URL: redis://127.0.0.1:6385
           REDIS_CLUSTER_TEST_URL: 127.0.0.1:7000
           REDIS_SENTINEL_TEST_URL: 127.0.0.1:26379
           RUSTSTREAM_REQUIRE_LIVE: "1"
-        run: cargo test -p ruststream-fred --test integration_fred -- --test-threads=1
+        run: |
+          cargo test -p ruststream-fred --test integration_fred -- --test-threads=1
+          cargo test -p ruststream-fred --test integration_claiming -- --test-threads=1
 
       - name: Run Redis conformance suite
         working-directory: ruststream-fred
