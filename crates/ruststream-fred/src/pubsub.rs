@@ -542,8 +542,8 @@ impl Debug for RedisPubSubMessage {
 impl RedisPubSubMessage {
     /// The channel this message arrived on.
     ///
-    /// For a pattern ([`RedisPubSub::pattern`]) subscription this is the concrete channel the
-    /// message was published to, which differs from the glob the subscription registered.
+    /// On a [`RedisPubSubPattern`] subscription this is the concrete channel the message was
+    /// published to, which differs from the glob the subscription registered.
     #[must_use]
     pub fn channel(&self) -> &str {
         &self.channel

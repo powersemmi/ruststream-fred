@@ -198,9 +198,9 @@ impl RedisGroupPosition {
 ///   time, not by the cursor, so they are appended to the stream when they fall due regardless of
 ///   where the group is reading.
 /// * It does not reset delivery counts. A replayed entry is delivered again, so its **native**
-///   delivery count (the one the reclaim path reads and
-///   [`RedisStream::max_deliveries`](crate::RedisStream::max_deliveries) caps) grows with each
-///   replay; the framework retry-count header only moves on an actual `nack`.
+///   delivery count (the one the reclaim path reads and a `max_attempts` declaration at the mount
+///   site caps) grows with each replay; the framework retry-count header only moves on an actual
+///   retry.
 ///
 /// # Timing
 ///
