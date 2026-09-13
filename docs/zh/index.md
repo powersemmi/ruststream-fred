@@ -6,7 +6,7 @@ Redis Streams 是一个日志，和 Kafka 一样：订阅通过消费者组读�
 Redis 服务器。
 
 ```toml
-ruststream = { version = "0.7", features = ["macros"] }
+ruststream = { version = ">=0.7.0-rc.4, <0.8.0", features = ["macros"] }
 ruststream-fred = "0.7"
 serde = { version = "1", features = ["derive"] }
 ```
