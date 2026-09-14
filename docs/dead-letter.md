@@ -32,7 +32,9 @@ when it is claimed back, without anything in this process having seen it fail.
 
 Every other subscription has no count of its own, so the cap is read from the framework's
 retry-count header, which travels on the copies the runtime publishes. An immediate retry under a
-cap is then a copy rather than a plain `nack`, so the count moves with the message.
+cap is then a copy rather than a plain `nack`, so the count moves with the message. A ZSET
+[delay queue](streams.md#delayed-retry) raises the same header on every entry it replays, so a cap
+counts the rounds it makes too.
 
 A claiming delivery also carries `DELIVERY_COUNT_HEADER` and `IDLE_MS_HEADER`, which report the
 pending entries list as it stood before this delivery. The count the cap reads adds the delivery

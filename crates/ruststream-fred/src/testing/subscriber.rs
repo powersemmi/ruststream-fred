@@ -11,6 +11,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures::Stream;
+use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::{
     AckError, BatchSubscriber, HeaderMap, IncomingMessage, Partitioned, Subscriber,
     testing::Coordinator,
@@ -18,6 +19,7 @@ use ruststream::{
 use tokio::sync::mpsc;
 
 use crate::{
+    delay::next_retry_count,
     error::RedisError,
     message::{DELIVERY_COUNT_HEADER, IDLE_MS_HEADER},
     testing::{
@@ -307,7 +309,7 @@ impl IncomingMessage for RedisTestMessage {
         // the caller told, rather than quietly re-queued into a subscription the real one would not.
         if requeue && self.settlement == Settlement::Settleable {
             match self.retry.claim.clone() {
-                Some(claim) => self.hold(delivery, claim.min_idle, claim.claims, true),
+                Some(claim) => self.hold(delivery, claim.min_idle, claim.claims, Hold::Claimed),
                 // The requeue bypasses `KeyRouter::publish`, so count the re-enqueue here to
                 // balance this message's `Drop` decrement. The redelivered copy is consumed (and
                 // decremented) in turn.
@@ -348,37 +350,41 @@ impl IncomingMessage for RedisTestMessage {
         if self.delayed {
             // The delay queue re-adds the entry to the stream, so it arrives as a fresh one with
             // no claim counters of its own.
-            self.hold(delivery, delay, self.retry.requeue.clone(), false);
+            self.hold(delivery, delay, self.retry.requeue.clone(), Hold::Queued);
         } else if let Some(claim) = self.retry.claim.clone() {
-            self.hold(delivery, claim.min_idle, claim.claims, true);
+            self.hold(delivery, claim.min_idle, claim.claims, Hold::Claimed);
         }
         ready(Ok(()))
     }
 }
 
 impl RedisTestMessage {
-    /// Re-enqueues `delivery` on `queue` after `wait`, stamping the two claim counters when the
-    /// entry is one the subscription left pending.
-    ///
-    /// This is how the claiming mode retries on a real server: nothing is appended to the stream
-    /// and nothing is acknowledged, and the entry is claimed back once it has been idle
-    /// `min_idle`, with the delivery count one higher.
+    /// Re-enqueues `delivery` on `queue` after `wait`, stamping the counter the mechanism named by
+    /// `hold` raises on a real server.
     ///
     /// The wait is off the reaction the harness drives, exactly as a broker's own delayed
     /// redelivery is: the delivery is consumed now and re-enqueued when the timer fires, which
     /// [`TestApp::advance`](ruststream::testing::TestApp::advance) is what moves.
-    fn hold(&self, mut delivery: Delivery, wait: Duration, queue: DeliverySender, claims: bool) {
-        if claims {
-            let claimed = next_delivery_count(&delivery.headers);
-            delivery
-                .headers
-                .insert(DELIVERY_COUNT_HEADER, claimed.to_string());
-            delivery.headers.insert(
-                IDLE_MS_HEADER,
-                u64::try_from(wait.as_millis())
-                    .unwrap_or(u64::MAX)
-                    .to_string(),
-            );
+    fn hold(&self, mut delivery: Delivery, wait: Duration, queue: DeliverySender, hold: Hold) {
+        match hold {
+            Hold::Claimed => {
+                let claimed = next_delivery_count(&delivery.headers);
+                delivery
+                    .headers
+                    .insert(DELIVERY_COUNT_HEADER, claimed.to_string());
+                delivery.headers.insert(
+                    IDLE_MS_HEADER,
+                    u64::try_from(wait.as_millis())
+                        .unwrap_or(u64::MAX)
+                        .to_string(),
+                );
+            }
+            Hold::Queued => {
+                delivery.headers.insert(
+                    RETRY_COUNT_HEADER,
+                    next_retry_count(&delivery.headers).to_string(),
+                );
+            }
         }
         match self.coordinator.clone() {
             Some(coordinator) => {
@@ -451,6 +457,22 @@ impl BatchSubscriber for RedisTestSubscriber {
             Poll::Ready(Some(Ok(batch)))
         })
     }
+}
+
+/// Which mechanism holds a delivery back, and so which counter the held entry comes back with.
+///
+/// The two are exclusive on a real server and count different things, which is why a cap reads one
+/// or the other and never both.
+#[derive(Debug, Clone, Copy)]
+enum Hold {
+    /// The pending entries list of a claiming subscription: nothing is appended to the stream and
+    /// nothing is acknowledged, and the entry is claimed back once it has been idle `min_idle`,
+    /// with the server's delivery count one higher.
+    Claimed,
+    /// The ZSET delay queue: the entry is re-added to the stream when it comes due, carrying the
+    /// framework's retry count one higher, which is the only count a subscription reading the
+    /// fresh tail has.
+    Queued,
 }
 
 /// The delivery count a claimed entry carries next: the one it reports now, plus this claim.

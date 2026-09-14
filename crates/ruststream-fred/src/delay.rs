@@ -134,7 +134,9 @@ fn decode_member(member: &[u8]) -> Option<(Bytes, HeaderMap)> {
     Some(unframe(None, body))
 }
 
-fn next_retry_count(headers: &HeaderMap) -> u64 {
+/// The framework retry count a re-published copy carries next: the one on the delivery, plus this
+/// round. Shared with the in-process stand-in, so a delay queue raises the same count there.
+pub(crate) fn next_retry_count(headers: &HeaderMap) -> u64 {
     headers
         .get_str(RETRY_COUNT_HEADER)
         .and_then(|v| v.parse::<u64>().ok())
