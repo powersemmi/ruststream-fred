@@ -18,7 +18,7 @@ serde = { version = "1", features = ["derive"] }
 
 策略覆盖整次发布，只留一项设置给消息自己。`XADD`、`LPUSH` 和 `PUBLISH` 接收键或频道以及值，因此
 处理器函数体通常只写 `.message(&value).publish()`，别的什么都不写；例外是分区键，它是发布构建器上
-的一个步骤。设置它的函数体导入本 crate 的 prelude，并在自己的约束里写出设置类型；见[分区键](streams.md#partition-keys)。
+的一个步骤。设置它的函数体导入本 crate 的 prelude，并在自己的约束里写出设置类型；见[分区键](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#partition-keys)。
 
 ## 生成服务骨架 { #scaffold-a-service }
 
@@ -39,12 +39,28 @@ cargo generate --git https://github.com/powersemmi/ruststream-fred templates/red
 --8<-- "crates/ruststream-fred/examples/fred_topologies.rs:topologies"
 ```
 
-## 传输指南 { #transport-guides }
+## 其余内容在哪里 { #where-the-rest-is }
 
-- [Redis Streams](streams.md) - 消费者组、读新条目还是回收、批次、重新定位、延迟重新投递。
-- [Redis 列表](lists.md) - 竞争消费者的工作队列、可靠模式、孤儿条目恢复。
-- [Pub/Sub](pubsub.md) - 经典广播和分片广播。
-- [死信与投递次数上限](dead-letter.md) - 给无休止的重新投递设上界。
-- [认证与 TLS](auth-tls.md) - 每种拓扑上的凭据和 TLS。
-- [事务](transactions.md) - standalone 和 sentinel 上的批量发布。
-- [测试](testing.md) - 在进程内运行服务和它的处理器，不需要 Redis 服务器。
+docs.rs 上的参考文档以这个 crate 自己的教程开篇，一个主题一节：
+
+- [订阅](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#subscribing)：各个描述符
+  以及它们各自对重新投递的回答，按传输划分（[流](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#streams)、
+  [列表](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#lists)、
+  [Pub/Sub](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#pubsub)），还有
+  [批](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#batches)、
+  [原生投递字段](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#native-delivery-fields)、
+  [延迟重新投递](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#delayed-retry)、
+  [投递次数上限](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#capping-the-retries)
+  和[消费者组重新定位](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#repositioning-a-group)。
+- [发布](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#publishing)：各个策略、
+  [分区键](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#partition-keys)步骤和
+  [事务](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#transactions)。
+- [生成的文档](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#the-generated-document)：
+  AsyncAPI 文档关于 Redis 频道说了什么，又刻意不说什么。
+- [测试](https://docs.rs/ruststream-fred/latest/ruststream_fred/testing/index.html)：进程内传输，
+  它能重现什么，以及什么该留给真实服务器上的测试。
+- [运维](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#operations)：拓扑、凭据、
+  TLS 和已知限制。
+
+处理器、路由器、编解码器和中间件都来自框架本身，它的入口页面从
+[RustStream 站点](https://powersemmi.github.io/ruststream/)开始。

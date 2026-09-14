@@ -22,7 +22,8 @@ serde = { version = "1", features = ["derive"] }
 `PUBLISH` принимают ключ или канал и значение, поэтому тело обработчика обычно пишет
 `.message(&value).publish()` и больше ничего; исключение - ключ партиционирования, шаг этого
 билдера. Тело, которое его задаёт, импортирует прелюдию этого крейта и называет тип настроек в своём
-ограничении; см. [ключи партиционирования](streams.md#partition-keys).
+ограничении; см.
+[ключи партиционирования](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#partition-keys).
 
 ## Заготовка сервиса {#scaffold-a-service}
 
@@ -43,14 +44,32 @@ cargo generate --git https://github.com/powersemmi/ruststream-fred templates/red
 --8<-- "crates/ruststream-fred/examples/fred_topologies.rs:topologies"
 ```
 
-## Руководства по транспортам {#transport-guides}
+## Где всё остальное {#where-the-rest-is}
 
-- [Redis Streams](streams.md) - группы потребителей, чтение с конца против перехвата, пакеты,
-  перемотка, отложенная повторная доставка.
-- [Списки Redis](lists.md) - очередь заданий с конкурирующими потребителями, надёжный режим,
-  восстановление осиротевших записей.
-- [Pub/Sub](pubsub.md) - классическая и шардированная рассылка.
-- [Dead-letter и предел доставок](dead-letter.md) - как ограничить бесконечную повторную доставку.
-- [Аутентификация и TLS](auth-tls.md) - учётные данные и TLS на любой топологии.
-- [Транзакции](transactions.md) - пакетная публикация на standalone и sentinel.
-- [Тестирование](testing.md) - запуск сервиса и его обработчиков в процессе, без сервера Redis.
+Справочник на docs.rs открывается учебником по самому крейту, по разделу на тему:
+
+- [Подписка](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#subscribing):
+  дескрипторы и ответ каждого из них о повторной доставке, по транспортам
+  ([потоки](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#streams),
+  [списки](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#lists),
+  [Pub/Sub](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#pubsub)), а также
+  [пакеты](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#batches),
+  [нативные поля доставки](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#native-delivery-fields),
+  [отложенная повторная доставка](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#delayed-retry),
+  [предел доставок](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#capping-the-retries)
+  и
+  [перемотка группы](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#repositioning-a-group).
+- [Публикация](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#publishing):
+  политики, шаг
+  [ключа партиционирования](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#partition-keys)
+  и
+  [транзакции](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#transactions).
+- [Сгенерированный документ](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#the-generated-document):
+  что документ AsyncAPI говорит о канале Redis и что в него намеренно не попадает.
+- [Тестирование](https://docs.rs/ruststream-fred/latest/ruststream_fred/testing/index.html):
+  внутрипроцессный транспорт, что он воспроизводит и что стоит проверять на настоящем сервере.
+- [Эксплуатация](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#operations):
+  топологии, учётные данные, TLS и известные ограничения.
+
+Обработчики, роутеры, кодеки и middleware даёт сам фреймворк, а его входные страницы начинаются
+с [сайта RustStream](https://powersemmi.github.io/ruststream/).

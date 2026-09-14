@@ -23,7 +23,8 @@ The policy covers the publish, with one setting left to the message itself. `XAD
 `PUBLISH` carry the key or the channel and the value, so a handler body usually writes
 `.message(&value).publish()` and nothing else; the exception is the partition key, a step on that
 builder. A body that sets one imports this crate's prelude and names the options type in its bound;
-see [partition keys](streams.md#partition-keys).
+see
+[partition keys](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#partition-keys).
 
 ## Scaffold a service
 
@@ -44,13 +45,32 @@ Three named constructors pick the topology:
 --8<-- "crates/ruststream-fred/examples/fred_topologies.rs:topologies"
 ```
 
-## Transport guides
+## Where the rest is
 
-- [Redis Streams](streams.md) - consumer groups, fresh tail vs reclaim, batches, repositioning,
-  delayed retry.
-- [Redis Lists](lists.md) - competing-consumers work queue, reliable mode, orphan recovery.
-- [Pub/Sub](pubsub.md) - classic and sharded broadcast.
-- [Dead-letter and poison cap](dead-letter.md) - bound infinite redelivery.
-- [Authentication and TLS](auth-tls.md) - credentials and TLS on every topology.
-- [Transactions](transactions.md) - batch publishing on standalone and sentinel.
-- [Testing](testing.md) - run a service and its handlers in process, without a Redis server.
+The reference on docs.rs opens with the crate's own textbook, one section per topic:
+
+- [Subscribing](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#subscribing):
+  the descriptors and what each answers about its redelivery, per transport
+  ([streams](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#streams),
+  [lists](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#lists),
+  [Pub/Sub](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#pubsub)), with
+  [batches](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#batches),
+  [native delivery fields](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#native-delivery-fields),
+  [delayed retry](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#delayed-retry),
+  [capping the retries](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#capping-the-retries)
+  and
+  [repositioning a group](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#repositioning-a-group).
+- [Publishing](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#publishing): the
+  policies, the
+  [partition key](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#partition-keys)
+  step and
+  [transactions](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#transactions).
+- [The generated document](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#the-generated-document):
+  what the AsyncAPI document says about a Redis channel, and what it deliberately leaves out.
+- [Testing](https://docs.rs/ruststream-fred/latest/ruststream_fred/testing/index.html): the
+  in-process transport, what it reproduces and what belongs in a test against a real server.
+- [Operations](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#operations):
+  topologies, credentials, TLS and the known limits.
+
+Handlers, routers, codecs and middleware come from the framework, whose own entry pages start at
+[the RustStream site](https://powersemmi.github.io/ruststream/).
