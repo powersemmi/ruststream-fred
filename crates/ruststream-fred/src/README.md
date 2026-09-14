@@ -401,9 +401,9 @@ already has. That copy is at-most-once over the delay window, since a crash befo
 fires loses it, and its retry-count header is one higher than the original's.
 
 A ZSET delay queue is the durable way, and it is off by default because it costs extra keys,
-memory and a sweep. A delayed delivery is `ZADD`ed under its due time and the original is
-`XACK`ed; the subscription sweeps the queue as it reads and `XADD`s a due entry back onto the
-stream with its payload and headers intact, under a fresh id. One sweep happens per read, so
+memory and a sweep. A delayed delivery is `ZADD`ed under its due time with its retry-count
+header raised by one, and the original is `XACK`ed; the subscription sweeps the queue as it
+reads and `XADD`s a due entry back onto the stream under a fresh id. One sweep happens per read, so
 the `block` interval is the granularity, and a pass moves at most 128 due entries. Scores are
 wall-clock epoch milliseconds, so keep clocks synced. A `ttl` cleans up an abandoned queue and
 has to exceed the longest scheduled delay, or entries are dropped before they fire.
@@ -509,7 +509,8 @@ towards the cap without anything in this process having seen it fail; the reclai
 issues one `XPENDING` per read that found something. Every other subscription has no count of
 its own, so the cap reads the framework's retry-count header, which travels on the copies the
 runtime publishes, and an immediate retry under a cap becomes a copy rather than a plain nack so
-that the count moves with the message.
+that the count moves with the message. A ZSET delay queue raises that header on every entry it
+replays, so a cap counts the rounds through the queue too.
 
 The count the cap reads includes the delivery being made, so it is one ahead of
 [`DELIVERY_COUNT_HEADER`] on a claiming subscription and equal to it on a reclaimed one.
@@ -830,8 +831,11 @@ reads through, its read mode, and the idle threshold the two claiming modes clai
 reports whether it acknowledges, the processing list an unfinished entry sits on, and the
 framing its headers travel in. A channel reports its delivery mode and whether its address is a
 glob. A publisher reports the same vocabulary from the other side: the delivery mode a publish
-goes out in, the expiry a list push re-arms, the framing it writes. A dead-letter destination
-declared at the mount site is reported as a channel the service publishes to.
+goes out in, the expiry a list push re-arms, the framing it writes. It also names where it
+lands, in the word Redis uses for it: a stream or list publisher writes a `key`, a Pub/Sub
+publisher a `channel`. That name is the destination the mount site resolved, so a reply
+declared with `publish("orders.done")` reports `orders.done` whichever subscription produced
+it, and a dead-letter destination is reported as a channel the service publishes to.
 
 Every value comes from the descriptor or the policy alone, because the document is built before
 anything connects. Two consequences follow. The Redis server version is not reported: the client
