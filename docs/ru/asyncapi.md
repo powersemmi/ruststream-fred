@@ -6,7 +6,7 @@
 Включите фичу в обоих крейтах:
 
 ```toml
-ruststream = { version = ">=0.7.0-rc.5, <0.8.0", features = ["macros", "asyncapi"] }
+ruststream = { version = ">=0.7.0-rc.6, <0.8.0", features = ["macros", "asyncapi"] }
 ruststream-fred = { version = "0.7", features = ["asyncapi"] }
 ```
 

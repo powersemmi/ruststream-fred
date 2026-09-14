@@ -6,7 +6,7 @@ RustStream 服务把自己描述成一份 AsyncAPI 文档，而这个 crate 往�
 在两个 crate 上都打开这个特性：
 
 ```toml
-ruststream = { version = ">=0.7.0-rc.5, <0.8.0", features = ["macros", "asyncapi"] }
+ruststream = { version = ">=0.7.0-rc.6, <0.8.0", features = ["macros", "asyncapi"] }
 ruststream-fred = { version = "0.7", features = ["asyncapi"] }
 ```
 
