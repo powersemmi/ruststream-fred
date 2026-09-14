@@ -1,0 +1,14 @@
+{
+  "rules": [
+    "Import one form's prelude in a routes file (`ruststream_fred::stream::prelude::*`, `::list::prelude::*` or `::pubsub::prelude::*`), `ruststream_fred::prelude::*` only where a file mixes forms, and `ruststream::prelude::*` in a handler file.",
+    "Name the subscription descriptor inside `#[subscriber(..)]`: `RedisStream` for a consumer group, `RedisList` for a work queue, `RedisPubSub` for a channel and `RedisPubSubPattern` for a glob; the bare `#[subscriber(\"key\")]` form opens a stream group and needs `RedisBroker::default_group`.",
+    "Pick the stream read mode by constructor, `RedisStream::new` for the fresh tail, `RedisStream::claiming` on Redis 8.4 and later for pending entries and tail in one read, `RedisStream::reclaim` for recovery beside a tail reader, and set `min_idle` above the longest handler runtime.",
+    "Chain this crate's `.block(d)` after the framework's `.batch(n)` at the mount site; every other read setting belongs on the descriptor, and there is no publisher-side twin.",
+    "Name the publish policy at the mount site (`.out_reply(Publish)`, `.out(marker, Publish).build()`, `.out_retry(Publish)`) and let the runtime pair it with the connected broker; `RedisPublish` is a unit value while `RedisPubSubPublish` and `RedisListPublish` are built with `::new()` or `::default()`.",
+    "Set a partition key with the `.partition_key(k)` step on the publish builder, never by wrapping the publisher, and bound a handler that uses it as `Out<impl Publisher<Options = RedisPublishOptions>, Marker>`.",
+    "Cap redeliveries with `.max_attempts(n).dead_letter(name)` after `include`: Redis moves nothing itself, so the runtime applies both, and a `RedisPubSubPattern` registration must also say where a copy goes with `.out_retry(policy).to(name)` or it does not start.",
+    "Serve `HandlerOutcome::retry_after` with the runtime's own copy by default, with `RedisStream::delayed_retry(DelayedRetry::DurableZset { .. })` when the delay must survive a restart, or with the claiming mode when rounding the delay up to `min_idle` is acceptable.",
+    "Open a transaction only on a stream publisher on standalone or sentinel: `begin_transaction` claims the handle's buffer and `publisher.transaction()` hands back one that owns its own, while a cluster rejects both because `MULTI` cannot span hash slots.",
+    "Test against `ruststream_fred::testing::RedisTestBroker` with `ruststream::testing::TestApp` instead of mocking, and keep consumer-group cursors, `XAUTOCLAIM` reclaim, trimming, `RedisPubSubPattern` and the cluster and sentinel topologies in the live suites, since the stand-in refuses or ignores them."
+  ]
+}
