@@ -1,25 +1,4 @@
-//! Redis / Valkey broker implementation for `RustStream`, backed by [`fred`].
-//!
-//! This crate implements the `RustStream` broker contract over Redis Streams: durable consumer
-//! groups with acknowledgement, redelivery, and crash recovery. Subjects are stream keys; a
-//! subscription reads through a consumer group, off the fresh tail ([`RedisStream::new`]),
-//! reclaiming another consumer's stale pending entries ([`RedisStream::reclaim`]), or doing both
-//! in one read on Redis 8.4 and later ([`RedisStream::claiming`]).
-//!
-//! Settlement follows the republish-retry model: `ack` is `XACK`, `nack(requeue = true)` re-appends
-//! a copy to the same stream then acks the original, and `nack(requeue = false)` acks to drop. A
-//! claiming subscription retries through the pending entries list instead, and reports the
-//! server's own delivery count, which is what a `max_attempts` declaration at the mount site caps.
-//!
-//! The lifecycle is the framework's ladder of consuming transitions: [`RedisBroker`] records the
-//! topology synchronously, [`Broker::connect`](ruststream::Broker::connect) yields the
-//! [`ConnectedRedisBroker`] that every subscription and publisher is reached from, and
-//! [`ConnectedBroker::shutdown`](ruststream::ConnectedBroker::shutdown) yields the terminal
-//! [`ClosedRedisBroker`]. Publishers are declared as a policy ([`RedisPublish`],
-//! [`RedisPubSubPublish`], [`RedisListPublish`]) that pairs with the connected form.
-//!
-//! [`fred`]: https://docs.rs/fred
-
+#![doc = include_str!("README.md")]
 #![forbid(unsafe_code)]
 
 #[cfg(feature = "asyncapi")]
