@@ -11,7 +11,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use fred::clients::{Client, Pool};
 use fred::interfaces::{ClientLike, EventInterface, PubsubInterface, StreamsInterface};
-use fred::types::Version;
 #[cfg(feature = "credential-provider")]
 use fred::types::config::CredentialProvider;
 #[cfg(any(
@@ -21,6 +20,8 @@ use fred::types::config::CredentialProvider;
 ))]
 use fred::types::config::TlsConfig;
 use fred::types::config::{Config, ServerConfig};
+use fred::types::{ClusterHash, CustomCommand, Value, Version};
+use fred::util::redis_keyslot;
 use ruststream::{AddressedCopies, Broker, ConnectedBroker, DescribeServer, ServerSpec, Subscribe};
 
 use crate::{
@@ -623,13 +624,28 @@ impl ConnectedRedisBroker {
     ) -> Result<RedisPubSubSubscriber, RedisError> {
         let codec = def.codec_handle();
         let client = self.new_client().await?;
-        let channel = def.channel().to_owned();
-        let result = match def.delivery_mode() {
-            PubSubMode::Classic => client.subscribe(channel).await,
-            PubSubMode::Sharded => client.ssubscribe(channel).await,
-        };
-        result.map_err(RedisError::subscribe)?;
+        // Opened before the subscribe, because the messages arrive over a broadcast channel whose
+        // receiver sees only what is sent after it exists. The connection is dedicated to this one
+        // subscription, so opening the stream early can pick up nothing else.
         let rx = client.message_rx();
+        let channel = def.channel().to_owned();
+        match def.delivery_mode() {
+            PubSubMode::Classic => {
+                client
+                    .subscribe(channel)
+                    .await
+                    .map_err(RedisError::subscribe)?;
+                confirm_subscribed(&client).await?;
+            }
+            // `SSUBSCRIBE` is answered by the server, so `fred` waits for it and there is nothing
+            // left to confirm here.
+            PubSubMode::Sharded => {
+                client
+                    .ssubscribe(channel)
+                    .await
+                    .map_err(RedisError::subscribe)?;
+            }
+        }
         Ok(RedisPubSubSubscriber::new(client, rx, codec))
     }
 
@@ -647,11 +663,13 @@ impl ConnectedRedisBroker {
     ) -> Result<RedisPubSubSubscriber, RedisError> {
         let codec = def.codec_handle();
         let client = self.new_client().await?;
+        // Opened before the subscribe, for the reason `subscribe_pubsub` gives.
+        let rx = client.message_rx();
         client
             .psubscribe(def.pattern().to_owned())
             .await
             .map_err(RedisError::subscribe)?;
-        let rx = client.message_rx();
+        confirm_subscribed(&client).await?;
         Ok(RedisPubSubSubscriber::new(client, rx, codec))
     }
 
@@ -816,6 +834,28 @@ fn require_claim_support(version: Option<&Version>, key: &str) -> Result<(), Red
              (XREADGROUP CLAIM); the connected server reports no version"
         ))),
     }
+}
+
+/// Waits for the server to apply the `SUBSCRIBE` or `PSUBSCRIBE` the client just issued.
+///
+/// `fred` answers both the moment the frame is queued: Redis confirms them out of band, on the
+/// message stream, and the client drops that confirmation without surfacing it. A publish issued
+/// the instant `subscribe(..)` returned therefore reaches a server that has not routed the channel
+/// here yet, and Pub/Sub keeps nothing for a subscriber who is not there: the message is gone,
+/// with no error on either side. That is a lost delivery on a subscription the caller was told was
+/// open, so it is worth the round trip this costs once per subscription.
+///
+/// Redis serves one connection's commands in order, so a reply to a command sent after the
+/// subscribe cannot come back before the subscribe was applied. The `PING` carries the hash `fred`
+/// pins the legacy Pub/Sub commands to, so on a cluster it is answered by the node the subscribe
+/// reached rather than by another one.
+async fn confirm_subscribed(client: &Client) -> Result<(), RedisError> {
+    let node = ClusterHash::Custom(redis_keyslot(client.id().as_bytes()));
+    let _: Value = client
+        .custom(CustomCommand::new("PING", node, false), Vec::<Value>::new())
+        .await
+        .map_err(RedisError::subscribe)?;
+    Ok(())
 }
 
 /// Creates the consumer group, treating an already-existing group as success.
