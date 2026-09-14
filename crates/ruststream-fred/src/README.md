@@ -402,11 +402,11 @@ fires loses it, and its retry-count header is one higher than the original's.
 
 A ZSET delay queue is the durable way, and it is off by default because it costs extra keys,
 memory and a sweep. A delayed delivery is `ZADD`ed under its due time and the original is
-`XACK`ed; the subscription sweeps the queue as it reads and `XADD`s due entries back onto the
-stream unchanged. One sweep happens per read, so the `block` interval is the granularity, and a
-pass moves at most 128 due entries. Scores are wall-clock epoch milliseconds, so keep clocks
-synced. A `ttl` cleans up an abandoned queue and has to exceed the longest scheduled delay, or
-entries are dropped before they fire.
+`XACK`ed; the subscription sweeps the queue as it reads and `XADD`s a due entry back onto the
+stream with its payload and headers intact, under a fresh id. One sweep happens per read, so
+the `block` interval is the granularity, and a pass moves at most 128 due entries. Scores are
+wall-clock epoch milliseconds, so keep clocks synced. A `ttl` cleans up an abandoned queue and
+has to exceed the longest scheduled delay, or entries are dropped before they fire.
 
 ```
 # mod demo {
@@ -597,7 +597,7 @@ anywhere, and the runtime pairs it with the connected broker at startup, so "not
 not representable on this path. Each form exports its policy under the same mount-site name,
 `Publish`, through its own prelude.
 
-| Policy | Prelude name | Sends with | Options it carries |
+| Policy | Prelude name | Sends with | Settings the policy holds |
 | --- | --- | --- | --- |
 | [`RedisPublish`] | `stream::Publish`, `stream::TransactionalPublish` | `XADD` | none |
 | [`RedisPubSubPublish`] | `pubsub::Publish` | `PUBLISH` / `SPUBLISH` | mode, framing codec |
@@ -667,15 +667,14 @@ sharing a partition key go to the same lane. Redis has no partition of its own, 
 key travels in the [`PARTITION_KEY_HEADER`] header, which is where the consuming side reads it.
 Writing that header at the call site is the spelling that carries across brokers.
 
-[`RedisPublishSteps::partition_key`] keys one message, and the step sits anywhere after it, so
-it composes with a header contract the message type declares. It writes through
+[`RedisPublishSteps::partition_key`] keys one message, and the step sits anywhere after the
+message, so it composes with a header contract the message type declares. It writes through
 [`RedisPublishOptions`], the per-message options type of every publisher in this crate, which is
 also the bound that keeps the step off another broker's builder. A publish that names no step
 carries no options at all and leaves the header map alone.
 
-A handler body that sets a setting is the one stated exception to "the body imports the
-framework prelude alone": it imports this crate's prelude and names the options type in the
-slot's bound.
+A handler body that sets the key is the one stated exception to "the body imports the framework
+prelude alone": it imports this crate's prelude, to name the options type in the slot's bound.
 
 ```
 # mod demo {
@@ -927,7 +926,7 @@ the compose stand and runs them.
 # Operations
 
 One constructor per topology, all synchronous and free of I/O: [`RedisBroker::standalone`] takes
-a URL, [`RedisBroker::cluster`] a seed list of which one reachable node is enough,
+a URL, [`RedisBroker::cluster`] a seed list, of which one reachable node is enough,
 [`RedisBroker::sentinel`] the monitored primary's name and the sentinels that watch it, and
 [`RedisBroker::from_pool`] an already-built `fred` `Pool`. [`RedisBroker::pool`] sets how many
 connections the broker opens.
