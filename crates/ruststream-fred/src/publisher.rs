@@ -86,10 +86,11 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisPublish {
     }
 
     /// An `XADD` carries its headers as entry fields and the policy has no settings of its own, so
-    /// what the document learns from here is which Redis structure the channel is.
+    /// what the document learns from here is which Redis structure the channel is and which stream
+    /// key the entries are appended to.
     #[cfg(feature = "asyncapi")]
-    fn channel_bindings(&self) -> Bindings {
-        crate::asyncapi::channel(&crate::asyncapi::Publish::stream())
+    fn channel_bindings(&self, channel: &str) -> Bindings {
+        crate::asyncapi::channel(&crate::asyncapi::Publish::stream(channel))
     }
 }
 
@@ -115,10 +116,11 @@ impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisPublish {
     }
 
     /// An `XADD` carries its headers as entry fields and the policy has no settings of its own, so
-    /// what the document learns from here is which Redis structure the channel is.
+    /// what the document learns from here is which Redis structure the channel is and which stream
+    /// key the entries are appended to.
     #[cfg(feature = "asyncapi")]
-    fn channel_bindings(&self) -> Bindings {
-        crate::asyncapi::channel(&crate::asyncapi::Publish::stream())
+    fn channel_bindings(&self, channel: &str) -> Bindings {
+        crate::asyncapi::channel(&crate::asyncapi::Publish::stream(channel))
     }
 }
 

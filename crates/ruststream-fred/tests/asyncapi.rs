@@ -15,14 +15,17 @@ use ruststream::conformance::harness;
 use ruststream::prelude::*;
 use ruststream_fred::testing::RedisTestBroker;
 use ruststream_fred::{
-    ConnectedRedisBroker, PubSubMode, RedisBroker, RedisList, RedisPubSub, RedisPubSubPattern,
-    RedisPubSubPublish, RedisStream,
+    ConnectedRedisBroker, PubSubMode, RedisBroker, RedisList, RedisListPublish, RedisPubSub,
+    RedisPubSubPattern, RedisPubSubPublish, RedisPublish, RedisStream,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// How long the claiming subscription below leaves a retried entry pending.
 const MIN_IDLE: Duration = Duration::from_secs(30);
+
+/// The expiry the list publisher below re-arms on its key.
+const BATCH_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Deserialize, Serialize)]
 struct Order {
@@ -51,6 +54,16 @@ async fn handle_event(order: &Order) -> HandlerOutcome {
     HandlerOutcome::ack()
 }
 
+#[subscriber(RedisStream::new("audit").group("workers"), publish("audit.done"))]
+async fn handle_audit(order: &Order) -> Receipt {
+    Receipt { id: order.id }
+}
+
+#[subscriber(RedisList::new("batches"), publish("batches.done"))]
+async fn handle_batch(order: &Order) -> Receipt {
+    Receipt { id: order.id }
+}
+
 /// The document a service on all three forms publishes.
 fn document() -> Value {
     let app =
@@ -58,6 +71,9 @@ fn document() -> Value {
             b.include(handle_order).out_reply(RedisPubSubPublish::new());
             b.include(handle_job);
             b.include(handle_event);
+            b.include(handle_audit).out_reply(RedisPublish);
+            b.include(handle_batch)
+                .out_reply(RedisListPublish::new().ttl(BATCH_TTL));
         });
     let json = build_spec(&app).to_json().expect("the document serializes");
     serde_json::from_str(&json).expect("the document is JSON")
@@ -116,9 +132,35 @@ fn a_reply_channel_is_described_by_its_publisher() {
         extension(&document(), "orders.done"),
         serde_json::json!({
             "form": "pubsub",
+            "channel": "orders.done",
             "mode": "classic",
             "envelope": { "contentType": "application/octet-stream" },
         }),
+    );
+}
+
+/// A publisher names where it lands in the word Redis uses for it, and the name is the destination
+/// the mount site resolved rather than anything the policy carries: all three policies here are
+/// the plain default value, and each channel reports its own name.
+#[test]
+fn a_publisher_names_the_destination_it_was_mounted_on() {
+    let document = document();
+    assert_eq!(
+        extension(&document, "audit.done"),
+        serde_json::json!({ "form": "stream", "key": "audit.done" }),
+    );
+    assert_eq!(
+        extension(&document, "batches.done"),
+        serde_json::json!({
+            "form": "list",
+            "key": "batches.done",
+            "ttlMs": 60_000,
+            "envelope": { "contentType": "application/octet-stream" },
+        }),
+    );
+    assert_eq!(
+        extension(&document, "orders.done")["channel"],
+        "orders.done"
     );
 }
 

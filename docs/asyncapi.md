@@ -29,7 +29,10 @@ asserts the document against this very file.
 A list reports whether it acknowledges (`reliable`), the processing list an unfinished entry sits on
 while it does, and the framing its headers travel in. A channel reports its delivery mode and
 whether its address is a glob. A publisher reports the same vocabulary from the other side: the
-delivery mode a `PUBLISH` goes out in, the expiry a list push re-arms, the framing it writes.
+delivery mode a `PUBLISH` goes out in, the expiry a list push re-arms, the framing it writes. It
+also names where it lands, in the word Redis uses for it: a stream or list publisher writes a `key`,
+a Pub/Sub publisher a `channel`. That name is the destination the mount site resolved, so a reply
+declared with `publish("orders.done")` reports `orders.done` whichever subscription produced it.
 
 Every value comes from the descriptor or the policy alone, because the document is built before
 anything connects. Two consequences are worth knowing. The Redis server version is not reported:

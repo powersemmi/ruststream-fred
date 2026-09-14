@@ -729,11 +729,12 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisListPublish {
         ready(Ok(connected.list_publisher(self)))
     }
 
-    /// The key expiry the policy re-arms on every push, and how headers are framed beside the
-    /// payload.
+    /// The list key the policy pushes onto, the expiry it re-arms there on every push, and how
+    /// headers are framed beside the payload.
     #[cfg(feature = "asyncapi")]
-    fn channel_bindings(&self) -> Bindings {
+    fn channel_bindings(&self, channel: &str) -> Bindings {
         crate::asyncapi::channel(&crate::asyncapi::Publish::list(
+            channel,
             self.ttl
                 .map(|ttl| u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX)),
             crate::asyncapi::Envelope::of(self.codec.as_ref()),
@@ -766,11 +767,12 @@ impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisListPublis
         ready(Ok(connected.plain_publisher()))
     }
 
-    /// The key expiry the policy re-arms on every push, and how headers are framed beside the
-    /// payload.
+    /// The list key the policy pushes onto, the expiry it re-arms there on every push, and how
+    /// headers are framed beside the payload.
     #[cfg(feature = "asyncapi")]
-    fn channel_bindings(&self) -> Bindings {
+    fn channel_bindings(&self, channel: &str) -> Bindings {
         crate::asyncapi::channel(&crate::asyncapi::Publish::list(
+            channel,
             self.ttl
                 .map(|ttl| u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX)),
             crate::asyncapi::Envelope::of(self.codec.as_ref()),

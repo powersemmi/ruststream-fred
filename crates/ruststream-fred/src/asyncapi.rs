@@ -7,9 +7,11 @@
 //!
 //! The body is the descriptor's or the policy's own vocabulary: which Redis structure carries the
 //! messages, the consumer group and consumer a stream subscription reads through, its read mode
-//! and idle threshold, the reliability of a list, the delivery mode of a channel. Everything in it
-//! is computed from the value alone, because the document is built before anything connects, and
-//! nothing in it is a credential: the document is published and shared.
+//! and idle threshold, the reliability of a list, the delivery mode of a channel. A publisher also
+//! names where it lands, in the word Redis uses for it: the key it writes into, the channel it
+//! broadcasts on. Everything in it is computed from the descriptor, the policy and the destination
+//! the mount site resolved, because the document is built before anything connects, and nothing in
+//! it is a credential: the document is published and shared.
 
 use ruststream::asyncapi::{Binding, Bindings};
 use serde::Serialize;
@@ -86,11 +88,27 @@ pub(crate) struct PubSubSubscription {
     envelope: Envelope,
 }
 
+/// Where a publish through a policy lands, named the way Redis names it.
+///
+/// The channel's `address` reports the same string wherever the mount site resolved one; this is
+/// what a reader has when a naming transform decides the destination per delivery and the document
+/// reports no address at all.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub(crate) enum Target<'a> {
+    /// The stream or list key the publisher writes into.
+    Key { key: &'a str },
+    /// The channel the publisher broadcasts on.
+    Channel { channel: &'a str },
+}
+
 /// A publisher's own settings, per form.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct Publish {
+pub(crate) struct Publish<'a> {
     form: Form,
+    #[serde(flatten)]
+    target: Target<'a>,
     /// The Pub/Sub delivery mode a `PUBLISH` goes out in.
     #[serde(skip_serializing_if = "Option::is_none")]
     mode: Option<&'static str>,
@@ -162,30 +180,33 @@ impl PubSubSubscription {
     }
 }
 
-impl Publish {
-    /// An `XADD` publisher, which carries no settings of its own: a stream entry holds its headers
-    /// as fields, so there is no envelope either.
-    pub(crate) const fn stream() -> Self {
+impl<'a> Publish<'a> {
+    /// An `XADD` publisher, which carries no settings beyond the key it appends to: a stream entry
+    /// holds its headers as fields, so there is no envelope either.
+    pub(crate) const fn stream(key: &'a str) -> Self {
         Self {
             form: Form::Stream,
+            target: Target::Key { key },
             mode: None,
             ttl_ms: None,
             envelope: None,
         }
     }
 
-    pub(crate) const fn list(ttl_ms: Option<u64>, envelope: Envelope) -> Self {
+    pub(crate) const fn list(key: &'a str, ttl_ms: Option<u64>, envelope: Envelope) -> Self {
         Self {
             form: Form::List,
+            target: Target::Key { key },
             mode: None,
             ttl_ms,
             envelope: Some(envelope),
         }
     }
 
-    pub(crate) const fn pubsub(mode: &'static str, envelope: Envelope) -> Self {
+    pub(crate) const fn pubsub(channel: &'a str, mode: &'static str, envelope: Envelope) -> Self {
         Self {
             form: Form::PubSub,
+            target: Target::Channel { channel },
             mode: Some(mode),
             ttl_ms: None,
             envelope: Some(envelope),

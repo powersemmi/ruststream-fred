@@ -648,10 +648,12 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisPubSubPublish {
         ready(Ok(connected.pubsub_publisher(self)))
     }
 
-    /// The delivery mode a `PUBLISH` goes out in, and how headers are framed beside the payload.
+    /// The channel a `PUBLISH` goes out on, the delivery mode it goes out in, and how headers are
+    /// framed beside the payload.
     #[cfg(feature = "asyncapi")]
-    fn channel_bindings(&self) -> Bindings {
+    fn channel_bindings(&self, channel: &str) -> Bindings {
         crate::asyncapi::channel(&crate::asyncapi::Publish::pubsub(
+            channel,
             self.mode.as_str(),
             crate::asyncapi::Envelope::of(self.codec.as_ref()),
         ))
@@ -687,8 +689,9 @@ impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisPubSubPubl
     /// The same body the real broker's policy writes, so a document built in a test is the
     /// document the service publishes.
     #[cfg(feature = "asyncapi")]
-    fn channel_bindings(&self) -> Bindings {
+    fn channel_bindings(&self, channel: &str) -> Bindings {
         crate::asyncapi::channel(&crate::asyncapi::Publish::pubsub(
+            channel,
             self.mode.as_str(),
             crate::asyncapi::Envelope::of(self.codec.as_ref()),
         ))
