@@ -501,7 +501,13 @@ impl DescribeServer for RedisBroker {
             // description does not reach into.
             Topology::Preconnected(_) => String::new(),
         };
-        ServerSpec::new(host, "redis")
+        let mut spec = ServerSpec::new(host, "redis");
+        // An address this broker cannot name is left out of the document rather than published as
+        // an empty string, which a reader takes for a coordinate and tries to dial.
+        if spec.host.as_deref() == Some("") {
+            spec.host = None;
+        }
+        spec
     }
 }
 

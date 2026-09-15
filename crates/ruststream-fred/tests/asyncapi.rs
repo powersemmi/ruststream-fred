@@ -9,10 +9,12 @@
 
 use std::time::Duration;
 
-use ruststream::SubscriptionSource;
+use fred::clients::Pool;
+use fred::types::config::Config;
 use ruststream::asyncapi::build_spec;
 use ruststream::conformance::harness;
 use ruststream::prelude::*;
+use ruststream::{DescribeServer, SubscriptionSource};
 use ruststream_fred::testing::RedisTestBroker;
 use ruststream_fred::{
     ConnectedRedisBroker, PubSubMode, RedisBroker, RedisList, RedisListPublish, RedisPubSub,
@@ -195,5 +197,26 @@ fn the_document_carries_no_credential() {
             .group("workers")
             .consumer("worker-1"),
         "hunter2",
+    );
+}
+
+/// A broker that adopts a caller-built pool does not know the address that pool dials, and the
+/// document then omits the host rather than publishing an empty one, which a reader would take
+/// for a coordinate. The addressable topologies report theirs.
+#[test]
+fn a_broker_over_an_adopted_pool_reports_no_host() {
+    let pool = Pool::new(Config::default(), None, None, None, 1).expect("an offline pool");
+
+    assert_eq!(
+        RedisBroker::from_pool(pool).describe_server().host,
+        None,
+        "an address the broker cannot name must be absent, not empty",
+    );
+    assert_eq!(
+        RedisBroker::standalone("redis://user:hunter2@localhost:6379")
+            .describe_server()
+            .host
+            .as_deref(),
+        Some("localhost:6379"),
     );
 }
