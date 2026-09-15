@@ -230,6 +230,7 @@ jobs:
         run: |
           cargo test -p ruststream-fred --test integration_fred -- --test-threads=1
           cargo test -p ruststream-fred --test integration_claiming -- --test-threads=1
+          cargo test -p ruststream-fred --test integration_pubsub -- --test-threads=1
 
       - name: Run Redis conformance suite
         working-directory: ruststream-fred
