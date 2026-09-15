@@ -371,3 +371,35 @@ async fn a_value_published_by_another_client_arrives_as_the_bare_payload() {
     drop(stream);
     broker.shutdown().await.expect("shutdown");
 }
+
+/// Both delivery modes on a cluster, which is where they differ in what they cost: a classic
+/// publish is broadcast to every node, a sharded one stays on the slot its channel hashes to.
+/// The subscriptions are opened against the cluster the same way a service opens them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cluster_serves_both_delivery_modes() {
+    let Some(node) = env("REDIS_CLUSTER_TEST_URL") else {
+        return;
+    };
+    let broker = RedisBroker::cluster([node])
+        .connect()
+        .await
+        .expect("connect to the cluster");
+
+    for mode in [PubSubMode::Classic, PubSubMode::Sharded] {
+        let channel = unique_channel("cluster");
+        let mut sub = broker
+            .subscribe_pubsub(RedisPubSub::new(&channel).mode(mode))
+            .await
+            .unwrap_or_else(|err| panic!("subscribe {mode:?}: {err}"));
+        let mut stream = Box::pin(sub.stream());
+
+        publish(&broker, RedisPubSubPublish::new().mode(mode), &channel).await;
+        let msg = next(&mut stream).await.expect("delivery");
+        assert_eq!(msg.payload(), b"hello", "{mode:?} lost its message");
+        assert_eq!(msg.channel(), channel);
+
+        drop(stream);
+    }
+
+    broker.shutdown().await.expect("shutdown");
+}
