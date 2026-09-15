@@ -90,7 +90,7 @@
 
 ```toml
 [dependencies]
-ruststream = { version = ">=0.7.0-rc.6, <0.8.0", features = ["macros", "json"] }
+ruststream = { version = ">=0.7.0-rc.7, <0.8.0", features = ["macros", "json"] }
 ruststream-fred = "0.7"
 serde = { version = "1", features = ["derive"] }
 
