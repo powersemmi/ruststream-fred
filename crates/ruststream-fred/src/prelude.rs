@@ -1,6 +1,6 @@
 //! The core prelude plus everything a service mixing all three Redis forms writes.
 //!
-//! The broker, all three descriptors and publish policies, the seek types, the per-delivery and
+//! The broker, every descriptor and publish policy, the seek types, the per-delivery and
 //! batch contexts with their [`keys`], and the [`crate::stream`], [`crate::list`] and
 //! [`crate::pubsub`] modules.
 //!
@@ -31,8 +31,9 @@ pub use crate::context::{PubSubContext, StreamBatchContext, StreamContext, keys}
 
 pub use crate::{
     DelayedRetry, PARTITION_KEY_HEADER, PubSubMode, RedisBroker, RedisGroupPosition,
-    RedisGroupSeeker, RedisList, RedisListPublish, RedisPubSub, RedisPubSubPublish, RedisPublish,
-    RedisPublishExt, RedisStream, RedisSubscribeExt, StreamStart,
+    RedisGroupSeeker, RedisList, RedisListPublish, RedisPubSub, RedisPubSubPattern,
+    RedisPubSubPublish, RedisPublish, RedisPublishOptions, RedisPublishSteps, RedisStream,
+    RedisSubscribeExt, StreamStart,
 };
 
 // The policies keep their prefixed names here, and there is no bare `Publish`: this glob spans all

@@ -1,18 +1,24 @@
-//! [`RedisTestPublisher`]: `Publisher` plus both transaction kinds on top of the in-memory router,
-//! and the [`RedisTestPublish`] policy it pairs from.
+//! The publishers this crate's policies pair into against the stand-in, on top of the in-memory
+//! router: [`RedisTestPublisher`] with both transaction kinds, and [`RedisTestPlainPublisher`] with
+//! `Publisher` alone.
+//!
+//! Two rather than one, so a form's in-process surface is the surface its real publisher has and a
+//! slot that compiles under the harness compiles in production. The policies themselves keep the
+//! spelling a routes file already uses, so there is no test-only policy type to name here.
 
 use std::future::{Future, ready};
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use ruststream::{
-    DefaultPublish, HeaderMap, OutgoingMessage, OwnedTransactions, PairError, PublishPolicy,
-    Publisher, Transaction, TransactionalPublisher,
+    DefaultPublish, HeaderMap, OutgoingMessage, OwnedTransactions, Publisher, Transaction,
+    TransactionalPublisher,
 };
 use tracing::warn;
 
 use crate::{
     error::RedisError,
+    partition::{RedisPublishOptions, resolved_headers},
     testing::{
         ConnectedRedisTestBroker,
         broker::{TestBrokerState, validate_publish_key},
@@ -22,33 +28,10 @@ use crate::{
 /// One buffered publish (key, payload, headers), held while a transaction is open.
 type Buffered = (String, Bytes, HeaderMap);
 
-/// The publish policy of the in-process broker, mirroring [`RedisPublish`](crate::RedisPublish).
-///
-/// # Examples
-///
-/// ```
-/// use ruststream_fred::testing::RedisTestPublish;
-///
-/// let policy = RedisTestPublish::default();
-/// # let _ = policy;
-/// ```
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[must_use]
-pub struct RedisTestPublish;
-
-impl PublishPolicy<ConnectedRedisTestBroker> for RedisTestPublish {
-    type Live = RedisTestPublisher;
-
-    fn pair(
-        self,
-        connected: &ConnectedRedisTestBroker,
-    ) -> impl Future<Output = Result<Self::Live, PairError>> {
-        ready(Ok(connected.publisher()))
-    }
-}
-
+// The default reply publisher is the production stream policy, the same value a routes file
+// names: the stand-in has no policy of its own, so there is one spelling for both brokers.
 impl DefaultPublish for ConnectedRedisTestBroker {
-    type Policy = RedisTestPublish;
+    type Policy = crate::RedisPublish;
 }
 
 /// Publisher returned by
@@ -94,15 +77,30 @@ impl RedisTestPublisher {
 
 impl Publisher for RedisTestPublisher {
     type Error = RedisError;
+    /// The same as [`RedisPublisher`](crate::RedisPublisher)'s, so a test names the type
+    /// production names and a partition key resolves here the way it does on a server.
+    type Options = RedisPublishOptions;
 
-    fn publish(&self, msg: OutgoingMessage<'_>) -> impl Future<Output = Result<(), Self::Error>> {
+    /// # Errors
+    ///
+    /// Returns [`RedisError::Publish`] when the stream key is empty, or [`RedisError::ShutDown`]
+    /// once the connection this handle was made from has been shut down: the handle can outlive
+    /// the connection, so this is where the real broker's dropped pool is mirrored.
+    fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
+    ) -> impl Future<Output = Result<(), Self::Error>> {
+        if let Err(err) = self.state.alive() {
+            return ready(Err(err));
+        }
         if let Err(err) = validate_publish_key(msg.name()) {
             return ready(Err(err));
         }
         let entry: Buffered = (
             msg.name().to_owned(),
             Bytes::copy_from_slice(msg.payload()),
-            msg.headers().clone(),
+            resolved_headers(msg.headers(), options).into_owned(),
         );
         if self.buffer_if_in_txn(&entry) {
             return ready(Ok(()));
@@ -136,7 +134,8 @@ impl TransactionalPublisher for RedisTestPublisher {
 
     /// # Errors
     ///
-    /// Returns [`RedisError::NoTransaction`] when no transaction is open on this handle.
+    /// Returns [`RedisError::NoTransaction`] when no transaction is open on this handle, or
+    /// [`RedisError::ShutDown`] once the connection is gone, like the flush on the real publisher.
     fn commit(&self) -> impl Future<Output = Result<(), Self::Error>> {
         let buffered = self
             .txn
@@ -146,6 +145,9 @@ impl TransactionalPublisher for RedisTestPublisher {
         let Some(buffered) = buffered else {
             return ready(Err(RedisError::NoTransaction));
         };
+        if let Err(err) = self.state.alive() {
+            return ready(Err(err));
+        }
         for (key, payload, headers) in buffered {
             self.state
                 .router
@@ -184,6 +186,67 @@ impl OwnedTransactions for RedisTestPublisher {
     }
 }
 
+/// The stand-in for a publisher with no transaction surface.
+///
+/// It mirrors [`RedisListPublisher`](crate::RedisListPublisher) and
+/// [`RedisPubSubPublisher`](crate::RedisPubSubPublisher), which implement [`Publisher`] and nothing
+/// more, so the stand-in is never more capable than the transport it stands in for. Without it
+/// a list or Pub/Sub reply slot would pair into [`RedisTestPublisher`] and pick up both transaction
+/// kinds, so a handler bounded on a transaction capability would compile in process and fail to
+/// compile against [`ConnectedRedisBroker`](crate::ConnectedRedisBroker): the in-process build
+/// passing is exactly the wrong way round for a stand-in to be wrong.
+///
+/// Delivery is the same in-process fanout [`RedisTestPublisher`] performs; only the capability
+/// surface differs. It is what [`RedisListPublish`](crate::RedisListPublish) and
+/// [`RedisPubSubPublish`](crate::RedisPubSubPublish) pair into here, so a test reaches one by
+/// naming the production policy rather than a type of its own.
+///
+/// # Examples
+///
+/// ```
+/// use ruststream::{Broker, OutgoingMessage, PublishPolicy, Publisher};
+/// use ruststream_fred::RedisListPublish;
+/// use ruststream_fred::testing::RedisTestBroker;
+///
+/// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
+/// let connected = RedisTestBroker::new().connect().await?;
+/// let publisher = RedisListPublish::new().pair(&connected).await?;
+/// publisher.publish(OutgoingMessage::new("jobs", b"{}".as_slice()), None).await?;
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Clone)]
+pub struct RedisTestPlainPublisher(RedisTestPublisher);
+
+impl std::fmt::Debug for RedisTestPlainPublisher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RedisTestPlainPublisher")
+            .finish_non_exhaustive()
+    }
+}
+
+impl RedisTestPlainPublisher {
+    pub(crate) fn new(state: Arc<TestBrokerState>) -> Self {
+        Self(RedisTestPublisher::new(state))
+    }
+}
+
+impl Publisher for RedisTestPlainPublisher {
+    type Error = RedisError;
+    /// As on [`RedisListPublisher`](crate::RedisListPublisher) and
+    /// [`RedisPubSubPublisher`](crate::RedisPubSubPublisher), the two production publishers this
+    /// one stands in for.
+    type Options = RedisPublishOptions;
+
+    fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
+    ) -> impl Future<Output = Result<(), Self::Error>> {
+        self.0.publish(msg, options)
+    }
+}
+
 /// An owned in-process transaction, opened by
 /// [`transaction`](OwnedTransactions::transaction) on a [`RedisTestPublisher`].
 ///
@@ -200,7 +263,7 @@ impl OwnedTransactions for RedisTestPublisher {
 /// let connected = RedisTestBroker::new().connect().await?;
 /// let publisher = connected.publisher();
 /// let mut txn = publisher.transaction().await?;
-/// txn.publish(OutgoingMessage::new("orders", b"{}".as_slice())).await?;
+/// txn.publish(OutgoingMessage::new("orders", b"{}".as_slice()), None).await?;
 /// txn.commit().await?;
 /// # Ok(())
 /// # }
@@ -238,6 +301,8 @@ impl Drop for RedisTestTransaction {
 
 impl Transaction for RedisTestTransaction {
     type Error = RedisError;
+    /// As on [`RedisTransaction`](crate::RedisTransaction).
+    type Options = RedisPublishOptions;
 
     /// # Errors
     ///
@@ -245,6 +310,7 @@ impl Transaction for RedisTestTransaction {
     fn publish(
         &mut self,
         msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
         if let Err(err) = validate_publish_key(msg.name()) {
             return ready(Err(err));
@@ -252,15 +318,22 @@ impl Transaction for RedisTestTransaction {
         self.buffered.push((
             msg.name().to_owned(),
             Bytes::copy_from_slice(msg.payload()),
-            msg.headers().clone(),
+            resolved_headers(msg.headers(), options).into_owned(),
         ));
         ready(Ok(()))
     }
 
+    /// # Errors
+    ///
+    /// Returns [`RedisError::ShutDown`] once the connection is gone, like the flush on the real
+    /// publisher.
     fn commit(mut self) -> impl Future<Output = Result<(), Self::Error>> {
         // Settled before the flush, as on the real publisher: a failed commit has still consumed
         // the transaction, so the drop warning must not fire.
         self.settled = true;
+        if let Err(err) = self.state.alive() {
+            return ready(Err(err));
+        }
         for (key, payload, headers) in self.buffered.drain(..) {
             self.state
                 .router

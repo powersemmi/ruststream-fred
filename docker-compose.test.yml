@@ -5,6 +5,7 @@ name: ruststream-fred-tests
 # Three Redis topologies for the integration tests, each independent:
 #
 #   * standalone  - redis://127.0.0.1:6379                  (REDIS_TEST_URL)
+#   * redis 8.4   - redis://127.0.0.1:6386                  (REDIS_84_TEST_URL)
 #   * cluster     - redis-cluster://127.0.0.1:7000          (REDIS_CLUSTER_TEST_URL)
 #   * sentinel    - redis-sentinel://127.0.0.1:26379?...    (REDIS_SENTINEL_TEST_URL, master "mymaster")
 #
@@ -21,6 +22,23 @@ services:
     command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 2s
+
+  # ----- Standalone, Redis 8.4 --------------------------------------------------------------------
+  # `XREADGROUP ... CLAIM` arrived in Redis 8.4, so the claiming read mode has a server of its own.
+  # The 7.x standalone above stays: it is the server the startup refusal is checked against, so both
+  # are needed for a full run.
+  redis-84:
+    image: redis:8.4
+    container_name: ruststream-redis-84
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6386:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s

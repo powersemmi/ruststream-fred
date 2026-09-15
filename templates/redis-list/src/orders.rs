@@ -4,7 +4,8 @@
 //! definition (a value named after the function) that `routes` collects into a `Router`. `run_job`
 //! binds to a [`RedisList`] key and consumes one job per popped entry. Simple (default) lists are
 //! at-most-once `BRPOP` with no acknowledgement; switch to `RedisList::new("jobs").reliable()` for
-//! at-least-once delivery where the entry is removed only on `Ack`.
+//! at-least-once delivery, where the entry is removed only once a handler returns
+//! `HandlerOutcome::ack()`.
 
 use ruststream_fred::list::prelude::*;
 use schemars::JsonSchema;

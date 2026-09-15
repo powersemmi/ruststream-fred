@@ -1,24 +1,34 @@
 //! Builder describing one Redis Streams subscription.
 //!
-//! A subscription always reads through a consumer group. Two read modes are selected by
+//! A subscription always reads through a consumer group. Three read modes are selected by
 //! constructor, never by a runtime flag, because they return disjoint message sets:
 //!
 //! * [`RedisStream::new`] reads fresh entries off the tail (`XREADGROUP > ...`).
 //! * [`RedisStream::reclaim`] reads stale pending entries another consumer never acked
 //!   (`XAUTOCLAIM`, idle at least `min_idle`) - the crash-recovery path.
+//! * [`RedisStream::claiming`] reads both in one call (`XREADGROUP ... CLAIM`, Redis 8.4 and
+//!   later): stale pending entries first, then fresh ones, each with its idle time and delivery
+//!   count.
 //!
 //! Inferring the mode from a numeric parameter would be a footgun (a stray idle timeout could
-//! silently stop fresh delivery), so the mode is part of the constructor name. Recovery is a
-//! separate `reclaim` subscriber on the same group: "two handlers per group".
+//! silently stop fresh delivery), so the mode is part of the constructor name. On a server older
+//! than 8.4, recovery is a separate `reclaim` subscriber beside the `new` one on the same group:
+//! "two handlers per group".
 
+use std::future::{Future, ready};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use ruststream::SubscriptionSource;
+#[cfg(feature = "asyncapi")]
+use ruststream::asyncapi::Bindings;
+use ruststream::{AddressedCopies, RedeliveryAddress, RedeliveryAddressed, SubscriptionSource};
 
+#[cfg(feature = "asyncapi")]
+use crate::asyncapi;
 use crate::broker::ConnectedRedisBroker;
-use crate::deadletter::PoisonPolicy;
 use crate::delay::{DelayConfig, DelayedRetry};
+#[cfg(feature = "testing")]
+use crate::testing::StreamRetry;
 use crate::{error::RedisError, subscriber::RedisSubscriber};
 
 /// This form's publish policy, [`RedisPublish`](crate::RedisPublish), under the mount-site name
@@ -67,7 +77,7 @@ pub mod prelude {
     pub use crate::context::{StreamBatchContext, StreamContext, keys};
     pub use crate::{
         DelayedRetry, PARTITION_KEY_HEADER, RedisBroker, RedisGroupPosition, RedisGroupSeeker,
-        RedisPublishExt, RedisSubscribeExt,
+        RedisPublishOptions, RedisPublishSteps, RedisSubscribeExt,
     };
 
     #[cfg(any(
@@ -117,6 +127,33 @@ pub(crate) enum ReadMode {
     Fresh,
     /// `XAUTOCLAIM` of entries idle at least this long.
     Reclaim { min_idle: Duration },
+    /// `XREADGROUP ... CLAIM` - entries idle at least this long, then the fresh tail, in one read.
+    Claiming { min_idle: Duration },
+}
+
+impl ReadMode {
+    /// How a retry redelivers on a subscription reading this way.
+    pub(crate) const fn requeue(&self) -> RequeueMode {
+        match self {
+            Self::Fresh | Self::Reclaim { .. } => RequeueMode::Republish,
+            Self::Claiming { min_idle } => RequeueMode::LeavePending {
+                min_idle: *min_idle,
+            },
+        }
+    }
+}
+
+/// What a retry does with an entry, which is a property of the read mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RequeueMode {
+    /// Append a copy to the stream and ack the original. The retry is immediate, and the copy is
+    /// a new entry whose delivery count starts over.
+    Republish,
+    /// Leave the entry in the pending entries list. The subscription's own next read claims it
+    /// back once it has been idle `min_idle`, with the server's delivery count one higher, which
+    /// is how a claiming subscription retries without duplicating the entry - and what makes a
+    /// delayed retry native there, at that granularity.
+    LeavePending { min_idle: Duration },
 }
 
 /// Describes one Redis Streams subscription against a [`ConnectedRedisBroker`].
@@ -132,7 +169,10 @@ pub(crate) enum ReadMode {
 ///
 /// // Recovery: reclaim entries a crashed worker left pending for over 30s.
 /// let recover = RedisStream::reclaim("orders", Duration::from_secs(30)).group("workers");
-/// # let _ = (fresh, recover);
+///
+/// // Redis 8.4 and later: both sets in one read, stale entries first.
+/// let both = RedisStream::claiming("orders", Duration::from_secs(30)).group("workers");
+/// # let _ = (fresh, recover, both);
 /// ```
 #[derive(Debug, Clone)]
 #[must_use]
@@ -143,8 +183,6 @@ pub struct RedisStream {
     block: Option<Duration>,
     start: StreamStart,
     mode: ReadMode,
-    dead_letter: Option<String>,
-    max_deliveries: Option<u64>,
     delayed_retry: Option<DelayedRetry>,
 }
 
@@ -160,8 +198,6 @@ impl RedisStream {
             block: None,
             start: StreamStart::New,
             mode: ReadMode::Fresh,
-            dead_letter: None,
-            max_deliveries: None,
             delayed_retry: None,
         }
     }
@@ -180,8 +216,59 @@ impl RedisStream {
             block: None,
             start: StreamStart::New,
             mode: ReadMode::Reclaim { min_idle },
-            dead_letter: None,
-            max_deliveries: None,
+            delayed_retry: None,
+        }
+    }
+
+    /// A subscription on `key` that claims and reads in one call: `XREADGROUP ... CLAIM` first
+    /// takes over the group's entries idle at least `min_idle`, longest idle first, then fills the
+    /// rest of the read with fresh ones. One subscription, one consumer, one handler.
+    ///
+    /// Every delivery carries the server's own
+    /// [`IDLE_MS_HEADER`](crate::IDLE_MS_HEADER) and
+    /// [`DELIVERY_COUNT_HEADER`](crate::DELIVERY_COUNT_HEADER), both as of the delivery before
+    /// this one: a fresh entry reports zero for both, and the first claim back reports one earlier
+    /// delivery. The count is therefore the number of attempts that did not finish, which is what
+    /// a handler reads to give up on a message itself.
+    ///
+    /// This is Redis's own redelivery, so this mode is the one that settles a retry natively.
+    /// `retry()` leaves the entry in the pending entries list rather than appending a copy, so the
+    /// next read brings it back under its own id with the count one higher, no sooner than
+    /// `min_idle` from now. `retry_after(delay)` takes the same path and the entry comes back
+    /// after `min_idle`, so a delay shorter than that rounds up to it; name a
+    /// [`delayed_retry`](Self::delayed_retry) queue to have the delay honoured exactly instead.
+    /// The delivery reports its count to the runtime, which is what a `max_attempts` declaration
+    /// at the mount site caps.
+    ///
+    /// `min_idle` has no default and must exceed the longest legitimate handler runtime: below it,
+    /// a message a healthy consumer is still working on is taken away and processed twice.
+    ///
+    /// Redis 8.4.0 added the option. A registration of this mode against an older server refuses
+    /// to start, naming both versions; on such a server use [`new`](Self::new) with a
+    /// [`reclaim`](Self::reclaim) subscription beside it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use ruststream_fred::RedisStream;
+    ///
+    /// # fn build() -> Result<(), Box<dyn std::error::Error>> {
+    /// let orders = RedisStream::claiming("orders", Duration::from_secs(30)).group("workers");
+    /// assert_eq!(orders.key(), "orders");
+    /// # Ok(())
+    /// # }
+    /// # build()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn claiming(key: impl Into<String>, min_idle: Duration) -> Self {
+        Self {
+            key: key.into(),
+            group: None,
+            consumer: None,
+            block: None,
+            start: StreamStart::New,
+            mode: ReadMode::Claiming { min_idle },
             delayed_retry: None,
         }
     }
@@ -198,9 +285,10 @@ impl RedisStream {
         self
     }
 
-    /// How long one read blocks waiting for entries. Defaults to 5 seconds. In fresh-tail mode this
-    /// is the `XREADGROUP` server-side block; in reclaim mode `XAUTOCLAIM` does not block, so this is
-    /// the poll interval slept between scans that find nothing to reclaim.
+    /// How long one read blocks waiting for entries. Defaults to 5 seconds. In the fresh-tail and
+    /// claiming modes this is the `XREADGROUP` server-side block, which wakes on a new entry and,
+    /// under `CLAIM`, on an entry ageing past the threshold; in reclaim mode `XAUTOCLAIM` does not
+    /// block, so this is the poll interval slept between scans that find nothing to reclaim.
     ///
     /// Also reachable at the mount site, after the batch size, through
     /// [`RedisSubscribeExt`](crate::RedisSubscribeExt).
@@ -210,38 +298,20 @@ impl RedisStream {
     }
 
     /// Where a newly created group starts reading. Ignored if the group already exists. Only
-    /// meaningful for the fresh-tail [`new`](Self::new) mode.
+    /// meaningful for the modes that read the tail, [`new`](Self::new) and
+    /// [`claiming`](Self::claiming).
     pub fn start_id(mut self, start: StreamStart) -> Self {
         self.start = start;
-        self
-    }
-
-    /// Routes dropped and poison messages to the named dead-letter stream instead of discarding
-    /// them. Off by default. The copy is tagged with
-    /// [`DEAD_LETTER_REASON_HEADER`](crate::DEAD_LETTER_REASON_HEADER). See the
-    /// [dead-letter guide](https://powersemmi.github.io/ruststream-fred/latest/dead-letter/).
-    pub fn dead_letter(mut self, key: impl Into<String>) -> Self {
-        self.dead_letter = Some(key.into());
-        self
-    }
-
-    /// Caps how many times a message may be delivered before it is treated as poison (dead-lettered
-    /// or, with no dead-letter stream, discarded). Off by default.
-    ///
-    /// The cap is checked against both the framework retry-count header (the `nack`/republish loop)
-    /// and the native stream delivery count (the reclaim loop), so a message poisoning either way is
-    /// caught.
-    pub const fn max_deliveries(mut self, max: u64) -> Self {
-        self.max_deliveries = Some(max);
         self
     }
 
     /// Opts this subscription into durable, crash-safe delayed retry backed by a ZSET delay queue.
     ///
     /// Off by default: without it, `retry_after(delay)` / `nack_after(delay)` degrade to the
-    /// runtime's broker-agnostic deferred re-publish (at-most-once over the delay window). With it,
-    /// a delayed delivery is `ZADD`ed to the named ZSET and replayed from there once due, so the
-    /// retry survives a process crash. See [`DelayedRetry`] for the key and TTL requirements.
+    /// runtime's broker-agnostic deferred re-publish, which the mount site binds with `out_retry`
+    /// and which is at-most-once over the delay window. With it, a delayed delivery is `ZADD`ed to
+    /// the named ZSET and replayed from there once due, so the retry survives a process crash. See
+    /// [`DelayedRetry`] for the key and TTL requirements.
     ///
     /// The sweeper that replays due entries runs inside this subscription's read loop, so its
     /// granularity is the read [`block`](Self::block) interval.
@@ -281,20 +351,38 @@ impl RedisStream {
         self.mode.clone()
     }
 
-    pub(crate) fn poison_policy(&self) -> PoisonPolicy {
-        PoisonPolicy {
-            dead_letter: self.dead_letter.clone(),
-            max_deliveries: self.max_deliveries,
-        }
-    }
-
     pub(crate) fn delay_config(&self) -> Option<DelayConfig> {
         self.delayed_retry.as_ref().map(DelayConfig::from_retry)
+    }
+
+    /// Where a publisher reaches this subscription again, shared by both broker forms.
+    fn redelivery_key(&self) -> RedeliveryAddress {
+        RedeliveryAddress::new(self.key.clone())
+    }
+
+    /// What this subscription adds to its channel in the generated `AsyncAPI` document, shared by
+    /// both broker forms: the group and consumer it reads through, its read mode and, on the two
+    /// modes that claim, the idle threshold they claim at.
+    #[cfg(feature = "asyncapi")]
+    fn describe(&self) -> Bindings {
+        let (mode, min_idle) = match self.mode {
+            ReadMode::Fresh => (asyncapi::ReadMode::Fresh, None),
+            ReadMode::Reclaim { min_idle } => (asyncapi::ReadMode::Reclaim, Some(min_idle)),
+            ReadMode::Claiming { min_idle } => (asyncapi::ReadMode::Claiming, Some(min_idle)),
+        };
+        asyncapi::channel(&asyncapi::StreamSubscription::new(
+            self.group.as_deref(),
+            self.consumer.as_deref(),
+            mode,
+            min_idle.map(|idle| u64::try_from(idle.as_millis()).unwrap_or(u64::MAX)),
+        ))
     }
 }
 
 impl SubscriptionSource<ConnectedRedisBroker> for RedisStream {
     type Subscriber = RedisSubscriber;
+    /// A retry copy is an `XADD` this process makes, and the stream key is where it goes.
+    type Copies = AddressedCopies;
 
     fn name(&self) -> &str {
         self.key()
@@ -306,11 +394,61 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisStream {
     ) -> Result<Self::Subscriber, RedisError> {
         connected.subscribe(self).await
     }
+
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        self.describe()
+    }
 }
 
+/// The stream key, in every read mode: an `XADD` there is read by the consumer group this
+/// subscription belongs to.
+///
+/// Under [`reclaim`](RedisStream::reclaim) the copy is read by the group's tail reader rather
+/// than by this subscription, which only ever takes entries already pending on another consumer.
+/// That is the topology the mode is written for - a `reclaim` subscriber runs beside a
+/// [`new`](RedisStream::new) one on the same group - so the copy reaches the handler either way.
+impl RedeliveryAddressed<ConnectedRedisBroker> for RedisStream {
+    fn redelivery_address(
+        &self,
+        _connected: &ConnectedRedisBroker,
+    ) -> impl Future<Output = Result<RedeliveryAddress, RedisError>> {
+        ready(Ok(self.redelivery_key()))
+    }
+}
+
+/// Mounts the production descriptor on the in-process stand-in, which routes by stream key alone.
+///
+/// The descriptor is validated exactly as [`ConnectedRedisBroker::subscribe`] validates it, so a
+/// subscription that a real server would refuse at startup is refused here too rather than passing
+/// a test and failing on deployment: a descriptor naming no consumer group is rejected.
+///
+/// [`RedisStream::reclaim`] is rejected as well. It asks for another consumer's stale pending
+/// entries, and the stand-in keeps no pending list for a subscription that never reads the tail,
+/// so honouring the mount would feed the handler fresh entries instead: the opposite set, and a
+/// test that passes on a delivery the real subscription could never make. Exercise recovery
+/// against a real server.
+///
+/// [`RedisStream::claiming`] does mount, because the stand-in can answer it honestly: a delivery
+/// carries the two counters the server sends and reports its count to the runtime, a retry leaves
+/// the entry pending, and the entry comes back ahead of fresh ones once it has been idle
+/// `min_idle`, with its delivery count raised. A test drives the wait with
+/// [`TestApp::advance`](ruststream::testing::TestApp::advance).
+///
+/// [`RedisStream::delayed_retry`] mounts too: naming a queue makes a delay native here as it is
+/// against a real server, and the stand-in holds the delivery for exactly that long instead of
+/// writing a ZSET it has none of.
+///
+/// Everything else the descriptor carries is inert here, because the stand-in has one queue per
+/// key, delivers on publish, and settles in memory: the group and consumer names, `start_id` and
+/// `block`. Nothing about a group cursor, `XAUTOCLAIM` redelivery or trimming can be asserted in
+/// process; those belong in a live-server test.
 #[cfg(feature = "testing")]
 impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisStream {
     type Subscriber = crate::testing::RedisTestSubscriber;
+    /// The answer the real broker gives, so a registration that compiles against Redis compiles
+    /// against the stand-in.
+    type Copies = AddressedCopies;
 
     fn name(&self) -> &str {
         self.key()
@@ -320,7 +458,44 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisStrea
         self,
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> Result<Self::Subscriber, RedisError> {
-        connected.subscribe(self.key()).await
+        self.group_or_err()?;
+        let delayed = self.delayed_retry.is_some();
+        match self.mode {
+            ReadMode::Reclaim { .. } => Err(RedisError::InvalidOptions(format!(
+                "reclaim subscription on `{}` cannot mount on the in-process test broker: it \
+                 keeps no pending list, so the subscription would read fresh entries instead of \
+                 the stale ones XAUTOCLAIM returns; test reclaim against a real Redis server",
+                self.key
+            ))),
+            ReadMode::Claiming { min_idle } => {
+                connected
+                    .subscribe_stream(self.key(), StreamRetry::claiming(min_idle, delayed))
+                    .await
+            }
+            ReadMode::Fresh => {
+                connected
+                    .subscribe_stream(self.key(), StreamRetry::fresh(delayed))
+                    .await
+            }
+        }
+    }
+
+    /// The same body the real broker's descriptor writes, so a document built in a test is the
+    /// document the service publishes.
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        self.describe()
+    }
+}
+
+/// The same answer the real broker gives, so a scope that starts against Redis starts here.
+#[cfg(feature = "testing")]
+impl RedeliveryAddressed<crate::testing::ConnectedRedisTestBroker> for RedisStream {
+    fn redelivery_address(
+        &self,
+        _connected: &crate::testing::ConnectedRedisTestBroker,
+    ) -> impl Future<Output = Result<RedeliveryAddress, RedisError>> {
+        ready(Ok(self.redelivery_key()))
     }
 }
 
@@ -351,5 +526,44 @@ mod tests {
     fn reclaim_carries_min_idle() {
         let s = RedisStream::reclaim("orders", Duration::from_secs(30)).group("g");
         assert!(matches!(s.mode(), ReadMode::Reclaim { min_idle } if min_idle.as_secs() == 30));
+    }
+
+    #[test]
+    fn claiming_carries_min_idle() {
+        let s = RedisStream::claiming("orders", Duration::from_secs(30)).group("g");
+        assert!(matches!(s.mode(), ReadMode::Claiming { min_idle } if min_idle.as_secs() == 30));
+    }
+
+    /// Every read mode answers with the stream key: an `XADD` there is read by the group, which
+    /// is what a retry copy has to reach.
+    #[test]
+    fn every_read_mode_addresses_its_copies_to_the_stream_key() {
+        let idle = Duration::from_secs(30);
+        for source in [
+            RedisStream::new("orders"),
+            RedisStream::claiming("orders", idle),
+            RedisStream::reclaim("orders", idle),
+        ] {
+            assert_eq!(source.redelivery_key().as_str(), "orders");
+        }
+    }
+
+    /// The retry a read mode performs is the read mode's own: the claiming mode leaves the entry
+    /// pending so its next read claims it back, and the other two append a copy.
+    #[test]
+    fn the_claiming_mode_retries_by_leaving_the_entry_pending() {
+        let idle = Duration::from_secs(30);
+        assert_eq!(
+            RedisStream::claiming("orders", idle).mode().requeue(),
+            RequeueMode::LeavePending { min_idle: idle }
+        );
+        assert_eq!(
+            RedisStream::new("orders").mode().requeue(),
+            RequeueMode::Republish
+        );
+        assert_eq!(
+            RedisStream::reclaim("orders", idle).mode().requeue(),
+            RequeueMode::Republish
+        );
     }
 }

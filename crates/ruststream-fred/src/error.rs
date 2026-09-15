@@ -46,6 +46,18 @@ pub enum RedisError {
     /// subscription with no broker-wide default group).
     #[error("invalid subscribe options: {0}")]
     InvalidOptions(String),
+
+    /// The connected server is older than the subscription's read mode needs.
+    ///
+    /// [`RedisStream::claiming`](crate::RedisStream::claiming) issues `XREADGROUP ... CLAIM`,
+    /// which Redis 8.4.0 added. The check runs where the subscription resolves against the
+    /// connected broker, once and before the first read, so the service fails at startup with
+    /// both versions named instead of meeting a syntax error on its first message.
+    ///
+    /// The message is the whole error: it already names the subscription, the mode and the two
+    /// versions, and a prefix would only repeat them.
+    #[error("{0}")]
+    ServerTooOld(String),
 }
 
 impl RedisError {

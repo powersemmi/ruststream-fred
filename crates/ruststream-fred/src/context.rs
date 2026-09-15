@@ -63,7 +63,6 @@ use crate::seek::{EntryId, RedisGroupPosition, RedisGroupSeeker};
 /// # Examples
 ///
 /// ```
-/// # #[cfg(feature = "macros")]
 /// # mod demo {
 /// use ruststream::prelude::*;
 /// use ruststream::{Seeker, subscriber};
@@ -144,7 +143,6 @@ impl BuildContext<RedisMessage> for StreamContext {
 /// # Examples
 ///
 /// ```
-/// # #[cfg(feature = "macros")]
 /// # mod demo {
 /// use ruststream::prelude::*;
 /// use ruststream::{Seeker, subscriber};

@@ -7,21 +7,38 @@ use std::time::Duration;
 use bytes::Bytes;
 use fred::clients::Pool;
 use fred::interfaces::StreamsInterface;
-use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned, Positioned};
 
 use crate::convert::fields_for_publish;
-use crate::deadletter::{self, PoisonPolicy, REASON_DROPPED, REASON_MAX_DELIVERIES};
 use crate::delay::{self, DelayConfig};
 use crate::seek::{EntryId, RedisGroupPosition, RedisGroupSeeker};
+use crate::stream::RequeueMode;
 
 /// The well-known header key for per-message routing / partitioning.
 ///
-/// Set this header on outgoing messages to control key-based fan-out when the runtime is
-/// configured with `workers(N, by_key)`. The value is opaque bytes; the runtime hashes it to
-/// assign a dispatch lane. Redis has no native partition concept on a single stream, so the key
-/// travels as this header value and the sender is responsible for setting it.
+/// The partition key controls key-based fan-out when the runtime is configured with
+/// `workers(N, by_key)`. The value is opaque bytes; the runtime hashes it to assign a dispatch
+/// lane. Redis has no native partition concept, so the key travels as this header value on all
+/// three transports.
+///
+/// A publish sets it with the [`partition_key`](crate::RedisPublishSteps::partition_key) step,
+/// which resolves into this header. Writing the header at the call site still works, and is the
+/// spelling that carries across brokers.
 pub const PARTITION_KEY_HEADER: &str = "redis-partition-key";
+
+/// Header carrying the native Redis Streams delivery count, so a handler can branch on how many
+/// attempts a message has already had.
+///
+/// Written by the two read modes that claim: a [`reclaim`](crate::RedisStream::reclaim) delivery
+/// reports the count including itself, a [`claiming`](crate::RedisStream::claiming) delivery the
+/// attempts made before it (zero on a fresh entry). The
+/// [`redelivery_count`](IncomingMessage::redelivery_count) the runtime reads normalises the two,
+/// counting this delivery on both.
+pub const DELIVERY_COUNT_HEADER: &str = "redis-delivery-count";
+
+/// Header carrying how long (milliseconds) the delivery had been pending before this read. Zero on
+/// an entry a [`claiming`](crate::RedisStream::claiming) subscription read off the tail.
+pub const IDLE_MS_HEADER: &str = "redis-idle-ms";
 
 /// Everything a [`RedisMessage`] needs to settle itself against the stream it came from.
 struct AckHandle {
@@ -33,10 +50,13 @@ struct AckHandle {
 
 /// A Redis Streams delivery, read from a consumer group via `XREADGROUP` or `XAUTOCLAIM`.
 ///
-/// Settlement follows the republish-retry model: `ack` is `XACK`; `nack(requeue = true)`
-/// re-appends a copy of the entry to the same stream and then acks the original (at-least-once,
-/// so a duplicate is possible if the process crashes between the two); `nack(requeue = false)`
-/// acks the original to drop it.
+/// Settlement follows the republish-retry model: `ack` is `XACK`; a retry re-appends a copy of the
+/// entry to the same stream and then acks the original (at-least-once, so a duplicate is possible
+/// if the process crashes between the two); a drop acks the original.
+///
+/// On a [`claiming`](crate::RedisStream::claiming) subscription the retry is the read mode's own:
+/// the entry stays in the pending entries list, and the subscription's next read claims it back
+/// with the server's delivery count one higher, which is the count this delivery reports.
 pub struct RedisMessage {
     payload: Bytes,
     headers: HeaderMap,
@@ -44,12 +64,15 @@ pub struct RedisMessage {
     /// The parsed form of the entry id, kept beside the wire form so
     /// [`Positioned::position`] cannot fail. Both are derived from the same server-issued id.
     entry: EntryId,
-    policy: PoisonPolicy,
     /// Set when the subscription opted into a durable ZSET delay queue; makes `nack_after` native.
     delay: Option<DelayConfig>,
+    /// The server's own delivery count, counting this delivery, on the read modes that report one.
+    delivered: Option<u64>,
     /// The subscription's reposition handle, minted once when it opened. Shared rather than
     /// rebuilt, so carrying it costs one reference-count bump per delivery.
     seeker: Arc<RedisGroupSeeker>,
+    /// What `nack(requeue = true)` does here, which the subscription's read mode decides.
+    requeue: RequeueMode,
 }
 
 impl Debug for RedisMessage {
@@ -76,9 +99,10 @@ impl RedisMessage {
         entry: EntryId,
         payload: Bytes,
         headers: HeaderMap,
-        policy: PoisonPolicy,
         delay: Option<DelayConfig>,
+        delivered: Option<u64>,
         seeker: Arc<RedisGroupSeeker>,
+        requeue: RequeueMode,
     ) -> Self {
         Self {
             payload,
@@ -90,9 +114,10 @@ impl RedisMessage {
                 id,
             }),
             entry,
-            policy,
             delay,
+            delivered,
             seeker,
+            requeue,
         }
     }
 
@@ -160,65 +185,62 @@ impl IncomingMessage for RedisMessage {
         xack(&handle).await
     }
 
+    /// How many times the server has delivered this entry, counting this delivery.
+    ///
+    /// Answered on the two read modes that claim, from the count Redis keeps in the pending
+    /// entries list: [`claiming`](crate::RedisStream::claiming) is told the count as of the
+    /// previous delivery, so this one is added to it, and [`reclaim`](crate::RedisStream::reclaim)
+    /// reads `XPENDING` after the claim, where this delivery is already counted. The fresh tail
+    /// claims nothing and has no count of its own, so a cap on it is the runtime's header instead.
+    fn redelivery_count(&self) -> Option<u64> {
+        self.delivered
+    }
+
     async fn nack(mut self, requeue: bool) -> Result<(), AckError> {
         let handle = self.ack.take().expect("RedisMessage settled twice");
+        if requeue && let RequeueMode::LeavePending { .. } = self.requeue {
+            // The claiming mode retries through the pending entries list: no copy is appended and
+            // the original is not acked, so the subscription's next read claims it back once it
+            // has been idle `min_idle`, with the server's delivery count one higher.
+            drop(handle);
+            return Ok(());
+        }
         if requeue {
-            if self.policy.is_active() {
-                let next = next_retry_count(&self.headers);
-                if self.policy.is_poison(next) {
-                    // The framework retry-count reached the cap: dead-letter (or discard) instead
-                    // of redelivering, then ack the original.
-                    deadletter::settle_poison_stream(
-                        &handle.pool,
-                        &self.policy,
-                        &self.payload,
-                        &self.headers,
-                        REASON_MAX_DELIVERIES,
-                    )
-                    .await
-                    .map_err(broker_err)?;
-                } else {
-                    let mut headers = self.headers.clone();
-                    headers.insert(RETRY_COUNT_HEADER, next.to_string());
-                    republish(&handle, &self.payload, &headers).await?;
-                }
-            } else {
-                // No poison policy: republish verbatim, the plain at-least-once retry.
-                republish(&handle, &self.payload, &self.headers).await?;
-            }
-        } else if self.policy.is_active() {
-            // Drop: dead-letter it (or discard when no dead-letter stream is set) before acking.
-            deadletter::settle_poison_stream(
-                &handle.pool,
-                &self.policy,
-                &self.payload,
-                &self.headers,
-                REASON_DROPPED,
-            )
-            .await
-            .map_err(broker_err)?;
+            republish(&handle, &self.payload, &self.headers).await?;
         }
         xack(&handle).await
     }
 
-    /// Native delayed redelivery is available only when the subscription opted into a durable ZSET
-    /// delay queue with [`RedisStream::delayed_retry`](crate::RedisStream::delayed_retry); otherwise
-    /// the runtime applies its broker-agnostic deferred-republish fallback.
+    /// Whether a delay reaches Redis rather than the runtime's deferred copy.
+    ///
+    /// True on a subscription that named a ZSET delay queue with
+    /// [`RedisStream::delayed_retry`](crate::RedisStream::delayed_retry), and on a
+    /// [`claiming`](crate::RedisStream::claiming) subscription, whose pending entries list is a
+    /// delayed redelivery of Redis's own. Elsewhere the runtime publishes the copy, which the
+    /// mount site can customise with `out_retry`.
     fn supports_nack_after(&self) -> bool {
-        self.delay.is_some()
+        self.delay.is_some() || matches!(self.requeue, RequeueMode::LeavePending { .. })
     }
 
-    /// Schedules the message for redelivery no sooner than `delay` from now via the configured ZSET
-    /// delay queue (`ZADD` the delayed copy, then `XACK` the original), with the retry-count header
-    /// incremented. The subscriber's sweeper re-`XADD`s it to the source stream once due.
+    /// Holds the message back for `delay` and redelivers it.
+    ///
+    /// A ZSET delay queue serves the delay exactly: the delayed copy is `ZADD`ed and the original
+    /// `XACK`ed, and the subscriber's sweeper re-`XADD`s it once due, so the retry survives a
+    /// crash. Without one, a claiming subscription leaves the entry pending and claims it back on
+    /// its own `min_idle`, which is the granularity Redis offers there: a shorter delay waits
+    /// `min_idle`, a longer one is honoured by the read that finds the entry still idle.
     ///
     /// # Errors
     ///
-    /// Returns [`AckError::Unsupported`] when the subscription did not opt into a delay queue, or
+    /// Returns [`AckError::Unsupported`] when the subscription has neither, or
     /// [`AckError::Broker`] when the `ZADD` or `XACK` fails.
     async fn nack_after(mut self, delay: Duration) -> Result<(), AckError> {
         let handle = self.ack.take().expect("RedisMessage settled twice");
         let Some(cfg) = self.delay.as_ref() else {
+            if let RequeueMode::LeavePending { .. } = self.requeue {
+                drop(handle);
+                return Ok(());
+            }
             return Err(AckError::Unsupported);
         };
         // ZADD the delayed copy before XACK-ing the original, so a crash in between leaves a
@@ -234,15 +256,6 @@ impl IncomingMessage for RedisMessage {
         .await?;
         xack(&handle).await
     }
-}
-
-/// The next framework retry-count value (the current header plus one, or one when absent).
-fn next_retry_count(headers: &HeaderMap) -> u64 {
-    headers
-        .get_str(RETRY_COUNT_HEADER)
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(0)
-        + 1
 }
 
 fn broker_err(err: fred::error::Error) -> AckError {
@@ -310,9 +323,10 @@ mod tests {
             id.parse().expect("valid entry id"),
             Bytes::from_static(b"{}"),
             HeaderMap::new(),
-            PoisonPolicy::default(),
+            None,
             None,
             seeker,
+            RequeueMode::Republish,
         )
     }
 

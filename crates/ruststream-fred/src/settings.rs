@@ -28,7 +28,6 @@ use crate::stream::RedisStream;
 /// # Examples
 ///
 /// ```
-/// # #[cfg(feature = "json")]
 /// # mod demo {
 /// use std::time::Duration;
 ///
