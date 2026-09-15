@@ -100,6 +100,18 @@ async fn pending(broker: &ConnectedRedisBroker, key: &str, group: &str) -> Vec<(
         .collect()
 }
 
+/// Who the server thinks still owes each pending entry.
+async fn owners(broker: &ConnectedRedisBroker, key: &str, group: &str) -> Vec<(String, String)> {
+    let pool = broker.pool_handle().expect("a live pool");
+    let rows: Vec<(String, String, u64, u64)> = pool
+        .xpending(key, group, (0_u64, "-", "+", 10_u64))
+        .await
+        .expect("xpending");
+    rows.into_iter()
+        .map(|(id, consumer, _idle, _count)| (id, consumer))
+        .collect()
+}
+
 /// Reads one entry through a fresh-tail consumer and drops it unsettled, the way a worker that
 /// died mid-handler leaves it: in the group's pending entries list, idle from now on.
 async fn orphan(broker: &ConnectedRedisBroker, key: &str, body: &[u8]) {
@@ -331,5 +343,113 @@ async fn a_claiming_subscription_refuses_to_start_on_an_older_server() {
         .await;
     assert!(fresh.is_ok(), "the fresh mode must still mount here");
 
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// `min_idle` is the promise that a healthy consumer keeps what it is working on: an entry that
+/// has not been idle that long is left where it is, and the read brings back only fresh work.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_claim_leaves_an_entry_younger_than_min_idle_alone() {
+    let Some(url) = env("REDIS_84_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("min_idle");
+
+    orphan(&broker, &key, b"in-flight").await;
+    publish(&broker, &key, b"fresh").await;
+
+    // Far above anything this case takes, so the entry the other consumer holds is never eligible.
+    let mut sub = broker
+        .subscribe(
+            RedisStream::claiming(&key, Duration::from_secs(30))
+                .group("workers")
+                .consumer("solo")
+                .block(BLOCK),
+        )
+        .await
+        .expect("subscribe claiming");
+    let mut stream = Box::pin(sub.stream());
+
+    let delivery = next(&mut stream).await.expect("delivery");
+    assert_eq!(
+        delivery.payload(),
+        b"fresh",
+        "an entry another consumer is still holding must not be taken away",
+    );
+    assert_eq!(delivery.headers().get_str(DELIVERY_COUNT_HEADER), Some("0"));
+
+    let held = owners(&broker, &key, "workers").await;
+    assert!(
+        held.iter().any(|(_, consumer)| consumer == "dead"),
+        "the untouched entry is still owed by the consumer that read it, got {held:?}",
+    );
+
+    delivery.ack().await.expect("ack");
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// A delay on this mode is the pending entries list doing the waiting: nothing is appended,
+/// nothing is scheduled anywhere else, and the entry keeps its id until the read that finds it
+/// idle enough claims it back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_delayed_retry_on_this_mode_schedules_nothing_and_keeps_the_entry() {
+    let Some(url) = env("REDIS_84_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("delay");
+
+    let mut sub = broker
+        .subscribe(
+            RedisStream::claiming(&key, Duration::from_millis(200))
+                .group("workers")
+                .consumer("solo")
+                .block(BLOCK),
+        )
+        .await
+        .expect("subscribe claiming");
+    publish(&broker, &key, b"later").await;
+
+    let mut stream = Box::pin(sub.stream());
+    let first = next(&mut stream).await.expect("first delivery");
+    let id = first
+        .id()
+        .expect("a delivery carries its entry id")
+        .to_owned();
+    // A subscription with no delay queue of its own still serves the delay natively here.
+    assert!(first.supports_nack_after());
+    first
+        .nack_after(Duration::from_millis(50))
+        .await
+        .expect("schedule the delay");
+
+    let pool = broker.pool_handle().expect("a live pool");
+    let length: u64 = pool.xlen(key.as_str()).await.expect("xlen");
+    assert_eq!(
+        length, 1,
+        "the delay appends no copy: the stream still holds the one entry",
+    );
+    assert_eq!(
+        owners(&broker, &key, "workers")
+            .await
+            .into_iter()
+            .map(|(id, _consumer)| id)
+            .collect::<Vec<_>>(),
+        slice::from_ref(&id),
+        "and the entry is still the group's to finish",
+    );
+
+    let second = next(&mut stream).await.expect("the claim back");
+    assert_eq!(second.id(), Some(id.as_str()));
+    assert_eq!(
+        second.headers().get_str(DELIVERY_COUNT_HEADER),
+        Some("1"),
+        "the claim back counts the attempt that asked for the delay",
+    );
+    second.ack().await.expect("ack");
+
+    drop(stream);
     broker.shutdown().await.expect("shutdown");
 }

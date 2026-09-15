@@ -14,25 +14,29 @@
 //! republish-on-nack path, `XAUTOCLAIM` reclaim, builder-set auth, the cluster / sentinel
 //! topologies, and the post-shutdown behaviour of a publisher that outlives the connection.
 
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
-use fred::interfaces::{ClientLike, KeysInterface};
+use fred::clients::Pool;
+use fred::interfaces::{ClientLike, KeysInterface, ListInterface, StreamsInterface};
 use fred::types::InfoKind;
+use fred::types::Value;
+use fred::types::config::Config;
 use futures::StreamExt;
 use ruststream::codec::JsonCodec;
 use ruststream::runtime::{PublishExt, RETRY_COUNT_HEADER};
 use ruststream::{
-    BatchSubscriber, Broker, ConnectedBroker, HeaderMap, IncomingMessage, Outgoing,
-    OutgoingMessage, Partitioned, Positioned, Publisher, Seekable, Seeker, Serialized, Subscribe,
-    Subscriber, TransactionalPublisher,
+    AckError, BatchSubscriber, Broker, ConnectedBroker, HeaderMap, IncomingMessage, Outgoing,
+    OutgoingMessage, OwnedTransactions, Partitioned, Positioned, Publisher, Seekable, Seeker,
+    Serialized, Subscribe, Subscriber, TransactionalPublisher,
 };
 use ruststream_fred::{
     ConnectedRedisBroker, DELIVERY_COUNT_HEADER, DelayedRetry, IDLE_MS_HEADER, RedisBroker,
     RedisError, RedisGroupPosition, RedisList, RedisListPublish, RedisPubSub, RedisPubSubPublish,
-    RedisPublishSteps, RedisStream,
+    RedisPublishSteps, RedisStream, StreamStart,
 };
 
 mod live;
@@ -111,6 +115,70 @@ async fn round_trip(broker: &ConnectedRedisBroker, key: &str) {
     // Streams carry headers as native entry fields (`h:<name>` + `_payload`).
     assert_eq!(msg.headers().content_type(), Some("application/json"));
     msg.ack().await.expect("ack");
+}
+
+/// A short blocking read, so a subscription that finds nothing comes back at once instead of
+/// sleeping out the five-second default.
+const SHORT_BLOCK: Duration = Duration::from_millis(50);
+
+/// What the group still owes, read from the server's own pending entries list.
+async fn pending(broker: &ConnectedRedisBroker, key: &str, group: &str) -> Vec<String> {
+    let rows: Vec<(String, String, u64, u64)> = broker
+        .pool_handle()
+        .expect("live pool")
+        .xpending(key, group, (0_u64, "-", "+", 10_u64))
+        .await
+        .expect("xpending");
+    rows.into_iter().map(|(id, _, _, _)| id).collect()
+}
+
+/// How many entries the stream holds.
+async fn stream_len(broker: &ConnectedRedisBroker, key: &str) -> u64 {
+    broker
+        .pool_handle()
+        .expect("live pool")
+        .xlen(key)
+        .await
+        .expect("xlen")
+}
+
+/// How many entries the list holds.
+async fn list_len(broker: &ConnectedRedisBroker, key: &str) -> u64 {
+    broker
+        .pool_handle()
+        .expect("live pool")
+        .llen(key)
+        .await
+        .expect("llen")
+}
+
+/// The key's remaining lifetime in milliseconds: positive with an expiry, `-1` with none, `-2`
+/// when the key is gone.
+async fn pttl(broker: &ConnectedRedisBroker, key: &str) -> i64 {
+    broker
+        .pool_handle()
+        .expect("live pool")
+        .pttl(key)
+        .await
+        .expect("pttl")
+}
+
+/// One field of the `XINFO GROUPS` row for `group`, as the server reports it.
+async fn group_field(
+    broker: &ConnectedRedisBroker,
+    key: &str,
+    group: &str,
+    field: &str,
+) -> Option<String> {
+    let rows: Vec<HashMap<String, Value>> = broker
+        .pool_handle()
+        .expect("live pool")
+        .xinfo_groups(key)
+        .await
+        .expect("xinfo groups");
+    rows.into_iter()
+        .find(|row| row.get("name").and_then(Value::as_string).as_deref() == Some(group))
+        .and_then(|row| row.get(field).and_then(Value::as_string))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -235,6 +303,15 @@ async fn standalone_nack_requeue_republishes_to_same_stream() {
     assert_eq!(first.payload(), b"retry-me");
     // Republishes a copy to the tail, then acks the original.
     first.nack(true).await.expect("nack requeue");
+    assert_eq!(
+        stream_len(&broker, &key).await,
+        2,
+        "a requeue on this mode is a second entry, not a redelivery of the first",
+    );
+    assert!(
+        pending(&broker, &key, "workers").await.is_empty(),
+        "and the original is acknowledged, so the group owes nothing on it",
+    );
 
     let second = next(&mut stream).await.expect("redelivery");
     assert_eq!(second.payload(), b"retry-me");
@@ -510,31 +587,22 @@ async fn pubsub_classic_round_trip() {
     let publisher = broker.pubsub_publisher(RedisPubSubPublish::new());
     let mut stream = Box::pin(sub.stream());
 
-    // Pub/Sub has no buffering and SUBSCRIBE registers asynchronously, so publish on a retry loop
-    // until a delivery lands.
+    // The subscribe returned only once the server was routing the channel, so one publish is one
+    // delivery and no retry loop stands between them.
     let mut headers = HeaderMap::new();
     headers.insert("correlation-id", "xyz-1");
+    publisher
+        .publish(
+            OutgoingMessage::new(channel.as_str(), b"hello").with_headers(headers),
+            None,
+        )
+        .await
+        .expect("publish");
 
-    let mut got = None;
-    for _ in 0..25 {
-        publisher
-            .publish(
-                OutgoingMessage::new(channel.as_str(), b"hello").with_headers(headers.clone()),
-                None,
-            )
-            .await
-            .expect("publish");
-        if let Ok(Some(item)) =
-            tokio::time::timeout(Duration::from_millis(200), stream.next()).await
-        {
-            let msg = item.expect("delivery ok");
-            // Headers round-trip through the binary envelope (default framing).
-            assert_eq!(msg.headers().correlation_id(), Some("xyz-1"));
-            got = Some(msg.payload().to_vec());
-            break;
-        }
-    }
-    assert_eq!(got.as_deref(), Some(b"hello".as_slice()));
+    let msg = next(&mut stream).await.expect("delivery ok");
+    assert_eq!(msg.payload(), b"hello");
+    // Headers round-trip through the binary envelope (default framing).
+    assert_eq!(msg.headers().correlation_id(), Some("xyz-1"));
 
     drop(stream);
     broker.shutdown().await.expect("shutdown");
@@ -638,34 +706,24 @@ async fn pubsub_codec_envelope_round_trips_bytes_that_are_not_text() {
     let mut headers = HeaderMap::new();
     headers.insert("signature", Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]));
 
-    // Pub/Sub keeps nothing, and SUBSCRIBE registers asynchronously, so publish until one lands.
-    let mut got = None;
-    for _ in 0..25 {
-        publisher
-            .publish(
-                OutgoingMessage::new(channel.as_str(), NOT_TEXT).with_headers(headers.clone()),
-                None,
-            )
-            .await
-            .expect("publish");
-        if let Ok(Some(item)) =
-            tokio::time::timeout(Duration::from_millis(200), stream.next()).await
-        {
-            let msg = item.expect("delivery ok");
-            assert_eq!(
-                msg.headers().get("signature").map(<[u8]>::to_vec),
-                Some(vec![0xde, 0xad, 0xbe, 0xef]),
-                "the Pub/Sub envelope changed a header value"
-            );
-            got = Some(msg.payload().to_vec());
-            break;
-        }
-    }
+    publisher
+        .publish(
+            OutgoingMessage::new(channel.as_str(), NOT_TEXT).with_headers(headers),
+            None,
+        )
+        .await
+        .expect("publish");
 
+    let msg = next(&mut stream).await.expect("delivery ok");
     assert_eq!(
-        got.as_deref(),
-        Some(NOT_TEXT),
+        msg.payload(),
+        NOT_TEXT,
         "the Pub/Sub envelope changed the payload"
+    );
+    assert_eq!(
+        msg.headers().get("signature").map(<[u8]>::to_vec),
+        Some(vec![0xde, 0xad, 0xbe, 0xef]),
+        "the Pub/Sub envelope changed a header value"
     );
 
     drop(stream);
@@ -693,8 +751,9 @@ async fn list_simple_round_trip() {
     let mut stream = Box::pin(sub.stream());
     let msg = next(&mut stream).await.expect("delivery ok");
     assert_eq!(msg.payload(), b"job-1");
-    // Simple lists are at-most-once: ack is unsupported.
-    assert!(msg.ack().await.is_err());
+    // Simple lists are at-most-once: the entry is gone with the pop, so there is nothing to
+    // acknowledge and the delivery says so rather than reporting a settlement it did not make.
+    assert!(matches!(msg.ack().await, Err(AckError::Unsupported)));
 
     drop(stream);
     broker.shutdown().await.expect("shutdown");
@@ -762,14 +821,11 @@ async fn list_publisher_ttl_sets_key_expiry() {
         .await
         .expect("lpush with ttl");
 
-    // PTTL returns the remaining lifetime in ms: positive means the key got an expiry.
-    let pttl: i64 = broker
-        .pool_handle()
-        .expect("live pool")
-        .pttl(key.as_str())
-        .await
-        .expect("pttl");
-    assert!(pttl > 0, "expected a positive key TTL, got {pttl}");
+    let remaining = pttl(&broker, &key).await;
+    assert!(
+        remaining > 0,
+        "expected a positive key TTL, got {remaining}"
+    );
 
     broker.shutdown().await.expect("shutdown");
 }
@@ -1140,6 +1196,443 @@ async fn list_reliable_round_trip_with_ack() {
     let second = next(&mut stream).await.expect("second");
     assert_eq!(second.payload(), b"job-b");
     second.ack().await.expect("ack b (LREM)");
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// Where a group starts is decided once, when the group is created, so the two settings have to
+/// part ways on a stream that already holds entries.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stream_start_id_decides_where_a_new_group_begins() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("start_id");
+
+    let publisher = broker.publisher();
+    for payload in [b"s1".as_slice(), b"s2"] {
+        publisher
+            .publish(OutgoingMessage::new(key.as_str(), payload), None)
+            .await
+            .expect("publish");
+    }
+
+    // A group created at the beginning owns everything the stream already holds.
+    let mut replay = broker
+        .subscribe(
+            RedisStream::new(&key)
+                .group("replay")
+                .start_id(StreamStart::Beginning)
+                .block(SHORT_BLOCK),
+        )
+        .await
+        .expect("subscribe replay");
+    assert_eq!(
+        group_field(&broker, &key, "replay", "last-delivered-id").await,
+        Some("0-0".to_owned()),
+        "a group created at the beginning starts before the first entry",
+    );
+    let mut replayed = Box::pin(replay.stream());
+    for expected in [b"s1".as_slice(), b"s2"] {
+        let msg = next(&mut replayed).await.expect("replayed delivery");
+        assert_eq!(msg.payload(), expected);
+        msg.ack().await.expect("ack");
+    }
+
+    // The default starts past it, and the server holds that cursor before any read happens.
+    let mut tail = broker
+        .subscribe(RedisStream::new(&key).group("tail").block(SHORT_BLOCK))
+        .await
+        .expect("subscribe tail");
+    let last_entry = group_field(&broker, &key, "tail", "last-delivered-id").await;
+    assert!(
+        last_entry.as_deref().is_some_and(|id| id != "0-0"),
+        "a group with the default start begins at the tail, got {last_entry:?}",
+    );
+    let mut fresh = Box::pin(tail.stream());
+    none_within(&mut fresh, "a default-start group over an existing stream").await;
+
+    publisher
+        .publish(OutgoingMessage::new(key.as_str(), b"s3"), None)
+        .await
+        .expect("publish after the group exists");
+    let live = next(&mut fresh)
+        .await
+        .expect("delivery after the group exists");
+    assert_eq!(live.payload(), b"s3");
+    live.ack().await.expect("ack");
+
+    drop(replayed);
+    drop(fresh);
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// A drop is the other half of the requeue: the entry is acknowledged and nothing takes its
+/// place, so the stream neither grows nor keeps owing the group anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stream_drop_acks_the_entry_without_appending_a_copy() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("drop");
+
+    let mut sub = broker
+        .subscribe(RedisStream::new(&key).group("workers").block(SHORT_BLOCK))
+        .await
+        .expect("subscribe");
+    broker
+        .publisher()
+        .publish(OutgoingMessage::new(key.as_str(), b"poison"), None)
+        .await
+        .expect("publish");
+
+    let mut stream = Box::pin(sub.stream());
+    let msg = next(&mut stream).await.expect("delivery");
+    assert_eq!(msg.payload(), b"poison");
+    msg.nack(false).await.expect("drop");
+
+    assert_eq!(
+        stream_len(&broker, &key).await,
+        1,
+        "a drop appends no copy: the stream still holds the one entry",
+    );
+    assert!(
+        pending(&broker, &key, "workers").await.is_empty(),
+        "and the group owes nothing on it any more",
+    );
+    none_within(&mut stream, "after a drop").await;
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// Reliable settlement, watched on the two lists it moves entries between: a requeue puts the
+/// entry back in the queue, a drop removes it from both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reliable_list_requeues_to_the_queue_and_drops_off_both_lists() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("list_settle");
+    let processing = format!("{key}.processing");
+
+    broker
+        .list_publisher(RedisListPublish::new())
+        .publish(OutgoingMessage::new(key.as_str(), b"job"), None)
+        .await
+        .expect("lpush");
+
+    let mut sub = broker
+        .subscribe_list(RedisList::new(&key).reliable().block(SHORT_BLOCK))
+        .await
+        .expect("subscribe reliable list");
+    let mut stream = Box::pin(sub.stream());
+
+    let first = next(&mut stream).await.expect("first claim");
+    assert_eq!(first.payload(), b"job");
+    assert_eq!(
+        (
+            list_len(&broker, &key).await,
+            list_len(&broker, &processing).await
+        ),
+        (0, 1),
+        "a claim holds the entry on the processing list, off the queue",
+    );
+
+    first.nack(true).await.expect("requeue");
+    assert_eq!(
+        (
+            list_len(&broker, &key).await,
+            list_len(&broker, &processing).await
+        ),
+        (1, 0),
+        "a requeue returns the entry to the queue and lets go of the claim",
+    );
+
+    let second = next(&mut stream).await.expect("redelivery");
+    assert_eq!(second.payload(), b"job");
+    second.nack(false).await.expect("drop");
+    assert_eq!(
+        (
+            list_len(&broker, &key).await,
+            list_len(&broker, &processing).await
+        ),
+        (0, 0),
+        "a drop removes the entry instead of returning it",
+    );
+    none_within(&mut stream, "after a drop").await;
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// The processing list is a key the descriptor names, and naming one moves the claims there
+/// rather than to the default spelling beside it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reliable_list_claims_on_the_processing_key_the_descriptor_names() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("list_processing");
+    let named = format!("{key}.inflight");
+    let default = format!("{key}.processing");
+
+    broker
+        .list_publisher(RedisListPublish::new())
+        .publish(OutgoingMessage::new(key.as_str(), b"job"), None)
+        .await
+        .expect("lpush");
+
+    let mut sub = broker
+        .subscribe_list(
+            RedisList::new(&key)
+                .reliable()
+                .processing(&named)
+                .block(SHORT_BLOCK),
+        )
+        .await
+        .expect("subscribe reliable list");
+    let mut stream = Box::pin(sub.stream());
+    let msg = next(&mut stream).await.expect("claim");
+
+    assert_eq!(
+        list_len(&broker, &named).await,
+        1,
+        "the claim is held on the key the descriptor named",
+    );
+    assert_eq!(
+        list_len(&broker, &default).await,
+        0,
+        "and the default key is not touched",
+    );
+
+    msg.ack().await.expect("ack");
+    assert_eq!(
+        list_len(&broker, &named).await,
+        0,
+        "an ack releases the claim from that same key",
+    );
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// The recovery watchdog cannot run without an idle threshold, and says so at startup rather than
+/// picking one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reliable_list_recovery_without_min_idle_is_refused() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("list_recovery_refusal");
+
+    let err = broker
+        .subscribe_list(RedisList::new(&key).recovery_zset(format!("{key}.inflight")))
+        .await
+        .expect_err("recovery without an idle threshold must be refused");
+    assert!(
+        matches!(&err, RedisError::InvalidOptions(msg) if msg.contains("min_idle")),
+        "the refusal names the setting that is missing: {err}",
+    );
+
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// The tracking key expires only when the subscription asked it to, so an abandoned watchdog
+/// cleans itself up and a live one is not dropped under a running consumer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_recovery_ttl_arms_an_expiry_on_the_tracking_key() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+
+    // `min_idle` well above the case's own runtime, so the watchdog does not recover the entry
+    // while it is being looked at.
+    let idle = Duration::from_secs(30);
+    let ttl = Duration::from_secs(60);
+
+    for (base, recovery_ttl, expected) in [("with_ttl", Some(ttl), true), ("no_ttl", None, false)] {
+        let key = unique_key(base);
+        let zset = format!("{key}.inflight");
+
+        broker
+            .list_publisher(RedisListPublish::new())
+            .publish(OutgoingMessage::new(key.as_str(), b"job"), None)
+            .await
+            .expect("lpush");
+
+        let mut def = RedisList::new(&key)
+            .reliable()
+            .min_idle(idle)
+            .recovery_zset(&zset)
+            .block(SHORT_BLOCK);
+        if let Some(ttl) = recovery_ttl {
+            def = def.recovery_ttl(ttl);
+        }
+
+        let mut sub = broker.subscribe_list(def).await.expect("subscribe");
+        let mut stream = Box::pin(sub.stream());
+        let msg = next(&mut stream).await.expect("claim");
+
+        let remaining = pttl(&broker, &zset).await;
+        if expected {
+            assert!(
+                remaining > 0,
+                "a recovery ttl must arm an expiry on the tracking key, got {remaining}",
+            );
+        } else {
+            assert_eq!(
+                remaining, -1,
+                "without one the tracking key must outlive every claim",
+            );
+        }
+
+        msg.ack().await.expect("ack");
+        drop(stream);
+    }
+
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// The same rule for the delay queue: its ttl is the subscription's word, and without one the
+/// queue keeps whatever was scheduled into it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delay_queue_ttl_arms_an_expiry_on_the_zset() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+
+    // Long enough that the subscription's own sweeper cannot replay the entry mid-case.
+    let delay = Duration::from_secs(30);
+    let ttl = Duration::from_secs(60);
+
+    for (base, queue_ttl, expected) in [
+        ("delay_ttl", Some(ttl), true),
+        ("delay_no_ttl", None, false),
+    ] {
+        let key = unique_key(base);
+        let zset = format!("{key}.delayed");
+
+        let mut sub = broker
+            .subscribe(
+                RedisStream::new(&key)
+                    .group("workers")
+                    .delayed_retry(DelayedRetry::DurableZset {
+                        key: zset.clone(),
+                        ttl: queue_ttl,
+                    })
+                    .block(SHORT_BLOCK),
+            )
+            .await
+            .expect("subscribe");
+        broker
+            .publisher()
+            .publish(OutgoingMessage::new(key.as_str(), b"later"), None)
+            .await
+            .expect("publish");
+
+        let mut stream = Box::pin(sub.stream());
+        let msg = next(&mut stream).await.expect("delivery");
+        msg.nack_after(delay).await.expect("schedule the delay");
+
+        let remaining = pttl(&broker, &zset).await;
+        if expected {
+            assert!(
+                remaining > 0,
+                "a delay-queue ttl must arm an expiry on the zset, got {remaining}",
+            );
+        } else {
+            assert_eq!(
+                remaining, -1,
+                "without one the queue must outlive what was scheduled into it",
+            );
+        }
+
+        drop(stream);
+    }
+
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// A `MULTI` block cannot span hash slots, so a cluster publisher refuses either kind of
+/// transaction at the point it is asked for, and keeps publishing directly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cluster_refuses_both_kinds_of_transaction() {
+    let Some(node) = env("REDIS_CLUSTER_TEST_URL") else {
+        return;
+    };
+    let broker = connect(RedisBroker::cluster([node])).await;
+    let key = unique_key("cluster_no_txn");
+    let publisher = broker.publisher();
+
+    let borrowed = publisher
+        .begin_transaction()
+        .await
+        .expect_err("a cluster cannot open a handle-level transaction");
+    assert!(
+        matches!(&borrowed, RedisError::InvalidOptions(msg) if msg.contains("standalone and sentinel")),
+        "the refusal names the topologies that can: {borrowed}",
+    );
+
+    let owned = publisher.transaction().await.expect_err("nor an owned one");
+    assert!(
+        matches!(&owned, RedisError::InvalidOptions(msg) if msg.contains("standalone and sentinel")),
+        "both kinds answer the same way: {owned}",
+    );
+
+    // The refusal is about the transaction, not about the handle.
+    let mut sub = broker
+        .subscribe(RedisStream::new(&key).group("workers"))
+        .await
+        .expect("subscribe");
+    publisher
+        .publish(OutgoingMessage::new(key.as_str(), b"direct"), None)
+        .await
+        .expect("publish");
+    let mut stream = Box::pin(sub.stream());
+    let msg = next(&mut stream).await.expect("delivery");
+    assert_eq!(msg.payload(), b"direct");
+    msg.ack().await.expect("ack");
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// A broker handed an already-built pool adopts it instead of dialing, and the config that pool
+/// carries is what the Pub/Sub path dials its own client from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_broker_over_an_adopted_pool_serves_both_transports() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let config = Config::from_url(&url).expect("a config from the url");
+    let pool = Pool::new(config, None, None, None, 2).expect("build the pool");
+    pool.init().await.expect("connect the pool");
+
+    let broker = connect(RedisBroker::from_pool(pool)).await;
+    round_trip(&broker, &unique_key("adopted")).await;
+
+    let channel = unique_key("adopted_pubsub");
+    let mut sub = broker
+        .subscribe_pubsub(RedisPubSub::new(&channel))
+        .await
+        .expect("subscribe pubsub over the adopted pool");
+    let mut stream = Box::pin(sub.stream());
+    broker
+        .pubsub_publisher(RedisPubSubPublish::new())
+        .publish(OutgoingMessage::new(channel.as_str(), b"adopted"), None)
+        .await
+        .expect("publish");
+    let msg = next(&mut stream).await.expect("delivery");
+    assert_eq!(msg.payload(), b"adopted");
 
     drop(stream);
     broker.shutdown().await.expect("shutdown");
