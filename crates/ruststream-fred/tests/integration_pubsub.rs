@@ -11,8 +11,9 @@
 //! ```
 
 use std::collections::BTreeSet;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fred::interfaces::PubsubInterface;
 use futures::StreamExt;
@@ -37,10 +38,21 @@ fn env(key: &str) -> Option<String> {
 }
 
 /// A channel name unique to this run. Redis keeps Pub/Sub registrations per server, so a name
-/// reused across cases would let one case's subscriber answer another's publish.
+/// reused by another case - or by a run whose subscriber has not finished closing - would let one
+/// subscriber answer another's publish.
 fn unique_channel(base: &str) -> String {
+    static RUN: OnceLock<u128> = OnceLock::new();
     static N: AtomicU64 = AtomicU64::new(0);
-    format!("ruststream-ps.{base}.{}", N.fetch_add(1, Ordering::Relaxed))
+    let run = RUN.get_or_init(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("a clock after the epoch")
+            .as_nanos()
+    });
+    format!(
+        "ruststream-ps.{base}.{run}.{}",
+        N.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 async fn standalone(url: String) -> ConnectedRedisBroker {

@@ -16,8 +16,9 @@
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use fred::clients::Pool;
@@ -57,10 +58,22 @@ fn env(key: &str) -> Option<String> {
 #[derive(Outgoing, Serialized)]
 struct Payload(Vec<u8>);
 
-/// A per-process-unique stream key so repeated runs against the same Redis stay isolated.
+/// A key unique to this run, so a server kept between runs never hands one case what another
+/// left behind. The cases here count entries, read a group's cursor and read the pending list, so
+/// a key reused across runs would be answered with the last run's history.
 fn unique_key(base: &str) -> String {
+    static RUN: OnceLock<u128> = OnceLock::new();
     static N: AtomicU64 = AtomicU64::new(0);
-    format!("ruststream-it.{base}.{}", N.fetch_add(1, Ordering::Relaxed))
+    let run = RUN.get_or_init(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("a clock after the epoch")
+            .as_nanos()
+    });
+    format!(
+        "ruststream-it.{base}.{run}.{}",
+        N.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 async fn next<S>(stream: &mut S) -> S::Item
