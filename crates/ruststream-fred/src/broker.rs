@@ -441,12 +441,6 @@ impl RedisBroker {
             }
         }
     }
-
-    /// Whether this topology can offer multi-key transactions. Cluster cannot (buffered keys may
-    /// hash to different nodes), so its publishers reject `begin_transaction`.
-    const fn supports_transactions(&self) -> bool {
-        !matches!(self.topology, Topology::Cluster(_))
-    }
 }
 
 impl Broker for RedisBroker {
@@ -461,7 +455,9 @@ impl Broker for RedisBroker {
     /// config or the pool cannot reach the server.
     async fn connect(self) -> Result<Self::Connected, Self::Error> {
         let config = self.build_config()?;
-        let transactions_supported = self.supports_transactions();
+        // Read off the resolved config rather than the recorded topology, so a caller-supplied
+        // pool that is itself clustered is treated as the cluster it is.
+        let clustered = config.server.is_clustered();
         let pool = if let Topology::Preconnected(pool) = &self.topology {
             pool.clone()
         } else {
@@ -477,7 +473,7 @@ impl Broker for RedisBroker {
                 pool,
                 config,
                 default_group: self.default_group,
-                transactions_supported,
+                clustered,
                 closed: AtomicBool::new(false),
             }),
         })
@@ -547,7 +543,10 @@ pub(crate) struct RedisCore {
     /// from it.
     config: Config,
     default_group: Option<String>,
-    transactions_supported: bool,
+    /// Whether the connection is to a cluster, which is where a command spanning two keys needs
+    /// them on one hash slot: a `MULTI` block cannot span slots at all, and a reliable list's
+    /// claim is a `BLMOVE` between its queue and its processing list.
+    clustered: bool,
     /// Flipped by [`ConnectedBroker::shutdown`]. The ladder makes owner-side misuse a compile
     /// error, but publishers handed out before the shutdown alias the connection and outlive it,
     /// so their operations check this flag rather than issuing a command against a dead pool.
@@ -563,8 +562,14 @@ impl RedisCore {
         Ok(self.pool.clone())
     }
 
+    /// Cluster cannot offer multi-key transactions, because buffered keys may hash to different
+    /// nodes, so its publishers reject `begin_transaction`.
     pub(crate) const fn transactions_supported(&self) -> bool {
-        self.transactions_supported
+        !self.clustered
+    }
+
+    pub(crate) const fn clustered(&self) -> bool {
+        self.clustered
     }
 }
 
@@ -701,6 +706,12 @@ impl ConnectedRedisBroker {
         };
         let reliable = def.is_reliable();
         let processing = def.processing_or_default();
+        if reliable
+            && self.core.clustered()
+            && let Err(err) = require_one_slot(def.key(), &processing)
+        {
+            return ready(Err(err));
+        }
         let block = def.block_or_default();
         let codec = def.codec_handle();
         ready(Ok(RedisListSubscriber::new(
@@ -862,6 +873,23 @@ async fn confirm_subscribed(client: &Client) -> Result<(), RedisError> {
         .await
         .map_err(RedisError::subscribe)?;
     Ok(())
+}
+
+/// Refuses a reliable list on a cluster whose two keys live on different nodes.
+///
+/// A claim is a `BLMOVE` from the queue to the processing list, and Redis refuses a command that
+/// spans hash slots. Nothing says so until the first delivery, so the subscription is refused
+/// where it is opened and the message names the hash tag that puts both keys on one node.
+fn require_one_slot(key: &str, processing: &str) -> Result<(), RedisError> {
+    if redis_keyslot(key.as_bytes()) == redis_keyslot(processing.as_bytes()) {
+        return Ok(());
+    }
+    Err(RedisError::InvalidOptions(format!(
+        "a reliable list on `{key}` cannot run on a cluster while its processing list \
+         `{processing}` hashes to another slot: a claim moves the entry between the two in one \
+         command. Put both on one slot with a hash tag, as in RedisList::new(\"{{{key}}}\"), which \
+         the default processing key follows"
+    )))
 }
 
 /// Creates the consumer group, treating an already-existing group as success.

@@ -1776,3 +1776,60 @@ async fn a_stream_without_a_delay_queue_refuses_to_hold_a_message_back() {
     drop(stream);
     broker.shutdown().await.expect("shutdown");
 }
+
+/// A reliable list claims by moving the entry from the queue to the processing list in one
+/// command, which a cluster serves only while both keys live on one node. The refusal comes where
+/// the subscription is opened rather than on the first delivery, and a hash tag is what lifts it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reliable_list_on_a_cluster_needs_its_two_keys_on_one_slot() {
+    let Some(node) = env("REDIS_CLUSTER_TEST_URL") else {
+        return;
+    };
+    let broker = connect(RedisBroker::cluster([node])).await;
+
+    let split = unique_key("cluster_list_split");
+    let err = broker
+        .subscribe_list(RedisList::new(&split).reliable())
+        .await
+        .expect_err("keys on two slots cannot be claimed between");
+    assert!(
+        matches!(&err, RedisError::InvalidOptions(msg) if msg.contains("hash tag")),
+        "the refusal names the remedy: {err}",
+    );
+
+    // The same subscription under a hash tag: both keys hash to one slot and the claim goes
+    // through.
+    let tagged = format!("{{{}}}", unique_key("cluster_list"));
+    broker
+        .list_publisher(RedisListPublish::new())
+        .publish(OutgoingMessage::new(tagged.as_str(), b"job"), None)
+        .await
+        .expect("lpush");
+    let mut sub = broker
+        .subscribe_list(RedisList::new(&tagged).reliable().block(SHORT_BLOCK))
+        .await
+        .expect("subscribe reliable list");
+    let mut stream = Box::pin(sub.stream());
+    let msg = next(&mut stream).await.expect("claim");
+    assert_eq!(msg.payload(), b"job");
+    msg.ack().await.expect("ack");
+
+    // A simple list pops with one key, so it needs no tag at all.
+    let plain = unique_key("cluster_list_simple");
+    broker
+        .list_publisher(RedisListPublish::new())
+        .publish(OutgoingMessage::new(plain.as_str(), b"job"), None)
+        .await
+        .expect("lpush");
+    let mut simple = broker
+        .subscribe_list(RedisList::new(&plain).block(SHORT_BLOCK))
+        .await
+        .expect("subscribe simple list");
+    let mut simple_stream = Box::pin(simple.stream());
+    let popped = next(&mut simple_stream).await.expect("pop");
+    assert_eq!(popped.payload(), b"job");
+
+    drop(stream);
+    drop(simple_stream);
+    broker.shutdown().await.expect("shutdown");
+}

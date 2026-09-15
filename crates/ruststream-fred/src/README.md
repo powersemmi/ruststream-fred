@@ -197,6 +197,11 @@ fn app() -> impl App {
 # fn main() {}
 ```
 
+On a cluster the queue and the processing list have to live on one hash slot, because a claim
+moves the entry between them in one command. A hash tag gives them one: `RedisList::new("{jobs}")`,
+whose default processing key follows the tag. A subscription whose two keys land on different
+slots does not start, and the error names the tag.
+
 [`RedisList::recovery_ttl`] expires an abandoned recovery key and has to exceed `min_idle`.
 [`RedisListPublish::ttl`] re-arms a `PEXPIRE` on the list key at every publish, so a queue in use
 never expires and an idle one lapses; the expiry covers the whole list, because Redis lists have
@@ -967,7 +972,8 @@ that authenticate to the sentinels rather than to the data nodes. `credential-pr
 [`RedisBroker::credential_provider`], a callback that supplies and can rotate the username and
 password on each `AUTH` or `HELLO`, and it takes precedence over static credentials.
 
-Known limits. A transaction is unavailable on a cluster, because `MULTI` cannot span hash slots.
+Known limits. A transaction is unavailable on a cluster, because `MULTI` cannot span hash slots,
+and a reliable list needs its two keys under one hash tag there for the same reason.
 A reliable list without a recovery key has no orphan recovery. Pub/Sub loses anything published
 while a subscriber is disconnected, and a simple list loses anything a crashed handler was
 holding. A claiming subscription needs Redis 8.4 or later. For a setting these builders do not
