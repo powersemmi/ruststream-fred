@@ -1650,3 +1650,129 @@ async fn a_broker_over_an_adopted_pool_serves_both_transports() {
     drop(stream);
     broker.shutdown().await.expect("shutdown");
 }
+
+/// How many `XREADGROUP` calls the server has served, read from `INFO commandstats`.
+async fn xreadgroup_calls(broker: &ConnectedRedisBroker) -> u64 {
+    let info: String = broker
+        .pool_handle()
+        .expect("live pool")
+        .next()
+        .info(Some(InfoKind::CommandStats))
+        .await
+        .expect("info commandstats");
+    info.lines()
+        .find_map(|line| line.strip_prefix("cmdstat_xreadgroup:calls="))
+        .and_then(|rest| rest.split(',').next())
+        .and_then(|calls| calls.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// A stream batch is one read, not a client-side buffer over one-at-a-time deliveries: the size
+/// becomes the `COUNT` the server caps its reply at, so nine entries at three per batch cost the
+/// server three reads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stream_batches_cost_one_read_each() {
+    const COUNT: u8 = 9;
+    const BATCH: NonZeroUsize = NonZeroUsize::new(3).unwrap();
+
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("stream_batches");
+
+    // Everything is on the stream before the subscription opens, so every read the case counts is
+    // a read that found work.
+    let publisher = broker.publisher();
+    for i in 0..COUNT {
+        publisher
+            .publish(OutgoingMessage::new(key.as_str(), &[i]), None)
+            .await
+            .expect("publish");
+    }
+
+    let mut sub = broker
+        .subscribe(
+            RedisStream::new(&key)
+                .group("workers")
+                .start_id(StreamStart::Beginning)
+                .block(SHORT_BLOCK),
+        )
+        .await
+        .expect("subscribe");
+
+    let before = xreadgroup_calls(&broker).await;
+    let mut batches = Box::pin(sub.batches(BATCH));
+    let mut received = Vec::new();
+    while received.len() < usize::from(COUNT) {
+        let batch = next(&mut batches).await.expect("batch ok");
+        assert_eq!(
+            batch.len(),
+            BATCH.get(),
+            "the server had more than the size available, so it returned exactly the size",
+        );
+        received.extend(batch.iter().map(|msg| msg.payload().to_vec()));
+    }
+    let after = xreadgroup_calls(&broker).await;
+
+    let expected: Vec<Vec<u8>> = (0..COUNT).map(|i| vec![i]).collect();
+    assert_eq!(received, expected, "batches must preserve the stream order");
+    assert_eq!(
+        after - before,
+        3,
+        "nine entries at three per batch are three reads, not nine",
+    );
+
+    drop(batches);
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// A subscription with no delay queue and no pending list to wait in says it cannot hold a
+/// message back, which is what hands the delay to the runtime's own deferred copy. The entry is
+/// left exactly where it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stream_without_a_delay_queue_refuses_to_hold_a_message_back() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("no_delay_queue");
+
+    let mut sub = broker
+        .subscribe(RedisStream::new(&key).group("workers").block(SHORT_BLOCK))
+        .await
+        .expect("subscribe");
+    broker
+        .publisher()
+        .publish(OutgoingMessage::new(key.as_str(), b"later"), None)
+        .await
+        .expect("publish");
+
+    let mut stream = Box::pin(sub.stream());
+    let msg = next(&mut stream).await.expect("delivery");
+    assert!(
+        !msg.supports_nack_after(),
+        "a fresh-tail subscription with no delay queue has no delay of its own",
+    );
+    assert!(
+        matches!(
+            msg.nack_after(Duration::from_secs(1)).await,
+            Err(AckError::Unsupported)
+        ),
+        "and it refuses the delay rather than dropping it silently",
+    );
+
+    assert_eq!(
+        stream_len(&broker, &key).await,
+        1,
+        "a refused delay schedules nothing",
+    );
+    assert_eq!(
+        pending(&broker, &key, "workers").await.len(),
+        1,
+        "and settles nothing: the entry is still the group's to finish",
+    );
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}

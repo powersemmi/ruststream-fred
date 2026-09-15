@@ -335,3 +335,39 @@ async fn a_classic_subscription_is_not_reached_by_a_sharded_publish() {
     drop(stream);
     broker.shutdown().await.expect("shutdown");
 }
+
+/// A channel is shared with whatever else publishes to it, so a value that carries no frame of
+/// this crate's arrives as the payload it is, with no headers invented around it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_value_published_by_another_client_arrives_as_the_bare_payload() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let channel = unique_channel("foreign");
+
+    let mut sub = broker
+        .subscribe_pubsub(RedisPubSub::new(&channel))
+        .await
+        .expect("subscribe pubsub");
+    let mut stream = Box::pin(sub.stream());
+
+    // A plain `PUBLISH`, the way any other Redis client would make it.
+    let _: i64 = broker
+        .pool_handle()
+        .expect("live pool")
+        .next()
+        .publish(channel.as_str(), "plain text")
+        .await
+        .expect("publish");
+
+    let msg = next(&mut stream).await.expect("delivery ok");
+    assert_eq!(msg.payload(), b"plain text");
+    assert!(
+        msg.headers().is_empty(),
+        "an unframed value carries no headers, and none are read out of its bytes",
+    );
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
