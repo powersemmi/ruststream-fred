@@ -20,21 +20,27 @@ use fred::types::config::CredentialProvider;
 ))]
 use fred::types::config::TlsConfig;
 use fred::types::config::{Config, ServerConfig};
-use ruststream::{Broker, ConnectedBroker, DescribeServer, ServerSpec, Subscribe};
+use fred::types::{ClusterHash, CustomCommand, Value, Version};
+use fred::util::redis_keyslot;
+use ruststream::{AddressedCopies, Broker, ConnectedBroker, DescribeServer, ServerSpec, Subscribe};
 
 use crate::{
     error::RedisError,
     list::{RedisList, RedisListPublish, RedisListPublisher, RedisListSubscriber},
     publisher::RedisPublisher,
     pubsub::{
-        PubSubMode, RedisPubSub, RedisPubSubPublish, RedisPubSubPublisher, RedisPubSubSubscriber,
+        PubSubMode, RedisPubSub, RedisPubSubPattern, RedisPubSubPublish, RedisPubSubPublisher,
+        RedisPubSubSubscriber,
     },
-    stream::RedisStream,
+    stream::{ReadMode, RedisStream},
     subscriber::RedisSubscriber,
 };
 
 /// Default `fred` connection-pool size when the caller does not set one.
 const DEFAULT_POOL_SIZE: usize = 4;
+
+/// The first Redis release whose `XREADGROUP` takes a `CLAIM` option.
+const CLAIM_MIN_VERSION: Version = Version::new(8, 4, 0);
 
 /// How the broker should connect, recorded synchronously and resolved into a `fred` config at
 /// [`Broker::connect`] time so construction stays I/O- and failure-free.
@@ -435,12 +441,6 @@ impl RedisBroker {
             }
         }
     }
-
-    /// Whether this topology can offer multi-key transactions. Cluster cannot (buffered keys may
-    /// hash to different nodes), so its publishers reject `begin_transaction`.
-    const fn supports_transactions(&self) -> bool {
-        !matches!(self.topology, Topology::Cluster(_))
-    }
 }
 
 impl Broker for RedisBroker {
@@ -455,7 +455,9 @@ impl Broker for RedisBroker {
     /// config or the pool cannot reach the server.
     async fn connect(self) -> Result<Self::Connected, Self::Error> {
         let config = self.build_config()?;
-        let transactions_supported = self.supports_transactions();
+        // Read off the resolved config rather than the recorded topology, so a caller-supplied
+        // pool that is itself clustered is treated as the cluster it is.
+        let clustered = config.server.is_clustered();
         let pool = if let Topology::Preconnected(pool) = &self.topology {
             pool.clone()
         } else {
@@ -471,27 +473,67 @@ impl Broker for RedisBroker {
                 pool,
                 config,
                 default_group: self.default_group,
-                transactions_supported,
+                clustered,
                 closed: AtomicBool::new(false),
             }),
         })
     }
 }
 
-/// `DescribeServer` reports the configured Redis address (the first seed for cluster/sentinel).
+/// `DescribeServer` reports the host and port a client dials (the first seed for cluster and
+/// sentinel). Nothing else a configured address may carry reaches the description: a broker built
+/// from an already-connected pool describes no host at all.
 impl DescribeServer for RedisBroker {
     fn describe_server(&self) -> ServerSpec {
         let host = match &self.topology {
-            Topology::Standalone(url) => url
-                .trim_start_matches("rediss://")
-                .trim_start_matches("redis://")
-                .to_owned(),
-            Topology::Cluster(nodes) => nodes.first().cloned().unwrap_or_default(),
-            Topology::Sentinel { hosts, .. } => hosts.first().cloned().unwrap_or_default(),
+            Topology::Standalone(url) => describe_address(url, 6379),
+            Topology::Cluster(nodes) => nodes
+                .first()
+                .map_or_else(String::new, |node| describe_address(node, 6379)),
+            Topology::Sentinel { hosts, .. } => hosts
+                .first()
+                .map_or_else(String::new, |host| describe_address(host, 26379)),
+            // A caller-supplied pool carries its address inside `fred`'s own config, which this
+            // description does not reach into.
             Topology::Preconnected(_) => String::new(),
         };
-        ServerSpec::new(host, "redis")
+        let mut spec = ServerSpec::new(host, "redis");
+        // An address this broker cannot name is left out of the document rather than published as
+        // an empty string, which a reader takes for a coordinate and tries to dial.
+        if spec.host.as_deref() == Some("") {
+            spec.host = None;
+        }
+        spec
     }
+}
+
+/// The `host:port` a client dials, with everything else an address may carry stripped: the scheme,
+/// any `user:password@`, the database path and the query.
+///
+/// [`ServerSpec::host_from_url`] does the stripping, so the rule that keeps a credential out of a
+/// published `AsyncAPI` document lives in one place for every broker. What is added here is the
+/// Redis default port, which the core cannot know.
+fn describe_address(addr: &str, default_port: u16) -> String {
+    let host = ServerSpec::host_from_url(addr.trim());
+    if host.is_empty() {
+        return String::new();
+    }
+    if has_port(&host) {
+        host
+    } else {
+        format!("{host}:{default_port}")
+    }
+}
+
+/// Whether an address already names a port, allowing for a bracketed IPv6 literal (`[::1]:6379`).
+fn has_port(host: &str) -> bool {
+    host.rsplit_once(']').map_or_else(
+        || {
+            host.rsplit_once(':')
+                .is_some_and(|(_, port)| !port.is_empty())
+        },
+        |(_, after_bracket)| after_bracket.starts_with(':'),
+    )
 }
 
 /// The live connection shared by the connected broker and every handle derived from it.
@@ -501,7 +543,10 @@ pub(crate) struct RedisCore {
     /// from it.
     config: Config,
     default_group: Option<String>,
-    transactions_supported: bool,
+    /// Whether the connection is to a cluster, which is where a command spanning two keys needs
+    /// them on one hash slot: a `MULTI` block cannot span slots at all, and a reliable list's
+    /// claim is a `BLMOVE` between its queue and its processing list.
+    clustered: bool,
     /// Flipped by [`ConnectedBroker::shutdown`]. The ladder makes owner-side misuse a compile
     /// error, but publishers handed out before the shutdown alias the connection and outlive it,
     /// so their operations check this flag rather than issuing a command against a dead pool.
@@ -517,8 +562,14 @@ impl RedisCore {
         Ok(self.pool.clone())
     }
 
+    /// Cluster cannot offer multi-key transactions, because buffered keys may hash to different
+    /// nodes, so its publishers reject `begin_transaction`.
     pub(crate) const fn transactions_supported(&self) -> bool {
-        self.transactions_supported
+        !self.clustered
+    }
+
+    pub(crate) const fn clustered(&self) -> bool {
+        self.clustered
     }
 }
 
@@ -556,6 +607,9 @@ impl ConnectedRedisBroker {
         let pool = self.core.pool()?;
         let group = def.group_or_err()?.to_owned();
         let consumer = def.consumer_or_auto();
+        if let ReadMode::Claiming { .. } = def.mode() {
+            require_claim_support(pool.server_version().as_ref(), def.key())?;
+        }
         ensure_group(&pool, def.key(), &group, def.start().as_id()).await?;
         Ok(RedisSubscriber::new(
             pool,
@@ -564,34 +618,69 @@ impl ConnectedRedisBroker {
             consumer,
             def.block_or_default(),
             def.mode(),
-            def.poison_policy(),
             def.delay_config(),
         ))
     }
 
-    /// Opens a Pub/Sub subscription described by `def` on a dedicated client.
+    /// Opens a Pub/Sub subscription on one channel, described by `def`, on a dedicated client.
     ///
     /// # Errors
     ///
-    /// Returns [`RedisError::InvalidOptions`] for an invalid mode/pattern combination,
-    /// [`RedisError::ShutDown`] when the connection was already torn down,
+    /// Returns [`RedisError::ShutDown`] when the connection was already torn down,
     /// [`RedisError::Connect`] when the dedicated client cannot connect, or
     /// [`RedisError::Subscribe`] when the subscribe command fails.
     pub async fn subscribe_pubsub(
         &self,
         def: RedisPubSub,
     ) -> Result<RedisPubSubSubscriber, RedisError> {
-        def.validate()?;
         let codec = def.codec_handle();
         let client = self.new_client().await?;
-        let channel = def.channel().to_owned();
-        let result = match (def.delivery_mode(), def.is_pattern()) {
-            (PubSubMode::Classic, true) => client.psubscribe(channel).await,
-            (PubSubMode::Classic, false) => client.subscribe(channel).await,
-            (PubSubMode::Sharded, _) => client.ssubscribe(channel).await,
-        };
-        result.map_err(RedisError::subscribe)?;
+        // Opened before the subscribe, because the messages arrive over a broadcast channel whose
+        // receiver sees only what is sent after it exists. The connection is dedicated to this one
+        // subscription, so opening the stream early can pick up nothing else.
         let rx = client.message_rx();
+        let channel = def.channel().to_owned();
+        match def.delivery_mode() {
+            PubSubMode::Classic => {
+                client
+                    .subscribe(channel)
+                    .await
+                    .map_err(RedisError::subscribe)?;
+                confirm_subscribed(&client).await?;
+            }
+            // `SSUBSCRIBE` is answered by the server, so `fred` waits for it and there is nothing
+            // left to confirm here.
+            PubSubMode::Sharded => {
+                client
+                    .ssubscribe(channel)
+                    .await
+                    .map_err(RedisError::subscribe)?;
+            }
+        }
+        Ok(RedisPubSubSubscriber::new(client, rx, codec))
+    }
+
+    /// Opens a Pub/Sub subscription on a glob (`PSUBSCRIBE`), described by `def`, on a dedicated
+    /// client.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RedisError::ShutDown`] when the connection was already torn down,
+    /// [`RedisError::Connect`] when the dedicated client cannot connect, or
+    /// [`RedisError::Subscribe`] when the subscribe command fails.
+    pub async fn subscribe_pubsub_pattern(
+        &self,
+        def: RedisPubSubPattern,
+    ) -> Result<RedisPubSubSubscriber, RedisError> {
+        let codec = def.codec_handle();
+        let client = self.new_client().await?;
+        // Opened before the subscribe, for the reason `subscribe_pubsub` gives.
+        let rx = client.message_rx();
+        client
+            .psubscribe(def.pattern().to_owned())
+            .await
+            .map_err(RedisError::subscribe)?;
+        confirm_subscribed(&client).await?;
         Ok(RedisPubSubSubscriber::new(client, rx, codec))
     }
 
@@ -617,9 +706,14 @@ impl ConnectedRedisBroker {
         };
         let reliable = def.is_reliable();
         let processing = def.processing_or_default();
+        if reliable
+            && self.core.clustered()
+            && let Err(err) = require_one_slot(def.key(), &processing)
+        {
+            return ready(Err(err));
+        }
         let block = def.block_or_default();
         let codec = def.codec_handle();
-        let poison = def.poison_policy();
         ready(Ok(RedisListSubscriber::new(
             pool,
             def.into_key(),
@@ -627,7 +721,6 @@ impl ConnectedRedisBroker {
             processing,
             block,
             codec,
-            poison,
             recovery,
         )))
     }
@@ -721,6 +814,9 @@ impl ClosedRedisBroker {
 )]
 impl Subscribe for ConnectedRedisBroker {
     type Subscriber = RedisSubscriber;
+    /// A bare name opens a consumer group over that stream key, and an `XADD` there is read by the
+    /// group again, so the name is both ends and a retry copy needs nothing from the mount site.
+    type Copies = AddressedCopies;
 
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
         let group = self.core.default_group.clone().ok_or_else(|| {
@@ -732,6 +828,68 @@ impl Subscribe for ConnectedRedisBroker {
         })?;
         ConnectedRedisBroker::subscribe(self, RedisStream::new(name).group(group)).await
     }
+}
+
+/// Refuses a [`RedisStream::claiming`] subscription the connected server cannot serve.
+///
+/// The version is the one the `fred` client read from `INFO server` during its handshake, so the
+/// check costs no round trip and runs once, where the subscription resolves against the connected
+/// broker. Without it the mistake surfaces on the first read, as a bare syntax error from a server
+/// that does not know the option.
+///
+/// A server that reports no version is refused the same way: the option either exists or the
+/// service does not start, and a guess is what the check is here to avoid.
+fn require_claim_support(version: Option<&Version>, key: &str) -> Result<(), RedisError> {
+    match version {
+        Some(version) if *version >= CLAIM_MIN_VERSION => Ok(()),
+        Some(version) => Err(RedisError::ServerTooOld(format!(
+            "RedisStream::claiming on {key:?} needs Redis {CLAIM_MIN_VERSION} or later \
+             (XREADGROUP CLAIM); the connected server is {version}"
+        ))),
+        None => Err(RedisError::ServerTooOld(format!(
+            "RedisStream::claiming on {key:?} needs Redis {CLAIM_MIN_VERSION} or later \
+             (XREADGROUP CLAIM); the connected server reports no version"
+        ))),
+    }
+}
+
+/// Waits for the server to apply the `SUBSCRIBE` or `PSUBSCRIBE` the client just issued.
+///
+/// `fred` answers both the moment the frame is queued: Redis confirms them out of band, on the
+/// message stream, and the client drops that confirmation without surfacing it. A publish issued
+/// the instant `subscribe(..)` returned therefore reaches a server that has not routed the channel
+/// here yet, and Pub/Sub keeps nothing for a subscriber who is not there: the message is gone,
+/// with no error on either side. That is a lost delivery on a subscription the caller was told was
+/// open, so it is worth the round trip this costs once per subscription.
+///
+/// Redis serves one connection's commands in order, so a reply to a command sent after the
+/// subscribe cannot come back before the subscribe was applied. The `PING` carries the hash `fred`
+/// pins the legacy Pub/Sub commands to, so on a cluster it is answered by the node the subscribe
+/// reached rather than by another one.
+async fn confirm_subscribed(client: &Client) -> Result<(), RedisError> {
+    let node = ClusterHash::Custom(redis_keyslot(client.id().as_bytes()));
+    let _: Value = client
+        .custom(CustomCommand::new("PING", node, false), Vec::<Value>::new())
+        .await
+        .map_err(RedisError::subscribe)?;
+    Ok(())
+}
+
+/// Refuses a reliable list on a cluster whose two keys live on different nodes.
+///
+/// A claim is a `BLMOVE` from the queue to the processing list, and Redis refuses a command that
+/// spans hash slots. Nothing says so until the first delivery, so the subscription is refused
+/// where it is opened and the message names the hash tag that puts both keys on one node.
+fn require_one_slot(key: &str, processing: &str) -> Result<(), RedisError> {
+    if redis_keyslot(key.as_bytes()) == redis_keyslot(processing.as_bytes()) {
+        return Ok(());
+    }
+    Err(RedisError::InvalidOptions(format!(
+        "a reliable list on `{key}` cannot run on a cluster while its processing list \
+         `{processing}` hashes to another slot: a claim moves the entry between the two in one \
+         command. Put both on one slot with a hash tag, as in RedisList::new(\"{{{key}}}\"), which \
+         the default processing key follows"
+    )))
 }
 
 /// Creates the consumer group, treating an already-existing group as success.
@@ -755,12 +913,131 @@ async fn ensure_group(
 mod tests {
     use super::*;
 
+    /// The refusal names the subscription, the mode and both versions, so the operator reads
+    /// what to change without reaching for the source.
+    #[test]
+    fn a_claiming_subscription_names_both_versions_when_it_refuses() {
+        let err = require_claim_support(Some(&Version::new(7, 4, 2)), "orders")
+            .expect_err("a server below 8.4.0 must be refused");
+        assert_eq!(
+            err.to_string(),
+            "RedisStream::claiming on \"orders\" needs Redis 8.4.0 or later (XREADGROUP CLAIM); \
+             the connected server is 7.4.2"
+        );
+    }
+
+    /// A server that reports no version is refused too: the option either exists or the service
+    /// does not start.
+    #[test]
+    fn a_server_with_no_version_is_refused() {
+        let err = require_claim_support(None, "orders")
+            .expect_err("a server reporting no version must be refused");
+        assert!(
+            err.to_string().contains("reports no version"),
+            "the refusal has to say the version is missing: {err}"
+        );
+    }
+
+    /// 8.4.0 is the floor, not a version to be above, and a later release keeps the option.
+    #[test]
+    fn the_floor_release_and_later_are_accepted() {
+        for version in [
+            Version::new(8, 4, 0),
+            Version::new(8, 4, 6),
+            Version::new(9, 0, 0),
+        ] {
+            assert!(
+                require_claim_support(Some(&version), "orders").is_ok(),
+                "{version} has XREADGROUP CLAIM"
+            );
+        }
+        for version in [Version::new(8, 3, 9), Version::new(7, 4, 2)] {
+            assert!(
+                require_claim_support(Some(&version), "orders").is_err(),
+                "{version} does not have XREADGROUP CLAIM"
+            );
+        }
+    }
+
     #[test]
     fn describe_server_reports_redis() {
         let broker = RedisBroker::standalone("redis://localhost:6379");
         let spec = broker.describe_server();
         assert_eq!(spec.protocol, "redis");
         assert_eq!(spec.host.as_deref(), Some("localhost:6379"));
+    }
+
+    /// Every address shape this crate accepts reduces to the host and the port a client dials.
+    #[test]
+    fn a_description_is_the_host_and_port_of_every_address_shape() {
+        let cases = [
+            ("redis://localhost:6379", "localhost:6379"),
+            ("rediss://redis.example.com:6380", "redis.example.com:6380"),
+            ("redis://localhost", "localhost:6379"),
+            ("redis://localhost:6379/3", "localhost:6379"),
+            ("redis://localhost:6379/?timeout=5s", "localhost:6379"),
+            (
+                "valkeys://valkey.example.com:6380",
+                "valkey.example.com:6380",
+            ),
+            ("10.0.0.1:6379", "10.0.0.1:6379"),
+            ("  redis://localhost:6379  ", "localhost:6379"),
+            ("redis://[::1]:6379", "[::1]:6379"),
+            ("redis://[::1]", "[::1]:6379"),
+        ];
+
+        for (url, expected) in cases {
+            let spec = RedisBroker::standalone(url).describe_server();
+            assert_eq!(
+                spec.host.as_deref(),
+                Some(expected),
+                "the description of {url:?} is wrong"
+            );
+        }
+
+        let cluster = RedisBroker::cluster(["10.0.0.1", "10.0.0.2:7001"]).describe_server();
+        assert_eq!(cluster.host.as_deref(), Some("10.0.0.1:6379"));
+
+        let sentinel = RedisBroker::sentinel("mymaster", ["10.0.0.9"]).describe_server();
+        assert_eq!(sentinel.host.as_deref(), Some("10.0.0.9:26379"));
+    }
+
+    /// The description ends up in the generated `AsyncAPI` document, which teams publish, so a URL
+    /// carrying credentials must leave neither the user name nor the password behind. The password
+    /// here holds an `@` of its own, the case a split on the first separator gets wrong.
+    #[test]
+    fn a_description_never_carries_the_credentials_of_a_url() {
+        let cases = [
+            (
+                RedisBroker::standalone("redis://alice:p@ss@redis.example.com:6379/0"),
+                "redis.example.com:6379",
+            ),
+            (
+                RedisBroker::cluster(["redis://alice:p@ss@10.0.0.1:7000"]),
+                "10.0.0.1:7000",
+            ),
+            (
+                RedisBroker::sentinel("mymaster", ["redis://alice:p@ss@10.0.0.9:26379"]),
+                "10.0.0.9:26379",
+            ),
+        ];
+
+        for (broker, expected) in cases {
+            let host = broker.describe_server().host.expect("a described host");
+            assert_eq!(host, expected, "the description kept more than the address");
+            assert!(
+                !host.contains('@'),
+                "{host:?} still carries a userinfo part"
+            );
+            assert!(
+                !host.contains("alice"),
+                "{host:?} still carries the user name"
+            );
+            assert!(
+                !host.contains("p@ss"),
+                "{host:?} still carries the password"
+            );
+        }
     }
 
     // Credentials must reach the fred config on every topology, not just the standalone URL.

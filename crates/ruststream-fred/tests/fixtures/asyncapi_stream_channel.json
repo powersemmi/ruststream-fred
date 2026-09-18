@@ -1,0 +1,7 @@
+{
+  "form": "stream",
+  "group": "workers",
+  "consumer": "worker-1",
+  "readMode": "claiming",
+  "minIdleMs": 30000
+}

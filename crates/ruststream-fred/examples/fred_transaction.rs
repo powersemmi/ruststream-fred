@@ -18,7 +18,9 @@ use ruststream::OutgoingMessage;
 use ruststream_fred::stream::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Serialize)]
+// The same type arrives on `orders` and leaves on `processed`, so it declares no destination of
+// its own: the `Outgoing` derive without a name takes the one the mount site gives it.
+#[derive(Debug, Deserialize, Serialize, Outgoing)]
 struct Order {
     id: u64,
 }
@@ -42,12 +44,12 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         // --8<-- [start:mount]
         // The batch size is the one number the framework hands the subscriber: here it becomes
-        // the `XREADGROUP COUNT` of the read that fetches the batch. `.out(Reply, ..)` names the
+        // the `XREADGROUP COUNT` of the read that fetches the batch. `.out_reply(..)` names the
         // policy the handler's returned value is published through, and .transactional() requires
         // that policy's live form to be transactional, which the stream form's is on standalone
         // and sentinel: the batch's replies are buffered and committed as one MULTI / EXEC block.
         b.include(process.batch(nonzero!(32)))
-            .out(Reply, TransactionalPublish)
+            .out_reply(TransactionalPublish)
             .transactional();
         // --8<-- [end:mount]
 
@@ -58,8 +60,11 @@ fn app() -> impl App {
         // connected.
         b.after_startup(TransactionalPublish, async move |publisher| {
             let mut seed = publisher.transaction().await?;
-            seed.publish(OutgoingMessage::new("processed", br#"{"id":0}"#.as_slice()))
-                .await?;
+            seed.publish(
+                OutgoingMessage::new("processed", br#"{"id":0}"#.as_slice()),
+                None,
+            )
+            .await?;
             // Commit flushes the buffer as one MULTI / EXEC block.
             seed.commit().await
         });

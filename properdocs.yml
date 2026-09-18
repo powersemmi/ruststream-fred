@@ -63,9 +63,38 @@ markdown_extensions:
 
 hooks:
   - docs/hooks/snippet_titles.py
+  - docs/hooks/i18n_banner.py
 
 plugins:
   - search
+  # The transport guides now live in the crate's own reference, where the code they describe
+  # is. Each page that was here keeps its URL and lands on the section that took it over.
+  - redirects:
+      redirect_maps:
+        streams.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#streams
+        ru/streams.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#streams
+        zh/streams.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#streams
+        lists.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#lists
+        ru/lists.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#lists
+        zh/lists.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#lists
+        pubsub.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#pubsub
+        ru/pubsub.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#pubsub
+        zh/pubsub.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#pubsub
+        dead-letter.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#capping-the-retries
+        ru/dead-letter.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#capping-the-retries
+        zh/dead-letter.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#capping-the-retries
+        auth-tls.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#operations
+        ru/auth-tls.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#operations
+        zh/auth-tls.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#operations
+        transactions.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#transactions
+        ru/transactions.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#transactions
+        zh/transactions.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#transactions
+        asyncapi.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#the-generated-document
+        ru/asyncapi.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#the-generated-document
+        zh/asyncapi.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#the-generated-document
+        testing.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/testing/index.html
+        ru/testing.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/testing/index.html
+        zh/testing.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/testing/index.html
   # Versioned docs are published with `mike` (see the Docs workflow and the version switcher).
   # Each translation is a tree of its own under `docs/<locale>/`, mirroring the English paths.
   # English stays at the docs root: a file outside a locale folder is the default language.
@@ -75,7 +104,8 @@ plugins:
   #
   # English is normative; a page with no translation yet falls back to the English text inside
   # the localized site rather than disappearing from it, which is what lets translations land
-  # page by page. No page is translated yet, so today every locale serves the English text.
+  # page by page. Every page is translated today, so the fallback covers only a page added
+  # to the English tree before its translations.
   - i18n:
       docs_structure: folder
       fallback_to_default: true
@@ -91,7 +121,6 @@ plugins:
           build: true
           nav_translations:
             Home: Главная
-            Guide: Руководство
             RustStream docs: Документация RustStream
             API reference: Справочник API
         - locale: zh
@@ -99,7 +128,6 @@ plugins:
           build: true
           nav_translations:
             Home: 首页
-            Guide: 指南
             RustStream docs: RustStream 文档
             API reference: API 参考
 
@@ -112,13 +140,5 @@ extra:
 
 nav:
   - Home: index.md
-  - Guide:
-      - streams.md
-      - lists.md
-      - pubsub.md
-      - dead-letter.md
-      - auth-tls.md
-      - transactions.md
-      - testing.md
   - RustStream docs: https://powersemmi.github.io/ruststream/
   - API reference: https://docs.rs/ruststream-fred

@@ -20,6 +20,10 @@ default = []
 # dev-dependency of this crate.
 testing = ["ruststream/testing"]
 
+# The document-plane hooks: what this crate's descriptors and publish policies add to the
+# generated AsyncAPI document. Forwards the core feature that defines them.
+asyncapi = ["ruststream/asyncapi"]
+
 # TLS, mapped onto fred's TLS backends. The rustls and native-tls backends are additive in fred
 # (not mutually exclusive); `tls-rustls` uses the aws-lc-rs crypto provider, `tls-rustls-ring` the
 # ring provider. The TLS surface is gated on any of these being on.
@@ -39,8 +43,20 @@ all-features = true
 [dev-dependencies]
 # The conformance harness drives the testing-feature broker; macros + json power the runnable
 # fred_* examples (the docs site embeds their snippets), and serde decodes their message types.
-ruststream = { workspace = true, features = ["conformance", "testing", "macros", "json"] }
+# `cbor` and `msgpack` are here for the envelope tests only: a service picks the envelope codec, so
+# the text-or-bytes field has to be proven against every codec the framework ships, not only JSON.
+ruststream = { workspace = true, features = [
+    "asyncapi",
+    "conformance",
+    "testing",
+    "macros",
+    "json",
+    "cbor",
+    "msgpack",
+] }
 serde = { version = "1", features = ["derive"] }
+# The document tests read the generated AsyncAPI back as JSON to assert on the crate's bindings.
+serde_json = "1"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 # Only the credential-provider unit test implements fred's async CredentialProvider trait.
 # 0.1.77 is the real floor, not 0.1: earlier releases declare `quote = "0.6"` yet do not compile
@@ -63,6 +79,9 @@ name = "fred_streams"
 
 [[example]]
 name = "fred_reclaim"
+
+[[example]]
+name = "fred_claiming"
 
 [[example]]
 name = "fred_seek"

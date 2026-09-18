@@ -1,28 +1,11 @@
-//! Redis / Valkey broker implementation for `RustStream`, backed by [`fred`].
-//!
-//! This crate implements the `RustStream` broker contract over Redis Streams: durable consumer
-//! groups with acknowledgement, redelivery, and crash recovery. Subjects are stream keys; a
-//! subscription reads through a consumer group, either off the fresh tail
-//! ([`RedisStream::new`]) or reclaiming another consumer's stale pending entries
-//! ([`RedisStream::reclaim`]).
-//!
-//! Settlement follows the republish-retry model: `ack` is `XACK`, `nack(requeue = true)` re-appends
-//! a copy to the same stream then acks the original, and `nack(requeue = false)` acks to drop.
-//!
-//! The lifecycle is the framework's ladder of consuming transitions: [`RedisBroker`] records the
-//! topology synchronously, [`Broker::connect`](ruststream::Broker::connect) yields the
-//! [`ConnectedRedisBroker`] that every subscription and publisher is reached from, and
-//! [`ConnectedBroker::shutdown`](ruststream::ConnectedBroker::shutdown) yields the terminal
-//! [`ClosedRedisBroker`]. Publishers are declared as a policy ([`RedisPublish`],
-//! [`RedisPubSubPublish`], [`RedisListPublish`]) that pairs with the connected form.
-//!
-//! [`fred`]: https://docs.rs/fred
-
+#![doc = include_str!("README.md")]
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "asyncapi")]
+mod asyncapi;
 mod broker;
+mod claim;
 mod convert;
-mod deadletter;
 mod delay;
 mod envelope;
 mod error;
@@ -47,18 +30,17 @@ pub mod pubsub;
 pub mod stream;
 
 pub use broker::{ClosedRedisBroker, ConnectedRedisBroker, RedisBroker};
-pub use deadletter::{DEAD_LETTER_REASON_HEADER, DELIVERY_COUNT_HEADER, IDLE_MS_HEADER};
 pub use delay::DelayedRetry;
 pub use error::RedisError;
 pub use list::{
     RedisList, RedisListMessage, RedisListPublish, RedisListPublisher, RedisListSubscriber,
 };
-pub use message::{PARTITION_KEY_HEADER, RedisMessage};
-pub use partition::{PartitionKeyed, RedisPublishExt};
+pub use message::{DELIVERY_COUNT_HEADER, IDLE_MS_HEADER, PARTITION_KEY_HEADER, RedisMessage};
+pub use partition::{RedisPublishOptions, RedisPublishSteps};
 pub use publisher::{RedisPublish, RedisPublisher, RedisTransaction};
 pub use pubsub::{
-    PubSubMode, RedisPubSub, RedisPubSubMessage, RedisPubSubPublish, RedisPubSubPublisher,
-    RedisPubSubSubscriber,
+    PubSubMode, RedisPubSub, RedisPubSubMessage, RedisPubSubPattern, RedisPubSubPublish,
+    RedisPubSubPublisher, RedisPubSubSubscriber,
 };
 pub use seek::{EntryId, RedisGroupPosition, RedisGroupSeeker};
 pub use settings::RedisSubscribeExt;
