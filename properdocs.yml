@@ -121,6 +121,7 @@ plugins:
           build: true
           nav_translations:
             Home: Главная
+            Benchmarks: Бенчмарки
             RustStream docs: Документация RustStream
             API reference: Справочник API
         - locale: zh
@@ -128,6 +129,7 @@ plugins:
           build: true
           nav_translations:
             Home: 首页
+            Benchmarks: 基准测试
             RustStream docs: RustStream 文档
             API reference: API 参考
 
@@ -140,5 +142,6 @@ extra:
 
 nav:
   - Home: index.md
+  - Benchmarks: benchmarks.md
   - RustStream docs: https://powersemmi.github.io/ruststream/
   - API reference: https://docs.rs/ruststream-fred
