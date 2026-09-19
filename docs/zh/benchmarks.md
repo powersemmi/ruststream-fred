@@ -9,27 +9,25 @@
 [RustStream 基准测试页](https://powersemmi.github.io/ruststream/latest/zh/benchmarks/#methodology)
 上；这一页公布它在这台机器上得出的结果。
 
+一共测三个场景，对应这个 crate 提供的三种投递形态：逐条 ack 的 Redis Streams 消费者组、可靠模式
+的列表工作队列，以及一个 Pub/Sub 频道。
+
 ## 数字 { #the-numbers }
 
 十一组交错配对的中位数，括号里是观察到的离散范围。越大越好。
 
-| 场景 | 裸客户端 | RustStream | 开销 |
-| --- | --- | --- | --- |
-| Redis Streams 消费者组，512 B JSON，逐条 ack | 27,700 条/秒 (25,275-29,730) | 27,712 条/秒 (25,131-29,872) | 无法区分（受 Broker 限制） |
-| Redis 列表工作队列（可靠模式），512 B JSON，逐条 ack | 15,843 条/秒 (13,932-16,499) | 15,633 条/秒 (14,215-16,317) | 无法区分（受 Broker 限制） |
-| Redis Pub/Sub，512 B JSON，不做确认 | 391,599 条/秒 (356,408-399,937) | 381,917 条/秒 (344,982-393,916) | 无法区分 |
+<div id="benchmark-results" data-benchmark-results="../../benchmarks/results.json" data-benchmark-labels='{"loading": "正在加载已公布的结果……", "scenario": "场景", "raw": "裸客户端", "framework": "RustStream", "overhead": "开销", "indistinguishable": "无法区分", "brokerBound": "受 Broker 限制", "unavailable": "已公布的结果加载失败。", "cpu": "CPU", "architecture": "架构", "cpu_frequency": "频率", "cores": "核心", "memory": "内存", "memory_speed": "内存速率", "os": "操作系统", "broker": "Broker", "rustc": "Rust", "profile": "构建配置", "features": "feature", "rustflags": "RUSTFLAGS", "versions": "版本", "measured": "测量日期"}'></div>
 
-三行都是无法区分：两半之间的差值小于各自多次运行之间的离散范围，而低于运行噪声的数字读起来像是
-从未测到过的精度。
+这张表每次打开页面时都从下面那份文档读取，所以它显示的是最近一次运行，别的都不是。
 
-前两行说明了原因。确认一次投递要花掉一条自己的命令，流的条目是 `XACK`，列表的条目是 `LREM`，而
-在这台机器上，向回环地址上的 Redis 发一条命令要 40 微秒。一次流的投递从头到尾是 36 微秒，一个
-列表条目是 63 微秒，所以消费者把它的测量窗口花在等待套接字上。这正是「受 Broker 限制」这个标记
-的含义：框架是在这段等待里做自己的活。对一个逐条确认的消费者来说，这是真实的结果，同时它也只是
-分发开销的下界，而不是对它的测量。
+在 Redis 上确认一次投递要花掉一条自己的命令，流的条目是 `XACK`，列表的条目是 `LREM`；而对一台走
+回环地址的服务器来说，这样一条命令要几十微秒，比一次投递在这个 crate 里花的时间高一个数量级。
+消费者把它的测量窗口花在等待套接字上，所以这两行带着「受 Broker 限制」的标记：框架是在消费者
+本来就要付的那段等待里做自己的活。对一个逐条确认的消费者来说，这是真实的结果，同时它也只是分发
+开销的下界，而不是对它的测量。
 
-Pub/Sub 不做任何确认，框架自身的活在这一行才有地方显现：那里的一次投递是 2.6 微秒，是流投递的
-十四分之一。即便如此，两半之间的差值仍然落在离散范围之内，所以这一行也不公布百分比。
+Pub/Sub 不做任何确认，框架自身的活在这一行才有地方显现：那里的一次投递就是一次套接字读取、一次
+解码和一次处理器调用，开销比一次流的投递低一个数量级。
 
 同一次运行的机器可读形式在
 [`benchmarks/results.json`](https://powersemmi.github.io/ruststream-fred/latest/benchmarks/results.json)，
@@ -37,14 +35,7 @@ Pub/Sub 不做任何确认，框架自身的活在这一行才有地方显现：
 
 ## 机器 { #the-machine }
 
-| | |
-| --- | --- |
-| CPU | AMD Ryzen 9 7900X，12 个物理核心，24 个逻辑核心 |
-| 内存 | 62.4 GiB |
-| 操作系统 | Linux 7.2.6 |
-| Broker | Docker 里的 `redis:7-alpine`，在 localhost 上 |
-| Rust | 1.98.1，bench 配置，不带 `RUSTFLAGS` |
-| 版本 | `ruststream-fred` 0.7.0，配 `ruststream` 0.7.0-rc.7 |
+<div id="benchmark-machine"></div>
 
 构建标志和数字一起公布，因为它们会改变这些数字。用 `-C target-cpu=native` 构建出的二进制给出的
 结果，换一台机器就复现不了，所以这条 recipe 在构建前先把这个变量清空。
@@ -56,7 +47,7 @@ Pub/Sub 不做任何确认，框架自身的活在这一行才有地方显现：
 不同的传输在每条消息上做的事并不一样。
 
 一次运行的测量窗口从第一次投递开始，到最后一个处理器返回为止，两半都是这样。框架在处理器结束
-之后才确认投递，而这个时刻处理器自己看不到，所以十万次里的这一次确认，在两边都落在数字之外。
+之后才确认投递，而这个时刻处理器自己看不到，所以整场运行里的这一次确认，在两边都落在数字之外。
 
 这次运行把服务器的 append-only 日志关掉了。要测的是一次投递的开销，不是服务器底下的磁盘，落在
 一对里某一半上的 `fsync` 是一种两边都不属于的噪声。把这个日志留着开的服务要为它付出代价，而且

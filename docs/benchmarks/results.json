@@ -22,38 +22,38 @@
     {
       "name": "Redis Streams consumer group, 512 B JSON, ack each",
       "unit": "msg/s",
-      "messages": 183658,
+      "messages": 183509,
       "pairs": 11,
       "raw": {
-        "median": 27700,
-        "min": 25275,
-        "max": 29730
+        "median": 27215,
+        "min": 23110,
+        "max": 29634
       },
       "framework": {
-        "median": 27712,
-        "min": 25131,
-        "max": 29872
+        "median": 27606,
+        "min": 14881,
+        "max": 29342
       },
-      "overhead_percent": -0.0,
+      "overhead_percent": -1.4,
       "verdict": "indistinguishable",
       "broker_bound": true
     },
     {
       "name": "Redis list work queue (reliable), 512 B JSON, ack each",
       "unit": "msg/s",
-      "messages": 100302,
+      "messages": 100104,
       "pairs": 11,
       "raw": {
-        "median": 15843,
-        "min": 13932,
-        "max": 16499
+        "median": 15821,
+        "min": 12266,
+        "max": 16355
       },
       "framework": {
-        "median": 15633,
-        "min": 14215,
-        "max": 16317
+        "median": 15490,
+        "min": 9295,
+        "max": 16154
       },
-      "overhead_percent": 1.3,
+      "overhead_percent": 2.1,
       "verdict": "indistinguishable",
       "broker_bound": true
     },
@@ -63,16 +63,16 @@
       "messages": 2000000,
       "pairs": 11,
       "raw": {
-        "median": 391599,
-        "min": 356408,
-        "max": 399937
+        "median": 403165,
+        "min": 310415,
+        "max": 409813
       },
       "framework": {
-        "median": 381917,
-        "min": 344982,
-        "max": 393916
+        "median": 395417,
+        "min": 357171,
+        "max": 404927
       },
-      "overhead_percent": 2.5,
+      "overhead_percent": 1.9,
       "verdict": "indistinguishable",
       "broker_bound": false
     }

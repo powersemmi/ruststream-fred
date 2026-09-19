@@ -133,6 +133,11 @@ plugins:
             RustStream docs: RustStream 文档
             API reference: API 参考
 
+# The Benchmarks page renders its table from `benchmarks/results.json` in the reader's
+# browser, so a re-measurement rewrites one document and no page anywhere carries a figure.
+extra_javascript:
+  - assets/benchmarks.js
+
 extra:
   version:
     provider: mike

@@ -12,30 +12,29 @@ the framework's own and is described on the
 [RustStream benchmarks page](https://powersemmi.github.io/ruststream/latest/benchmarks/#methodology);
 this page publishes what it produced here.
 
+Three scenarios are measured, one per delivery shape this crate offers: a Redis Streams consumer
+group acknowledging every entry, a reliable list work queue, and a Pub/Sub channel.
+
 ## The numbers
 
 Medians over eleven interleaved pairs, with the observed spread in parentheses. Higher is better.
 
-| Scenario | Raw client | RustStream | Overhead |
-| --- | --- | --- | --- |
-| Redis Streams consumer group, 512 B JSON, ack each | 27,700 msg/s (25,275-29,730) | 27,712 msg/s (25,131-29,872) | indistinguishable (broker-bound) |
-| Redis list work queue (reliable), 512 B JSON, ack each | 15,843 msg/s (13,932-16,499) | 15,633 msg/s (14,215-16,317) | indistinguishable (broker-bound) |
-| Redis Pub/Sub, 512 B JSON, no acknowledgement | 391,599 msg/s (356,408-399,937) | 381,917 msg/s (344,982-393,916) | indistinguishable |
+<div id="benchmark-results" data-benchmark-labels='{"loading": "Loading the published results...", "scenario": "Scenario", "raw": "Raw client", "framework": "RustStream", "overhead": "Overhead", "indistinguishable": "indistinguishable", "brokerBound": "broker-bound", "unavailable": "The published results could not be loaded.", "cpu": "CPU", "architecture": "Architecture", "cpu_frequency": "Frequency", "cores": "Cores", "memory": "Memory", "memory_speed": "Memory speed", "os": "OS", "broker": "Broker", "rustc": "Rust", "profile": "Profile", "features": "Features", "rustflags": "RUSTFLAGS", "versions": "Versions", "measured": "Measured on"}'></div>
 
-Every row came out indistinguishable: the difference between the two halves is smaller than the
-spread between runs of either half, and a figure below the run-to-run noise would read as precision
-that was never measured.
+The table is read from the document below every time the page is opened, so what it shows is the
+last run and nothing else.
 
-The first two rows say why. A settled delivery costs a command of its own - `XACK` for a stream
-entry, `LREM` for a list entry - and one command to a Redis on the loopback costs 40 microseconds
-on this machine. A stream delivery costs 36 microseconds end to end and a list entry 63, so the
-consumer spends its window waiting on the socket. That is what the `broker-bound` mark means: the
-framework does its work inside that wait, which for a consumer that settles every message is a real
-result, and at the same time a lower bound on the cost of dispatch rather than a measurement of it.
+Settling a delivery on Redis costs a command of its own - `XACK` for a stream entry, `LREM` for a
+list entry - and on a server reached over the loopback that command costs tens of microseconds,
+which is an order of magnitude more than a delivery spends inside this crate. The consumer spends
+its window waiting on the socket, so those two rows carry the `broker-bound` mark: the framework
+does its work inside a wait the consumer was already paying for, which for a consumer that settles
+every message is a real result and at the same time a lower bound on the cost of dispatch rather
+than a measurement of it.
 
 Pub/Sub settles nothing, and it is the row where the framework's own work has room to show: a
-delivery there costs 2.6 microseconds, fourteen times less than a stream delivery. Even there the
-difference between the halves stays inside the spread, so no percentage is published for it either.
+delivery there is a socket read, a decode and a handler call, and it costs an order of magnitude
+less than a stream delivery.
 
 The machine-readable form of the same run, which the framework's site reads to build its
 cross-broker table, is at
@@ -43,14 +42,7 @@ cross-broker table, is at
 
 ## The machine
 
-| | |
-| --- | --- |
-| CPU | AMD Ryzen 9 7900X, 12 physical cores, 24 logical |
-| Memory | 62.4 GiB |
-| OS | Linux 7.2.6 |
-| Broker | `redis:7-alpine` in Docker on localhost |
-| Rust | 1.98.1, bench profile, no `RUSTFLAGS` |
-| Versions | `ruststream-fred` 0.7.0 on `ruststream` 0.7.0-rc.7 |
+<div id="benchmark-machine"></div>
 
 The build flags are published with the numbers because they change them: a binary built with
 `-C target-cpu=native` produces a figure no other machine can reproduce, so the recipe clears the
@@ -64,8 +56,8 @@ published for another broker: the transports do different work per message.
 
 The window a run measures opens at the first delivery and closes when the last handler returns, on
 both halves alike. The framework settles a delivery after the handler is done, which is a point the
-handler itself cannot observe, so one acknowledgement out of a hundred thousand sits outside the
-number on both sides.
+handler itself cannot observe, so one acknowledgement out of a run sits outside the number on both
+sides.
 
 The run turns the server's append-only file off. What is measured is the cost of a delivery, not
 the disk under the server, and an `fsync` that lands inside one half of a pair is noise that
