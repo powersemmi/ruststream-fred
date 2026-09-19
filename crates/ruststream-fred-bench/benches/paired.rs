@@ -125,6 +125,8 @@ const IN_FLIGHT: usize = 8_192;
 const BATCH: usize = 256;
 /// How long a run may go without a delivery before it is called stuck.
 const STALL: Duration = Duration::from_secs(30);
+/// How long the publisher parks before it looks at the consumer again.
+const STEP: Duration = Duration::from_micros(200);
 
 /// Commands the round-trip probe sends. What it measures decides the `broker_bound` mark: a
 /// scenario whose deliveries cost more round trips than they have time is one the server paced.
@@ -326,9 +328,25 @@ async fn unlink(pool: &Pool, keys: &[&str]) {
 // ---------------------------------------------------------------------------------------------
 
 /// Waits until the consumer is within [`IN_FLIGHT`] of what has been sent.
+///
+/// A consumer that has stopped taking deliveries would otherwise park the publisher here for the
+/// rest of the day, and a run that hangs says less than a run that fails.
 async fn throttle(sent: usize, run: &Run) {
+    let mut seen = run.handled();
+    let mut waited = Duration::ZERO;
     while sent.saturating_sub(run.handled()) > IN_FLIGHT {
-        sleep(Duration::from_micros(200)).await;
+        sleep(STEP).await;
+        waited += STEP;
+        if waited >= STALL {
+            let handled = run.handled();
+            assert!(
+                handled > seen,
+                "the publisher waited {STALL:?} with {handled} of {sent} published deliveries \
+                 handled"
+            );
+            seen = handled;
+            waited = Duration::ZERO;
+        }
     }
 }
 
