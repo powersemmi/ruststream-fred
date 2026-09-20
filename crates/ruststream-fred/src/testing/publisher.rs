@@ -100,10 +100,11 @@ impl Publisher for RedisTestPublisher {
         if let Err(err) = validate_publish_key(msg.name()) {
             return ready(Err(err));
         }
+        let (key, payload, headers) = msg.into_parts();
         let entry: Buffered = (
-            msg.name().to_owned(),
-            Bytes::copy_from_slice(msg.payload()),
-            resolved_headers(msg.headers(), options).into_owned(),
+            key.to_owned(),
+            payload.freeze(),
+            resolved_headers(&headers, options).into_owned(),
         );
         if self.buffer_if_in_txn(&entry) {
             return ready(Ok(()));
@@ -330,10 +331,11 @@ impl Transaction for RedisTestTransaction {
         if let Err(err) = validate_publish_key(msg.name()) {
             return ready(Err(err));
         }
+        let (key, payload, headers) = msg.into_parts();
         self.buffered.push((
-            msg.name().to_owned(),
-            Bytes::copy_from_slice(msg.payload()),
-            resolved_headers(msg.headers(), options).into_owned(),
+            key.to_owned(),
+            payload.freeze(),
+            resolved_headers(&headers, options).into_owned(),
         ));
         ready(Ok(()))
     }

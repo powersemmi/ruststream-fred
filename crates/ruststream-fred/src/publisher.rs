@@ -221,9 +221,10 @@ impl Publisher for RedisPublisher {
         msg: OutgoingMessage<'_, BytesMut>,
         options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
+        let (key, payload, headers) = msg.into_parts();
         let entry: Buffered = (
-            msg.name().to_owned(),
-            fields_for_publish(msg.payload(), &resolved_headers(msg.headers(), options)),
+            key.to_owned(),
+            fields_for_publish(Vec::from(payload), &resolved_headers(&headers, options)),
         );
         if self.buffer_if_in_txn(&entry) {
             return Ok(());
@@ -398,9 +399,10 @@ impl Transaction for RedisTransaction {
         msg: OutgoingMessage<'_, BytesMut>,
         options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
+        let (key, payload, headers) = msg.into_parts();
         self.buffered.push((
-            msg.name().to_owned(),
-            fields_for_publish(msg.payload(), &resolved_headers(msg.headers(), options)),
+            key.to_owned(),
+            fields_for_publish(Vec::from(payload), &resolved_headers(&headers, options)),
         ));
         ready(Ok(()))
     }

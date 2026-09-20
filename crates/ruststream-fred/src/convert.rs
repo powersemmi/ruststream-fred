@@ -15,9 +15,12 @@ pub(crate) const PAYLOAD_FIELD: &str = "_payload";
 pub(crate) const HEADER_PREFIX: &str = "h:";
 
 /// Builds the `XADD` field list for a payload and its headers.
-pub(crate) fn fields_for_publish(payload: &[u8], headers: &HeaderMap) -> Vec<(String, Vec<u8>)> {
+///
+/// The body arrives owned because the client keeps it: a publish hands over the buffer the
+/// framework wrote and it becomes the field's value.
+pub(crate) fn fields_for_publish(payload: Vec<u8>, headers: &HeaderMap) -> Vec<(String, Vec<u8>)> {
     let mut fields = Vec::with_capacity(1 + headers.len());
-    fields.push((PAYLOAD_FIELD.to_owned(), payload.to_vec()));
+    fields.push((PAYLOAD_FIELD.to_owned(), payload));
     for (name, value) in headers.iter() {
         fields.push((format!("{HEADER_PREFIX}{name}"), value.to_vec()));
     }
@@ -43,7 +46,26 @@ pub(crate) fn parts_from_fields(fields: HashMap<String, Vec<u8>>) -> (Bytes, Hea
 
 #[cfg(test)]
 mod tests {
+    use bytes::BytesMut;
+
     use super::*;
+
+    // A copy and a hand-over carry the same bytes, so only the address tells them apart.
+    #[test]
+    fn the_body_field_is_the_buffer_the_framework_wrote() {
+        let payload = BytesMut::from(&br#"{"id":1}"#[..]);
+        let written_at = payload.as_ptr();
+
+        let fields = fields_for_publish(Vec::from(payload), &HeaderMap::new());
+
+        let (name, value) = &fields[0];
+        assert_eq!(name, PAYLOAD_FIELD);
+        assert_eq!(
+            value.as_ptr(),
+            written_at,
+            "the entry's body is the buffer the framework wrote, not a second one copied from it",
+        );
+    }
 
     #[test]
     fn round_trips_payload_and_headers() {
@@ -51,7 +73,7 @@ mod tests {
         headers.insert("content-type", "application/json");
         headers.insert("correlation-id", "abc-1");
 
-        let fields = fields_for_publish(b"{}", &headers);
+        let fields = fields_for_publish(b"{}".to_vec(), &headers);
         let map: HashMap<String, Vec<u8>> = fields.into_iter().collect();
         let (payload, decoded) = parts_from_fields(map);
 
