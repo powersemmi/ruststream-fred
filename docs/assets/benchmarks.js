@@ -9,6 +9,10 @@
  * Prose is never written here. The page carries every label as JSON on the container, so each
  * translated page controls its own wording, and it carries the path to its own document, because
  * a translated page sits one directory deeper than the document it reads.
+ *
+ * A row carries three measurements - the client driven by hand, this crate's consumer driven by
+ * hand, and the service a user writes - and the two differences between them, each with its own
+ * verdict.
  */
 
 (() => {
@@ -74,32 +78,44 @@
     return median + " (" + number(measurement.min, lang) + "-" + number(measurement.max, lang) + ")";
   }
 
-  function overhead(scenario, labels) {
-    // The honesty rule of the methodology, enforced where it is read: a difference smaller than
-    // the run-to-run spread is a verdict, never a percentage.
-    let value =
-      scenario.verdict === "indistinguishable"
-        ? labels.indistinguishable
-        : (scenario.overhead_percent >= 0 ? "+" : "") + scenario.overhead_percent + "%";
-    if (scenario.broker_bound) {
-      value += " (" + labels.brokerBound + ")";
+  // The honesty rule of the methodology, enforced where it is read: a difference smaller than the
+  // run-to-run spread is a verdict, never a percentage.
+  function overhead(percent, verdict, labels) {
+    if (verdict !== "measured" || typeof percent !== "number") {
+      return labels.indistinguishable;
     }
-    return value;
+    return (percent >= 0 ? "+" : "") + percent + "%";
+  }
+
+  function scenarioName(scenario, labels) {
+    return scenario.broker_bound ? scenario.name + " (" + labels.brokerBound + ")" : scenario.name;
   }
 
   function table(results, labels, lang) {
     const element = document.createElement("table");
     const head = element.createTHead().insertRow();
-    for (const column of [labels.scenario, labels.raw, labels.framework, labels.overhead]) {
+    const columns = [
+      labels.scenario,
+      labels.raw,
+      labels.adapter,
+      labels.framework,
+      labels.adapterOverhead,
+      labels.overhead,
+    ];
+    for (const column of columns) {
       head.appendChild(text("th", column));
     }
     const body = element.createTBody();
     for (const scenario of results.scenarios) {
       const row = body.insertRow();
-      row.appendChild(text("td", scenario.name));
+      row.appendChild(text("td", scenarioName(scenario, labels)));
       row.appendChild(text("td", side(scenario.raw, scenario.unit, lang)));
+      row.appendChild(text("td", side(scenario.adapter, scenario.unit, lang)));
       row.appendChild(text("td", side(scenario.framework, scenario.unit, lang)));
-      row.appendChild(text("td", overhead(scenario, labels)));
+      row.appendChild(
+        text("td", overhead(scenario.adapter_overhead_percent, scenario.adapter_verdict, labels)),
+      );
+      row.appendChild(text("td", overhead(scenario.overhead_percent, scenario.verdict, labels)));
     }
     return element;
   }

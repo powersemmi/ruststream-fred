@@ -1,33 +1,43 @@
 # 基准测试 { #benchmarks }
 
-在 Redis 客户端和你的处理器之间，框架在每条消息上都要花时间：读取、解码、分发、确认。这一页说明
-它花了多少，参照物是同样的活用 `fred` 手写一遍。
+在 Redis 客户端和消息类型之间，这层适配在每次投递上都要花时间：读取、解码、确认。这一页说明它
+花了多少，参照物是同样的活用 `fred` 手写一遍。
 
-同一个进程把一个场景跑两遍：一遍是 RustStream 服务，一遍是客户端上的循环。其余一切都保持相同：
-连接池和它的大小、消费者组和消费者名字、带着 `COUNT` 和 `BLOCK` 的读取命令、确认的位置、解码成
-同一个类型、载荷字节、tokio 运行时和构建。这套流程属于框架本身，写在
-[RustStream 基准测试页](https://powersemmi.github.io/ruststream/latest/zh/benchmarks/#methodology)
-上；这一页公布它在这台机器上得出的结果。
+同一个进程把一个场景跑三遍。**裸客户端**是在 `fred` 上手写的循环。**ruststream-fred** 是在这个
+crate 上手写的同一个循环：Broker、订阅、它产出的投递流和 ack，没有服务、没有处理器、也没有分发。
+**RustStream 服务**是用户写的那个服务，通过真正的运行时启动。
+
+由此得到两个差值，它们回答的是不同的问题。适配层相对裸客户端，是这个 crate 自己的消费者比它所
+包装的客户端多花多少，这个数字由本仓库负责。服务相对裸客户端，是用户从头到尾要付的。两者之间的
+空隙，是运行时在这个 Broker 之上多花的；之所以按 Broker 分别公布，是因为每个适配层都很薄，如果
+运行时占的份额在各个 Broker 之间仍有差别，那差别就住在两者相接的地方：流怎么产出、投递怎么到达、
+背压怎么传回消费者。
+
+其余一切都保持相同：连接池和它的大小、消费者组和消费者名字、带着 `COUNT` 和 `BLOCK` 的读取命令、
+确认的位置、解码成同一个类型、载荷字节、tokio 运行时和构建。这套流程属于框架本身，写在
+[方法论](https://powersemmi.github.io/ruststream/latest/zh/benchmarks/#methodology)一节；
+这一页公布它在这台机器上得出的结果。
 
 一共测三个场景，对应这个 crate 提供的三种投递形态：逐条 ack 的 Redis Streams 消费者组、可靠模式
 的列表工作队列，以及一个 Pub/Sub 频道。
 
 ## 数字 { #the-numbers }
 
-十一组交错配对的中位数，括号里是观察到的离散范围。越大越好。
+十一轮交错运行的中位数，括号里是观察到的离散范围。越大越好。小于多次运行之间离散范围的差值，
+按「无法区分」公布，而不是给出百分比。
 
-<div id="benchmark-results" data-benchmark-results="../../benchmarks/results.json" data-benchmark-labels='{"loading": "正在加载已公布的结果……", "scenario": "场景", "raw": "裸客户端", "framework": "RustStream", "overhead": "开销", "indistinguishable": "无法区分", "brokerBound": "受 Broker 限制", "unavailable": "已公布的结果加载失败。", "cpu": "CPU", "architecture": "架构", "cpu_frequency": "频率", "cores": "核心", "memory": "内存", "memory_speed": "内存速率", "os": "操作系统", "broker": "Broker", "rustc": "Rust", "profile": "构建配置", "features": "feature", "rustflags": "RUSTFLAGS", "versions": "版本", "measured": "测量日期"}'></div>
+<div id="benchmark-results" data-benchmark-results="../../benchmarks/results.json" data-benchmark-labels='{"loading": "正在加载已公布的结果……", "scenario": "场景", "raw": "裸客户端", "adapter": "ruststream-fred", "framework": "RustStream 服务", "adapterOverhead": "适配层相对裸客户端", "overhead": "服务相对裸客户端", "indistinguishable": "无法区分", "brokerBound": "受 Broker 限制", "unavailable": "已公布的结果加载失败。", "cpu": "CPU", "architecture": "架构", "cpu_frequency": "频率", "cores": "核心", "memory": "内存", "memory_speed": "内存速率", "os": "操作系统", "broker": "Broker", "rustc": "Rust", "profile": "构建配置", "features": "feature", "rustflags": "RUSTFLAGS", "versions": "版本", "measured": "测量日期"}'></div>
 
 这张表每次打开页面时都从下面那份文档读取，所以它显示的是最近一次运行，别的都不是。
 
 在 Redis 上确认一次投递要花掉一条自己的命令，流的条目是 `XACK`，列表的条目是 `LREM`；而对一台走
 回环地址的服务器来说，这样一条命令要几十微秒，比一次投递在这个 crate 里花的时间高一个数量级。
-消费者把它的测量窗口花在等待套接字上，所以这两行带着「受 Broker 限制」的标记：框架是在消费者
-本来就要付的那段等待里做自己的活。对一个逐条确认的消费者来说，这是真实的结果，同时它也只是分发
-开销的下界，而不是对它的测量。
+消费者把它的测量窗口花在等待套接字上，所以这两行带着「受 Broker 限制」的标记：套接字之上的
+一切，都是在消费者本来就要付的那段等待里做自己的活。对一个逐条确认的消费者来说，这是真实的
+结果，同时它也只是这些开销的下界，而不是对它们的测量。
 
-Pub/Sub 不做任何确认，框架自身的活在这一行才有地方显现：那里的一次投递就是一次套接字读取、一次
-解码和一次处理器调用，开销比一次流的投递低一个数量级。
+Pub/Sub 不做任何确认，套接字之上的活在这一行才有地方显现：那里的一次投递就是一次套接字读取、
+一次拆信封和一次解码，开销比一次流的投递低一个数量级。
 
 同一次运行的机器可读形式在
 [`benchmarks/results.json`](https://powersemmi.github.io/ruststream-fred/latest/benchmarks/results.json)，
@@ -43,11 +53,14 @@ Pub/Sub 不做任何确认，框架自身的活在这一行才有地方显现：
 ## 这些数字不代表什么 { #what-they-do-not-mean }
 
 这里只有一个消费者、一个键、一个很小的消息体，以及一台跑在回环地址上的服务器。它测的是一次投递
-在这个 crate 里的开销，不是 Redis 能扛多少。这里的一行也不能拿去和另一个 Broker 公布的一行比较：
+在这个 crate 里、以及在它之上的运行时里的开销，不是 Redis 能扛多少。这里的一行也不能拿去和另一个 Broker 公布的一行比较：
 不同的传输在每条消息上做的事并不一样。
 
-一次运行的测量窗口从第一次投递开始，到最后一个处理器返回为止，两半都是这样。框架在处理器结束
-之后才确认投递，而这个时刻处理器自己看不到，所以整场运行里的这一次确认，在两边都落在数字之外。
+一次运行的测量窗口从第一次投递开始，到取到最后一次投递为止，三个循环都是这样，所以整场运行里
+的那一次确认，在哪一边都落在数字之外。
+
+发布这一侧不在这些行里。三个循环都由同一个流水线化的 `fred` 发布者喂数据，好让它们之间的差别
+都留在消费这一侧；这个 crate 自己的发布者花多少，是另一项测量。
 
 这次运行把服务器的 append-only 日志关掉了。要测的是一次投递的开销，不是服务器底下的磁盘，落在
 一对里某一半上的 `fsync` 是一种两边都不属于的噪声。把这个日志留着开的服务要为它付出代价，而且

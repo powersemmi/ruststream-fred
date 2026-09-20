@@ -1070,6 +1070,7 @@ name = "ruststream-fred-bench"
 version = "0.7.0"
 dependencies = [
  "fred",
+ "futures",
  "ruststream",
  "ruststream-fred",
  "serde",

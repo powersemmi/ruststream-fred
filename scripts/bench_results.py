@@ -31,7 +31,7 @@ LOCK = REPO / "Cargo.lock"
 # What `just bench` builds the benchmark with. Both are recipe decisions rather than machine
 # facts, so they are stated here next to the recipe rather than sniffed.
 PROFILE = "bench, inheriting release (opt-level = 3, lto = false, codegen-units = 16)"
-FEATURES = "ruststream-fred default (none), ruststream macros,json"
+FEATURES = "ruststream-fred default (none), ruststream macros,json (the service loop only)"
 RUSTFLAGS = "none (the recipe clears RUSTFLAGS, so the numbers are not tied to this CPU)"
 
 

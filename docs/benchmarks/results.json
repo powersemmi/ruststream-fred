@@ -15,46 +15,60 @@
     "broker": "redis:7-alpine in Docker on localhost",
     "rustc": "1.98.1",
     "profile": "bench, inheriting release (opt-level = 3, lto = false, codegen-units = 16)",
-    "features": "ruststream-fred default (none), ruststream macros,json",
+    "features": "ruststream-fred default (none), ruststream macros,json (the service loop only)",
     "rustflags": "none (the recipe clears RUSTFLAGS, so the numbers are not tied to this CPU)"
   },
   "scenarios": [
     {
       "name": "Redis Streams consumer group, 512 B JSON, ack each",
       "unit": "msg/s",
-      "messages": 183509,
+      "messages": 184779,
       "pairs": 11,
       "raw": {
-        "median": 27215,
-        "min": 23110,
-        "max": 29634
+        "median": 29773,
+        "min": 27536,
+        "max": 30259
+      },
+      "adapter": {
+        "median": 29706,
+        "min": 28070,
+        "max": 30144
       },
       "framework": {
-        "median": 27606,
-        "min": 14881,
-        "max": 29342
+        "median": 29060,
+        "min": 27311,
+        "max": 29905
       },
-      "overhead_percent": -1.4,
+      "overhead_percent": 2.4,
       "verdict": "indistinguishable",
+      "adapter_overhead_percent": 0.2,
+      "adapter_verdict": "indistinguishable",
       "broker_bound": true
     },
     {
       "name": "Redis list work queue (reliable), 512 B JSON, ack each",
       "unit": "msg/s",
-      "messages": 100104,
+      "messages": 103423,
       "pairs": 11,
       "raw": {
-        "median": 15821,
-        "min": 12266,
-        "max": 16355
+        "median": 16108,
+        "min": 15055,
+        "max": 16434
+      },
+      "adapter": {
+        "median": 15992,
+        "min": 15076,
+        "max": 16445
       },
       "framework": {
-        "median": 15490,
-        "min": 9295,
-        "max": 16154
+        "median": 15857,
+        "min": 13818,
+        "max": 16229
       },
-      "overhead_percent": 2.1,
+      "overhead_percent": 1.6,
       "verdict": "indistinguishable",
+      "adapter_overhead_percent": 0.7,
+      "adapter_verdict": "indistinguishable",
       "broker_bound": true
     },
     {
@@ -63,17 +77,24 @@
       "messages": 2000000,
       "pairs": 11,
       "raw": {
-        "median": 403165,
-        "min": 310415,
-        "max": 409813
+        "median": 396289,
+        "min": 363421,
+        "max": 406592
+      },
+      "adapter": {
+        "median": 393598,
+        "min": 361807,
+        "max": 408797
       },
       "framework": {
-        "median": 395417,
-        "min": 357171,
-        "max": 404927
+        "median": 390424,
+        "min": 358176,
+        "max": 401718
       },
-      "overhead_percent": 1.9,
+      "overhead_percent": 1.5,
       "verdict": "indistinguishable",
+      "adapter_overhead_percent": 0.7,
+      "adapter_verdict": "indistinguishable",
       "broker_bound": false
     }
   ]
