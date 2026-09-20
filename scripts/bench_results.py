@@ -8,7 +8,8 @@ site serves at `benchmarks/results.json`.
 
 The schema is the core's, declared at
 https://powersemmi.github.io/ruststream/latest/benchmarks/#publishing-results. This crate
-publishes the throughput table alone, so the document declares schema 1.
+publishes the throughput table alone, each loop as its best and worst round, so the document
+declares schema 3.
 
 A field the machine does not publish is written as `unknown` rather than guessed: memory speed
 comes from the DMI tables, which most systems only let root read.
@@ -130,7 +131,7 @@ def main() -> int:
         return 2
     summary = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     document = {
-        "schema": 1,
+        "schema": 3,
         "crate": "ruststream-fred",
         "crate_version": crate_version(),
         "core_version": core_version(),

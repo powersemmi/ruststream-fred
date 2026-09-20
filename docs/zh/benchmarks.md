@@ -23,7 +23,7 @@ crate 上手写的同一个循环：Broker、订阅、它产出的投递流和 a
 
 ## 数字 { #the-numbers }
 
-十一轮交错运行的中位数，括号里是观察到的离散范围。越大越好。小于多次运行之间离散范围的差值，
+三个交错轮次中的最佳值，括号里是最差的一轮。越大越好。小于多次运行之间离散范围的差值，
 按「无法区分」公布，而不是给出百分比。
 
 <div id="benchmark-results" data-benchmark-results="../../benchmarks/results.json" data-benchmark-labels='{"loading": "正在加载已公布的结果……", "scenario": "场景", "raw": "裸客户端", "adapter": "ruststream-fred", "framework": "RustStream 服务", "adapterOverhead": "适配层相对裸客户端", "overhead": "服务相对裸客户端", "indistinguishable": "无法区分", "brokerBound": "受 Broker 限制", "unavailable": "已公布的结果加载失败。", "cpu": "CPU", "architecture": "架构", "cpu_frequency": "频率", "cores": "核心", "memory": "内存", "memory_speed": "内存速率", "os": "操作系统", "broker": "Broker", "rustc": "Rust", "profile": "构建配置", "features": "feature", "rustflags": "RUSTFLAGS", "versions": "版本", "measured": "测量日期"}'></div>

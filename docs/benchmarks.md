@@ -28,7 +28,7 @@ group acknowledging every entry, a reliable list work queue, and a Pub/Sub chann
 
 ## The numbers
 
-Medians over eleven interleaved rounds, with the observed spread in parentheses. Higher is
+The best of three interleaved rounds, with the slowest round in parentheses. Higher is
 better. A difference smaller than the spread between runs is reported as `indistinguishable`
 rather than as a percentage.
 

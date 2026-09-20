@@ -21,7 +21,9 @@
   // Schema 2 added a section this page does not render; both still carry `scenarios`. A document
   // declaring anything else is not rendered as if it were one of these: printing wrong numbers is
   // worse than printing none.
-  const SCHEMAS = [1, 2];
+  // Schema 3 reports each loop as its best and worst round; a schema 1 document carried a
+  // median with its extremes, and both render.
+  const SCHEMAS = [1, 2, 3];
   const TIMEOUT_MS = 8000;
 
   // The environment fields, in the order the core's schema documents them. A field the run could
@@ -70,6 +72,13 @@
   function side(measurement, unit, lang) {
     if (!measurement) {
       return "-";
+    }
+    if (typeof measurement.best === "number") {
+      const best = number(measurement.best, lang) + " " + unit;
+      if (typeof measurement.worst !== "number") {
+        return best;
+      }
+      return best + " (" + number(measurement.worst, lang) + ")";
     }
     const median = number(measurement.median, lang) + " " + unit;
     if (typeof measurement.min !== "number" || typeof measurement.max !== "number") {
