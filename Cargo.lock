@@ -1066,6 +1066,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ruststream-fred-bench"
+version = "0.7.0"
+dependencies = [
+ "fred",
+ "futures",
+ "ruststream",
+ "ruststream-fred",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "ruststream-macros"
 version = "0.7.0-rc.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

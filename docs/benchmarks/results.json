@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "crate": "ruststream-fred",
+  "crate_version": "0.7.0",
+  "core_version": "0.7.0-rc.7",
+  "measured_at": "2026-09-20",
+  "environment": {
+    "cpu": "AMD Ryzen 9 7900X 12-Core Processor",
+    "architecture": "x86_64",
+    "cpu_frequency": "427-5912 MHz",
+    "cores": "12 physical, 24 logical",
+    "memory": "62.4 GiB",
+    "memory_speed": "unknown",
+    "os": "Linux 7.2.6-x64v3-xanmod1-1",
+    "broker": "redis:7-alpine in Docker on localhost",
+    "rustc": "1.98.1",
+    "profile": "bench, inheriting release (opt-level = 3, lto = false, codegen-units = 16)",
+    "features": "ruststream-fred default (none), ruststream macros,json (the service loop only)",
+    "rustflags": "none (the recipe clears RUSTFLAGS, so the numbers are not tied to this CPU)"
+  },
+  "scenarios": [
+    {
+      "name": "Redis Streams consumer group, 512 B JSON, ack each",
+      "unit": "msg/s",
+      "messages": 159963,
+      "pairs": 11,
+      "raw": {
+        "median": 27832,
+        "min": 26432,
+        "max": 29254
+      },
+      "adapter": {
+        "median": 27825,
+        "min": 26580,
+        "max": 28996
+      },
+      "framework": {
+        "median": 27371,
+        "min": 25378,
+        "max": 28473
+      },
+      "overhead_percent": 1.7,
+      "verdict": "indistinguishable",
+      "adapter_overhead_percent": 0.0,
+      "adapter_verdict": "indistinguishable",
+      "broker_bound": true
+    },
+    {
+      "name": "Redis list work queue (reliable), 512 B JSON, ack each",
+      "unit": "msg/s",
+      "messages": 96182,
+      "pairs": 11,
+      "raw": {
+        "median": 15127,
+        "min": 14023,
+        "max": 15717
+      },
+      "adapter": {
+        "median": 15114,
+        "min": 14093,
+        "max": 15588
+      },
+      "framework": {
+        "median": 15095,
+        "min": 13610,
+        "max": 15687
+      },
+      "overhead_percent": 0.2,
+      "verdict": "indistinguishable",
+      "adapter_overhead_percent": 0.1,
+      "adapter_verdict": "indistinguishable",
+      "broker_bound": true
+    },
+    {
+      "name": "Redis Pub/Sub, 512 B JSON, no acknowledgement",
+      "unit": "msg/s",
+      "messages": 2000000,
+      "pairs": 11,
+      "raw": {
+        "median": 366189,
+        "min": 355657,
+        "max": 380591
+      },
+      "adapter": {
+        "median": 375429,
+        "min": 353150,
+        "max": 380413
+      },
+      "framework": {
+        "median": 365729,
+        "min": 348662,
+        "max": 376645
+      },
+      "overhead_percent": 0.1,
+      "verdict": "indistinguishable",
+      "adapter_overhead_percent": -2.5,
+      "adapter_verdict": "indistinguishable",
+      "broker_bound": false
+    }
+  ]
+}
