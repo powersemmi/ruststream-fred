@@ -22,52 +22,52 @@
     {
       "name": "Redis Streams consumer group, 512 B JSON, ack each",
       "unit": "msg/s",
-      "messages": 184779,
+      "messages": 159963,
       "pairs": 11,
       "raw": {
-        "median": 29773,
-        "min": 27536,
-        "max": 30259
+        "median": 27832,
+        "min": 26432,
+        "max": 29254
       },
       "adapter": {
-        "median": 29706,
-        "min": 28070,
-        "max": 30144
+        "median": 27825,
+        "min": 26580,
+        "max": 28996
       },
       "framework": {
-        "median": 29060,
-        "min": 27311,
-        "max": 29905
+        "median": 27371,
+        "min": 25378,
+        "max": 28473
       },
-      "overhead_percent": 2.4,
+      "overhead_percent": 1.7,
       "verdict": "indistinguishable",
-      "adapter_overhead_percent": 0.2,
+      "adapter_overhead_percent": 0.0,
       "adapter_verdict": "indistinguishable",
       "broker_bound": true
     },
     {
       "name": "Redis list work queue (reliable), 512 B JSON, ack each",
       "unit": "msg/s",
-      "messages": 103423,
+      "messages": 96182,
       "pairs": 11,
       "raw": {
-        "median": 16108,
-        "min": 15055,
-        "max": 16434
+        "median": 15127,
+        "min": 14023,
+        "max": 15717
       },
       "adapter": {
-        "median": 15992,
-        "min": 15076,
-        "max": 16445
+        "median": 15114,
+        "min": 14093,
+        "max": 15588
       },
       "framework": {
-        "median": 15857,
-        "min": 13818,
-        "max": 16229
+        "median": 15095,
+        "min": 13610,
+        "max": 15687
       },
-      "overhead_percent": 1.6,
+      "overhead_percent": 0.2,
       "verdict": "indistinguishable",
-      "adapter_overhead_percent": 0.7,
+      "adapter_overhead_percent": 0.1,
       "adapter_verdict": "indistinguishable",
       "broker_bound": true
     },
@@ -77,23 +77,23 @@
       "messages": 2000000,
       "pairs": 11,
       "raw": {
-        "median": 396289,
-        "min": 363421,
-        "max": 406592
+        "median": 366189,
+        "min": 355657,
+        "max": 380591
       },
       "adapter": {
-        "median": 393598,
-        "min": 361807,
-        "max": 408797
+        "median": 375429,
+        "min": 353150,
+        "max": 380413
       },
       "framework": {
-        "median": 390424,
-        "min": 358176,
-        "max": 401718
+        "median": 365729,
+        "min": 348662,
+        "max": 376645
       },
-      "overhead_percent": 1.5,
+      "overhead_percent": 0.1,
       "verdict": "indistinguishable",
-      "adapter_overhead_percent": 0.7,
+      "adapter_overhead_percent": -2.5,
       "adapter_verdict": "indistinguishable",
       "broker_bound": false
     }
