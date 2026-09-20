@@ -5,8 +5,6 @@
 //! [`PARTITION_KEY_HEADER`] header - the wire form the consumer side's
 //! [`Partitioned`](ruststream::Partitioned) reads back, on all three transports.
 
-use std::borrow::Cow;
-
 use ruststream::HeaderMap;
 use ruststream::runtime::{PublishBuilder, PublishSink};
 
@@ -97,16 +95,16 @@ where
 /// A step wins over the header the call site wrote itself, because it names this one message while
 /// the header map may be a contract the message type declares. A publish no step touched keeps its
 /// headers untouched, so writing [`PARTITION_KEY_HEADER`] by hand stays the portable spelling.
-pub(crate) fn resolved_headers<'m>(
-    headers: &'m HeaderMap,
+/// The map arrives owned because a publish owns it: it is what the transforms filled, taken out
+/// of the outgoing message, so resolving a step writes into it instead of copying it.
+pub(crate) fn resolved_headers(
+    mut headers: HeaderMap,
     options: Option<&RedisPublishOptions>,
-) -> Cow<'m, HeaderMap> {
-    let Some(key) = options.and_then(|options| options.partition_key.as_deref()) else {
-        return Cow::Borrowed(headers);
-    };
-    let mut resolved = headers.clone();
-    resolved.insert(PARTITION_KEY_HEADER, key.to_vec());
-    Cow::Owned(resolved)
+) -> HeaderMap {
+    if let Some(key) = options.and_then(|options| options.partition_key.as_deref()) {
+        headers.insert(PARTITION_KEY_HEADER, key.to_vec());
+    }
+    headers
 }
 
 #[cfg(test)]
@@ -118,8 +116,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(PARTITION_KEY_HEADER, "call-site");
 
-        let resolved = resolved_headers(&headers, None);
-        assert!(matches!(resolved, Cow::Borrowed(_)));
+        let resolved = resolved_headers(headers, None);
         assert_eq!(
             resolved.get(PARTITION_KEY_HEADER),
             Some(b"call-site".as_slice())
@@ -135,7 +132,7 @@ mod tests {
         let options = RedisPublishOptions {
             partition_key: Some(b"tenant-a".to_vec()),
         };
-        let resolved = resolved_headers(&headers, Some(&options));
+        let resolved = resolved_headers(headers, Some(&options));
 
         assert_eq!(
             resolved.get(PARTITION_KEY_HEADER),

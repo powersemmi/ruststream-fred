@@ -224,7 +224,7 @@ impl Publisher for RedisPublisher {
         let (key, payload, headers) = msg.into_parts();
         let entry: Buffered = (
             key.to_owned(),
-            fields_for_publish(Vec::from(payload), &resolved_headers(&headers, options)),
+            fields_for_publish(Vec::from(payload), &resolved_headers(headers, options)),
         );
         if self.buffer_if_in_txn(&entry) {
             return Ok(());
@@ -402,7 +402,7 @@ impl Transaction for RedisTransaction {
         let (key, payload, headers) = msg.into_parts();
         self.buffered.push((
             key.to_owned(),
-            fields_for_publish(Vec::from(payload), &resolved_headers(&headers, options)),
+            fields_for_publish(Vec::from(payload), &resolved_headers(headers, options)),
         ));
         ready(Ok(()))
     }

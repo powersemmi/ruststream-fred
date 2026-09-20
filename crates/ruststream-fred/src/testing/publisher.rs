@@ -104,7 +104,7 @@ impl Publisher for RedisTestPublisher {
         let entry: Buffered = (
             key.to_owned(),
             payload.freeze(),
-            resolved_headers(&headers, options).into_owned(),
+            resolved_headers(headers, options),
         );
         if self.buffer_if_in_txn(&entry) {
             return ready(Ok(()));
@@ -335,7 +335,7 @@ impl Transaction for RedisTestTransaction {
         self.buffered.push((
             key.to_owned(),
             payload.freeze(),
-            resolved_headers(&headers, options).into_owned(),
+            resolved_headers(headers, options),
         ));
         ready(Ok(()))
     }

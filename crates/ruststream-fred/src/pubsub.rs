@@ -750,12 +750,13 @@ impl Publisher for RedisPubSubPublisher {
     ) -> Result<(), Self::Error> {
         let pool = self.core.pool()?;
         let client = pool.next();
-        let channel = msg.name().to_owned();
+        let (channel, payload, headers) = msg.into_parts();
         let body = frame(
             self.codec.as_ref(),
-            msg.payload(),
-            &resolved_headers(msg.headers(), options),
+            payload,
+            &resolved_headers(headers, options),
         );
+        let channel = channel.to_owned();
         let _: i64 = match self.mode {
             PubSubMode::Classic => client.publish(channel, body).await,
             PubSubMode::Sharded => client.spublish(channel, body).await,
