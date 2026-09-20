@@ -118,7 +118,7 @@ cargo generate --git https://github.com/powersemmi/ruststream-fred templates/red
 use ruststream_fred::stream::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Order {
     id: u64,
 }
