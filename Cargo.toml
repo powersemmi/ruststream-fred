@@ -20,9 +20,8 @@ authors = ["RustStream contributors"]
 ruststream-fred = { path = "crates/ruststream-fred" }
 # The lower bound names the pre-release on purpose: cargo excludes pre-release versions from a
 # range that does not mention one, so `>=0.7.0` would refuse the published `0.7.0-rc.8` candidate.
-# This form admits the candidate now and the final 0.7.0 when it lands. rc.8 is the floor because
-# header keys and an outgoing message's destination are shared buffers there, which rc.7 spells as
-# `&str` and `Cow<'_, str>`.
+# This form admits the candidate now and the final 0.7.0 when it lands. The floor names rc.8
+# because that is the core line this crate is built and tested against.
 ruststream = { version = ">=0.7.0-rc.8, <0.8.0", default-features = false }
 
 fred = "10"
