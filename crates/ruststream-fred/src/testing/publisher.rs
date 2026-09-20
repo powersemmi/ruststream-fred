@@ -9,10 +9,10 @@
 use std::future::{Future, ready};
 use std::sync::{Arc, Mutex};
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use ruststream::{
-    DefaultPublish, HeaderMap, OutgoingMessage, OwnedTransactions, Publisher, Transaction,
-    TransactionalPublisher,
+    DefaultPublish, HeaderMap, Lend, OutgoingMessage, OwnedTransactions, Publisher, Take,
+    Transaction, TransactionalPublisher,
 };
 use tracing::warn;
 
@@ -76,6 +76,9 @@ impl RedisTestPublisher {
 }
 
 impl Publisher for RedisTestPublisher {
+    /// The same as [`RedisPublisher`](crate::RedisPublisher)'s: the router keeps the payload.
+    type Payload = Take;
+
     type Error = RedisError;
     /// The same as [`RedisPublisher`](crate::RedisPublisher)'s, so a test names the type
     /// production names and a partition key resolves here the way it does on a server.
@@ -88,7 +91,7 @@ impl Publisher for RedisTestPublisher {
     /// the connection, so this is where the real broker's dropped pool is mirrored.
     fn publish(
         &self,
-        msg: OutgoingMessage<'_>,
+        msg: OutgoingMessage<'_, BytesMut>,
         options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
         if let Err(err) = self.state.alive() {
@@ -232,6 +235,10 @@ impl RedisTestPlainPublisher {
 }
 
 impl Publisher for RedisTestPlainPublisher {
+    /// As on the two production publishers this one stands in for: they read the payload into an
+    /// envelope of their own, so the publish is lent the bytes.
+    type Payload = Lend;
+
     type Error = RedisError;
     /// As on [`RedisListPublisher`](crate::RedisListPublisher) and
     /// [`RedisPubSubPublisher`](crate::RedisPubSubPublisher), the two production publishers this
@@ -240,10 +247,15 @@ impl Publisher for RedisTestPlainPublisher {
 
     fn publish(
         &self,
-        msg: OutgoingMessage<'_>,
+        msg: OutgoingMessage<'_, &[u8]>,
         options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
-        self.0.publish(msg, options)
+        // The production pair copies the payload into its envelope here; the stand-in copies it
+        // into the buffer the stream publisher takes, so both pay the one copy a lending
+        // transport pays.
+        let (key, payload, headers) = msg.into_parts();
+        let taken = OutgoingMessage::produced(key, BytesMut::from(payload)).with_headers(headers);
+        self.0.publish(taken, options)
     }
 }
 
@@ -300,6 +312,9 @@ impl Drop for RedisTestTransaction {
 }
 
 impl Transaction for RedisTestTransaction {
+    /// As on [`RedisTransaction`](crate::RedisTransaction).
+    type Payload = Take;
+
     type Error = RedisError;
     /// As on [`RedisTransaction`](crate::RedisTransaction).
     type Options = RedisPublishOptions;
@@ -309,7 +324,7 @@ impl Transaction for RedisTestTransaction {
     /// Returns [`RedisError::Publish`] when the stream key is empty, like the direct publish.
     fn publish(
         &mut self,
-        msg: OutgoingMessage<'_>,
+        msg: OutgoingMessage<'_, BytesMut>,
         options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
         if let Err(err) = validate_publish_key(msg.name()) {

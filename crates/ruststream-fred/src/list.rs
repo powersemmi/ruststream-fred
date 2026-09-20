@@ -38,7 +38,7 @@ use ruststream::asyncapi::Bindings;
 use ruststream::codec::Codec;
 use ruststream::{
     AckError, AddressedCopies, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage,
-    PairError, Partitioned, PublishPolicy, RedeliveryAddress, RedeliveryAddressed,
+    Lend, PairError, Partitioned, PublishPolicy, RedeliveryAddress, RedeliveryAddressed,
     SubscriptionSource,
 };
 
@@ -820,6 +820,10 @@ fn ttl_millis(ttl: Duration) -> i64 {
 }
 
 impl ruststream::Publisher for RedisListPublisher {
+    /// As on [`RedisPubSubPublisher`](crate::RedisPubSubPublisher): the entry the client is
+    /// handed is an envelope this crate builds, so the payload is only read.
+    type Payload = Lend;
+
     type Error = RedisError;
     /// `LPUSH` carries the key and the value and nothing else; the key TTL is a property of the
     /// queue, fixed by the policy and re-armed on every publish. What a call site still says is

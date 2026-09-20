@@ -34,7 +34,7 @@ use ruststream::asyncapi::Bindings;
 use ruststream::codec::Codec;
 use ruststream::{
     AckError, AddressedCopies, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage,
-    NamedCopies, OutgoingMessage, PairError, Partitioned, PublishPolicy, Publisher,
+    Lend, NamedCopies, OutgoingMessage, PairError, Partitioned, PublishPolicy, Publisher,
     RedeliveryAddress, RedeliveryAddressed, SubscriptionSource,
 };
 use tokio::sync::broadcast::{Receiver, error::RecvError};
@@ -732,6 +732,10 @@ impl RedisPubSubPublisher {
 }
 
 impl Publisher for RedisPubSubPublisher {
+    /// The payload is read into an envelope of this crate's own before it reaches the client, so
+    /// there is nothing to keep: the publish is lent the bytes where they already are.
+    type Payload = Lend;
+
     type Error = RedisError;
     /// `PUBLISH` and `SPUBLISH` take a channel and a payload and nothing else, and which of the
     /// two is issued is the publisher's mode, fixed by the policy, because a sharded publish only
