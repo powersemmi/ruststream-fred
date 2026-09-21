@@ -43,7 +43,9 @@
 //! Every consumer form is measured against the three server forms this crate connects to - a
 //! standalone server, a cluster and a master behind Sentinel - so the table has one row per form
 //! and topology. The subscription is the same on all three; what differs underneath is the
-//! client's routing, and a difference between those rows is a finding about that.
+//! client's routing, and a difference between those rows is a finding about that. The one
+//! exception is deliberate: the Pub/Sub row on the cluster is sharded (`SSUBSCRIBE`, `SPUBLISH`),
+//! the form a cluster is used with, where classic `PUBLISH` is broadcast to every node.
 //!
 //! The message count is not a constant: a probe run measures the raw loop's rate and the count is
 //! set from it, so a measured run lasts at least [`SECONDS`] on whatever machine it is taken on.
@@ -88,8 +90,8 @@ use fred::types::lists::LMoveDirection;
 use futures::StreamExt;
 use ruststream::runtime::RunningApp;
 use ruststream::{ConnectedBroker, Subscriber};
-use ruststream_fred::ConnectedRedisBroker;
 use ruststream_fred::prelude::*;
+use ruststream_fred::{ConnectedRedisBroker, PubSubMode};
 use serde::Deserialize;
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::Notify;
@@ -190,10 +192,12 @@ struct Names {
     key: String,
     group: String,
     consumer: String,
+    /// The Pub/Sub form of the server the run is on.
+    pubsub: PubSubMode,
 }
 
 impl Names {
-    fn fresh() -> Self {
+    fn fresh(server: Server) -> Self {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|since| since.as_nanos())
@@ -204,6 +208,7 @@ impl Names {
             key: format!("{{ruststream:bench:{stamp}}}"),
             group: format!("bench-{stamp}"),
             consumer: "bench".to_owned(),
+            pubsub: server.pubsub(),
         }
     }
 
@@ -240,6 +245,16 @@ impl Server {
             Self::Standalone => "REDIS_TEST_URL",
             Self::Cluster => "REDIS_CLUSTER_TEST_URL",
             Self::Sentinel => "REDIS_SENTINEL_TEST_URL",
+        }
+    }
+
+    /// The Pub/Sub form a server of this kind is used with. Classic `PUBLISH` is broadcast to
+    /// every node of a cluster, so the cluster row takes the sharded form, which stays on the
+    /// node that owns the channel's slot.
+    const fn pubsub(self) -> PubSubMode {
+        match self {
+            Self::Standalone | Self::Sentinel => PubSubMode::Classic,
+            Self::Cluster => PubSubMode::Sharded,
         }
     }
 
@@ -516,15 +531,17 @@ async fn publish_list(pool: &Pool, key: &str, messages: usize, run: &Run) {
 /// queued, so a publisher that stopped at an exact count would leave a run one delivery short of
 /// its own end. Every loop is fed this way, and the rate a run reports is what the consumer
 /// handled per second either way.
-async fn publish_pubsub(pool: &Pool, channel: &str, run: &Run) {
+async fn publish_pubsub(pool: &Pool, names: &Names, run: &Run) {
     let body = json_body(BODY_BYTES);
+    let channel = names.key.as_str();
     while run.handled() < run.total() {
         let pipeline = pool.next().pipeline();
         for _ in 0..BATCH {
-            let _: () = pipeline
-                .publish(channel, body.clone())
-                .await
-                .expect("the message is queued");
+            let _: () = match names.pubsub {
+                PubSubMode::Classic => pipeline.publish(channel, body.clone()).await,
+                PubSubMode::Sharded => pipeline.spublish(channel, body.clone()).await,
+            }
+            .expect("the message is queued");
         }
         let _: Vec<Value> = pipeline
             .all()
@@ -555,7 +572,7 @@ async fn list_consume(order: &Order, ctx: &mut Context<'_, (), Run>) -> HandlerO
     HandlerOutcome::ack()
 }
 
-#[subscriber(RedisPubSub::new(installed().key))]
+#[subscriber(RedisPubSub::new(installed().key).mode(installed().pubsub))]
 async fn pubsub_consume(order: &Order, ctx: &mut Context<'_, (), Run>) -> HandlerOutcome {
     black_box((order.id, order.quantity));
     ctx.state().arrived();
@@ -706,7 +723,7 @@ async fn adapter_list(target: &Target, names: &Names, messages: usize) -> Sample
 async fn adapter_pubsub(target: &Target, names: &Names, messages: usize) -> Sample {
     let connected = connect(target).await;
     let subscriber = connected
-        .subscribe_pubsub(RedisPubSub::new(names.key.clone()))
+        .subscribe_pubsub(RedisPubSub::new(names.key.clone()).mode(names.pubsub))
         .await
         .expect("the subscription opens");
 
@@ -730,7 +747,7 @@ async fn adapter_pubsub(target: &Target, names: &Names, messages: usize) -> Samp
     });
 
     let publishing = pool(target, 1).await;
-    publish_pubsub(&publishing, &names.key, &run).await;
+    publish_pubsub(&publishing, names, &run).await;
     drain(&run, "adapter pubsub").await;
     consuming.await.expect("the consuming task ends");
 
@@ -906,10 +923,11 @@ async fn raw_pubsub(target: &Target, names: &Names, messages: usize) -> Sample {
     // Opened before the subscribe, as this crate opens it: the receiver sees only what is sent
     // after it exists.
     let mut rx = client.message_rx();
-    client
-        .subscribe(names.key.as_str())
-        .await
-        .expect("the server accepts the subscribe");
+    match names.pubsub {
+        PubSubMode::Classic => client.subscribe(names.key.as_str()).await,
+        PubSubMode::Sharded => client.ssubscribe(names.key.as_str()).await,
+    }
+    .expect("the server accepts the subscribe");
 
     let run = Run::new(messages);
     let consuming = tokio::spawn({
@@ -935,7 +953,7 @@ async fn raw_pubsub(target: &Target, names: &Names, messages: usize) -> Sample {
     });
 
     let publishing = pool(target, 1).await;
-    publish_pubsub(&publishing, &names.key, &run).await;
+    publish_pubsub(&publishing, names, &run).await;
     drain(&run, "raw pubsub").await;
     consuming.await.expect("the consuming task ends");
 
@@ -970,7 +988,7 @@ async fn framework_pubsub(target: &Target, names: &Names, messages: usize) -> Sa
     install(names);
     let app = start_pubsub(target, run.clone()).await;
     let publishing = pool(target, 1).await;
-    publish_pubsub(&publishing, &names.key, &run).await;
+    publish_pubsub(&publishing, names, &run).await;
     drain(&run, "framework pubsub").await;
     app.shutdown().await.expect("the service stops");
 
@@ -1014,10 +1032,11 @@ enum Scenario {
 
 impl Scenario {
     fn name(self, server: Server) -> String {
-        let form = match self {
-            Self::Stream => "Redis Streams consumer group",
-            Self::List => "Redis list work queue (reliable)",
-            Self::PubSub => "Redis Pub/Sub",
+        let form = match (self, server.pubsub()) {
+            (Self::Stream, _) => "Redis Streams consumer group",
+            (Self::List, _) => "Redis list work queue (reliable)",
+            (Self::PubSub, PubSubMode::Classic) => "Redis Pub/Sub",
+            (Self::PubSub, PubSubMode::Sharded) => "Redis Pub/Sub (sharded)",
         };
         let settle = match self {
             Self::Stream | Self::List => "ack each",
@@ -1129,7 +1148,7 @@ fn overhead(baseline: Stats, other: Stats) -> f64 {
 /// round trip and not the work behind it.
 async fn round_trip(target: &Target) -> Duration {
     let probe = pool(target, 1).await;
-    let key = format!("{}:rtt", Names::fresh().key);
+    let key = format!("{}:rtt", Names::fresh(target.server).key);
     let started = Instant::now();
     for _ in 0..ROUND_TRIP_PROBES {
         let _: i64 = probe
@@ -1151,7 +1170,9 @@ async fn measure(
 ) -> Measured {
     // The probe is the warm-up as well: its result is thrown away, and the rate it measured sets
     // a count that makes every run below last at least `seconds`.
-    let probe = scenario.raw(target, &Names::fresh(), PROBE_MESSAGES).await;
+    let probe = scenario
+        .raw(target, &Names::fresh(target.server), PROBE_MESSAGES)
+        .await;
     let messages = ((probe.rate(PROBE_MESSAGES) * seconds * MARGIN) as usize)
         .clamp(PROBE_MESSAGES, MAX_MESSAGES);
     let name = scenario.name(target.server);
@@ -1166,9 +1187,15 @@ async fn measure(
     for round in 1..=rounds {
         // Interleaved, never blocked: running one loop to the end and then the next would charge
         // every drift of the machine to whichever ran last.
-        let raw = scenario.raw(target, &Names::fresh(), messages).await;
-        let adapter = scenario.adapter(target, &Names::fresh(), messages).await;
-        let framework = scenario.framework(target, &Names::fresh(), messages).await;
+        let raw = scenario
+            .raw(target, &Names::fresh(target.server), messages)
+            .await;
+        let adapter = scenario
+            .adapter(target, &Names::fresh(target.server), messages)
+            .await;
+        let framework = scenario
+            .framework(target, &Names::fresh(target.server), messages)
+            .await;
         println!(
             "  round {round:>2}: raw {:>10.0} msg/s, adapter {:>10.0} msg/s, framework {:>10.0} \
              msg/s",

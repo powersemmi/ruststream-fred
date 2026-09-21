@@ -27,7 +27,9 @@ Three consumer forms are measured, one per delivery shape this crate offers: a R
 consumer group acknowledging every entry, a reliable list work queue, and a Pub/Sub channel. Each
 is measured against the three server forms this crate connects to: a standalone server, a cluster
 and a master behind Sentinel. The subscription is the same on all three; what differs underneath is
-the client's routing, so a difference between those rows is a finding about that.
+the client's routing, so a difference between those rows is a finding about that. The one exception
+is deliberate: the Pub/Sub row on the cluster is sharded, `SSUBSCRIBE` and `SPUBLISH`, the form a
+cluster is used with, where classic `PUBLISH` is broadcast to every node.
 
 ## The numbers
 
