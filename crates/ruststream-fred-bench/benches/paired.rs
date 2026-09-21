@@ -40,6 +40,11 @@
 //! `fred`, pipelined, so the differences between the loops stay on the consuming side. What this
 //! crate's own publisher costs is a measurement of its own and is not this one.
 //!
+//! Every consumer form is measured against the three server forms this crate connects to - a
+//! standalone server, a cluster and a master behind Sentinel - so the table has one row per form
+//! and topology. The subscription is the same on all three; what differs underneath is the
+//! client's routing, and a difference between those rows is a finding about that.
+//!
 //! The message count is not a constant: a probe run measures the raw loop's rate and the count is
 //! set from it, so a measured run lasts at least [`SECONDS`] on whatever machine it is taken on.
 //!
@@ -54,10 +59,10 @@
 //! loops alike, because that is the point every loop can observe. One acknowledgement out of
 //! hundreds of thousands is far below the run-to-run spread.
 //!
-//! The run turns the server's append-only file off. What is measured is the cost of a delivery,
-//! not the disk under the server, and an `fsync` that lands inside one loop of a round is noise
-//! that belongs to none of them. The stand is the one the tests use and the recipe tears it down
-//! afterwards, so the setting outlives nothing.
+//! The stand runs its servers on the host network and without persistence: no port proxy between
+//! the client and the server, no append-only file, no snapshot. What is measured is the cost of a
+//! delivery, not the bridge in front of the server or the disk under it, and a write or a fork that
+//! lands inside one loop of a round is noise that belongs to none of them.
 //!
 //! A consumer that spends its window waiting on the socket was paced by the server, and the row is
 //! reported as broker-bound: what it measures then is the machine's loopback and the server, not
@@ -75,11 +80,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use fred::clients::{Client, Pool};
 use fred::error::{Error as FredError, ErrorKind};
 use fred::interfaces::{
-    ClientLike, ConfigInterface, EventInterface, KeysInterface, ListInterface, PubsubInterface,
-    StreamsInterface,
+    ClientLike, EventInterface, KeysInterface, ListInterface, PubsubInterface, StreamsInterface,
 };
 use fred::types::Value;
-use fred::types::config::Config;
+use fred::types::config::{Config, ServerConfig};
 use fred::types::lists::LMoveDirection;
 use futures::StreamExt;
 use ruststream::runtime::RunningApp;
@@ -195,7 +199,9 @@ impl Names {
             .map(|since| since.as_nanos())
             .unwrap_or_default();
         Self {
-            key: format!("ruststream:bench:{stamp}"),
+            // The braces are a hash tag: the reliable list moves an entry between this key and its
+            // processing list in one command, which a cluster allows only inside one slot.
+            key: format!("{{ruststream:bench:{stamp}}}"),
             group: format!("bench-{stamp}"),
             consumer: "bench".to_owned(),
         }
@@ -205,6 +211,98 @@ impl Names {
     /// derives from the key the same way.
     fn processing(&self) -> String {
         format!("{}.processing", self.key)
+    }
+}
+
+/// The server forms this crate connects to, each measured with every consumer form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Server {
+    Standalone,
+    Cluster,
+    Sentinel,
+}
+
+impl Server {
+    /// In the order the page publishes them.
+    const ALL: [Self; 3] = [Self::Standalone, Self::Cluster, Self::Sentinel];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Standalone => "standalone",
+            Self::Cluster => "cluster",
+            Self::Sentinel => "sentinel",
+        }
+    }
+
+    /// The variable `just bench` sets for this form; the live suites read the same one.
+    fn variable(self) -> &'static str {
+        match self {
+            Self::Standalone => "REDIS_TEST_URL",
+            Self::Cluster => "REDIS_CLUSTER_TEST_URL",
+            Self::Sentinel => "REDIS_SENTINEL_TEST_URL",
+        }
+    }
+
+    /// The port an address without one means, the same default this crate applies.
+    const fn default_port(self) -> u16 {
+        match self {
+            Self::Standalone | Self::Cluster => 6379,
+            Self::Sentinel => 26379,
+        }
+    }
+}
+
+/// The Sentinel service name the stand registers its master under.
+const SENTINEL_SERVICE: &str = "mymaster";
+
+/// One server to measure against: its form and where it is.
+#[derive(Clone, Debug)]
+struct Target {
+    server: Server,
+    /// A URL for a standalone server; `host:port` of one node or one sentinel otherwise.
+    address: String,
+}
+
+impl Target {
+    fn from_env(server: Server) -> Option<Self> {
+        env::var(server.variable())
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(|address| Self { server, address })
+    }
+
+    /// The `fred` config this crate builds for the same form, and nothing configured beyond it.
+    fn config(&self) -> Config {
+        match self.server {
+            Server::Standalone => Config::from_url(&self.address).expect("the URL is a Redis URL"),
+            Server::Cluster => Config {
+                server: ServerConfig::new_clustered(vec![self.host()]),
+                ..Config::default()
+            },
+            Server::Sentinel => Config {
+                server: ServerConfig::new_sentinel(vec![self.host()], SENTINEL_SERVICE),
+                ..Config::default()
+            },
+        }
+    }
+
+    /// The broker a service constructs for this form.
+    fn broker(&self) -> RedisBroker {
+        match self.server {
+            Server::Standalone => RedisBroker::standalone(self.address.as_str()),
+            Server::Cluster => RedisBroker::cluster([self.address.as_str()]),
+            Server::Sentinel => RedisBroker::sentinel(SENTINEL_SERVICE, [self.address.as_str()]),
+        }
+    }
+
+    fn host(&self) -> (String, u16) {
+        match self.address.rsplit_once(':') {
+            Some((host, port)) => (
+                host.to_owned(),
+                port.parse().expect("the port after the colon is a number"),
+            ),
+            None => (self.address.clone(), self.server.default_port()),
+        }
     }
 }
 
@@ -322,10 +420,10 @@ impl Sample {
     }
 }
 
-/// Opens the pool [`RedisBroker::standalone`] opens: the same config, the same size, and nothing
+/// Opens the pool the broker opens for this form: the same config, the same size, and nothing
 /// configured beyond it.
-async fn pool(url: &str, size: usize) -> Pool {
-    let config = Config::from_url(url).expect("the URL is a Redis URL");
+async fn pool(target: &Target, size: usize) -> Pool {
+    let config = target.config();
     let pool = Pool::new(config, None, None, None, size).expect("the pool is built");
     pool.init().await.expect("the server accepts a connection");
     pool
@@ -464,10 +562,10 @@ async fn pubsub_consume(order: &Order, ctx: &mut Context<'_, (), Run>) -> Handle
     HandlerOutcome::ack()
 }
 
-async fn start_stream(url: &str, run: Run) -> RunningApp {
+async fn start_stream(target: &Target, run: Run) -> RunningApp {
     RustStream::new(AppInfo::new("fred-bench", "0.0.0"))
         .on_startup(async move |()| Ok::<_, Infallible>(run))
-        .with_broker(RedisBroker::standalone(url).pool(POOL), |b| {
+        .with_broker(target.broker().pool(POOL), |b| {
             b.include(stream_consume);
         })
         .start()
@@ -475,10 +573,10 @@ async fn start_stream(url: &str, run: Run) -> RunningApp {
         .expect("the service starts")
 }
 
-async fn start_list(url: &str, run: Run) -> RunningApp {
+async fn start_list(target: &Target, run: Run) -> RunningApp {
     RustStream::new(AppInfo::new("fred-bench", "0.0.0"))
         .on_startup(async move |()| Ok::<_, Infallible>(run))
-        .with_broker(RedisBroker::standalone(url).pool(POOL), |b| {
+        .with_broker(target.broker().pool(POOL), |b| {
             b.include(list_consume);
         })
         .start()
@@ -486,10 +584,10 @@ async fn start_list(url: &str, run: Run) -> RunningApp {
         .expect("the service starts")
 }
 
-async fn start_pubsub(url: &str, run: Run) -> RunningApp {
+async fn start_pubsub(target: &Target, run: Run) -> RunningApp {
     RustStream::new(AppInfo::new("fred-bench", "0.0.0"))
         .on_startup(async move |()| Ok::<_, Infallible>(run))
-        .with_broker(RedisBroker::standalone(url).pool(POOL), |b| {
+        .with_broker(target.broker().pool(POOL), |b| {
             b.include(pubsub_consume);
         })
         .start()
@@ -503,16 +601,17 @@ async fn start_pubsub(url: &str, run: Run) -> RunningApp {
 
 /// Connects the broker the way a service connects it, and nothing more: the synchronous
 /// constructor, the pool size the broker defaults to, and the one consuming transition.
-async fn connect(url: &str) -> ConnectedRedisBroker {
-    RedisBroker::standalone(url)
+async fn connect(target: &Target) -> ConnectedRedisBroker {
+    target
+        .broker()
         .pool(POOL)
         .connect()
         .await
         .expect("the broker connects")
 }
 
-async fn adapter_stream(url: &str, names: &Names, messages: usize) -> Sample {
-    let connected = connect(url).await;
+async fn adapter_stream(target: &Target, names: &Names, messages: usize) -> Sample {
+    let connected = connect(target).await;
     let subscriber = connected
         .subscribe(
             RedisStream::new(names.key.clone())
@@ -546,7 +645,7 @@ async fn adapter_stream(url: &str, names: &Names, messages: usize) -> Sample {
         }
     });
 
-    let publishing = pool(url, 1).await;
+    let publishing = pool(target, 1).await;
     publish_stream(&publishing, &names.key, messages, &run).await;
     drain(&run, "adapter stream").await;
     consuming.await.expect("the consuming task ends");
@@ -560,8 +659,8 @@ async fn adapter_stream(url: &str, names: &Names, messages: usize) -> Sample {
     sample
 }
 
-async fn adapter_list(url: &str, names: &Names, messages: usize) -> Sample {
-    let connected = connect(url).await;
+async fn adapter_list(target: &Target, names: &Names, messages: usize) -> Sample {
+    let connected = connect(target).await;
     let subscriber = connected
         .subscribe_list(RedisList::new(names.key.clone()).reliable())
         .await
@@ -590,7 +689,7 @@ async fn adapter_list(url: &str, names: &Names, messages: usize) -> Sample {
         }
     });
 
-    let publishing = pool(url, 1).await;
+    let publishing = pool(target, 1).await;
     publish_list(&publishing, &names.key, messages, &run).await;
     drain(&run, "adapter list").await;
     consuming.await.expect("the consuming task ends");
@@ -604,8 +703,8 @@ async fn adapter_list(url: &str, names: &Names, messages: usize) -> Sample {
     sample
 }
 
-async fn adapter_pubsub(url: &str, names: &Names, messages: usize) -> Sample {
-    let connected = connect(url).await;
+async fn adapter_pubsub(target: &Target, names: &Names, messages: usize) -> Sample {
+    let connected = connect(target).await;
     let subscriber = connected
         .subscribe_pubsub(RedisPubSub::new(names.key.clone()))
         .await
@@ -630,7 +729,7 @@ async fn adapter_pubsub(url: &str, names: &Names, messages: usize) -> Sample {
         }
     });
 
-    let publishing = pool(url, 1).await;
+    let publishing = pool(target, 1).await;
     publish_pubsub(&publishing, &names.key, &run).await;
     drain(&run, "adapter pubsub").await;
     consuming.await.expect("the consuming task ends");
@@ -664,8 +763,8 @@ async fn create_group(pool: &Pool, names: &Names) {
     }
 }
 
-async fn raw_stream(url: &str, names: &Names, messages: usize) -> Sample {
-    let consuming_pool = pool(url, POOL).await;
+async fn raw_stream(target: &Target, names: &Names, messages: usize) -> Sample {
+    let consuming_pool = pool(target, POOL).await;
     create_group(&consuming_pool, names).await;
 
     let run = Run::new(messages);
@@ -713,7 +812,7 @@ async fn raw_stream(url: &str, names: &Names, messages: usize) -> Sample {
         }
     });
 
-    let publishing = pool(url, 1).await;
+    let publishing = pool(target, 1).await;
     publish_stream(&publishing, &names.key, messages, &run).await;
     drain(&run, "raw stream").await;
     consuming.await.expect("the consuming task ends");
@@ -737,8 +836,8 @@ fn empty_on_timeout(result: Result<Option<Vec<u8>>, FredError>) -> Option<Vec<u8
     }
 }
 
-async fn raw_list(url: &str, names: &Names, messages: usize) -> Sample {
-    let consuming_pool = pool(url, POOL).await;
+async fn raw_list(target: &Target, names: &Names, messages: usize) -> Sample {
+    let consuming_pool = pool(target, POOL).await;
 
     let run = Run::new(messages);
     let consuming = tokio::spawn({
@@ -773,7 +872,7 @@ async fn raw_list(url: &str, names: &Names, messages: usize) -> Sample {
         }
     });
 
-    let publishing = pool(url, 1).await;
+    let publishing = pool(target, 1).await;
     publish_list(&publishing, &names.key, messages, &run).await;
     drain(&run, "raw list").await;
     consuming.await.expect("the consuming task ends");
@@ -789,8 +888,8 @@ async fn raw_list(url: &str, names: &Names, messages: usize) -> Sample {
 
 /// The dedicated connection a Pub/Sub subscription reads on, opened the way this crate opens it:
 /// a second client built from the same config, with nothing configured on top.
-async fn subscriber_client(url: &str) -> Client {
-    let config = Config::from_url(url).expect("the URL is a Redis URL");
+async fn subscriber_client(target: &Target) -> Client {
+    let config = target.config();
     let client = Client::new(config, None, None, None);
     client
         .init()
@@ -799,11 +898,11 @@ async fn subscriber_client(url: &str) -> Client {
     client
 }
 
-async fn raw_pubsub(url: &str, names: &Names, messages: usize) -> Sample {
+async fn raw_pubsub(target: &Target, names: &Names, messages: usize) -> Sample {
     // The pool a service holds even when its subscription does not read through it, so every loop
     // keeps the same connections open to the same server.
-    let idle = pool(url, POOL).await;
-    let client = subscriber_client(url).await;
+    let idle = pool(target, POOL).await;
+    let client = subscriber_client(target).await;
     // Opened before the subscribe, as this crate opens it: the receiver sees only what is sent
     // after it exists.
     let mut rx = client.message_rx();
@@ -835,7 +934,7 @@ async fn raw_pubsub(url: &str, names: &Names, messages: usize) -> Sample {
         }
     });
 
-    let publishing = pool(url, 1).await;
+    let publishing = pool(target, 1).await;
     publish_pubsub(&publishing, &names.key, &run).await;
     drain(&run, "raw pubsub").await;
     consuming.await.expect("the consuming task ends");
@@ -849,11 +948,11 @@ async fn raw_pubsub(url: &str, names: &Names, messages: usize) -> Sample {
     sample
 }
 
-async fn framework_stream(url: &str, names: &Names, messages: usize) -> Sample {
+async fn framework_stream(target: &Target, names: &Names, messages: usize) -> Sample {
     let run = Run::new(messages);
     install(names);
-    let app = start_stream(url, run.clone()).await;
-    let publishing = pool(url, 1).await;
+    let app = start_stream(target, run.clone()).await;
+    let publishing = pool(target, 1).await;
     publish_stream(&publishing, &names.key, messages, &run).await;
     drain(&run, "framework stream").await;
     app.shutdown().await.expect("the service stops");
@@ -866,11 +965,11 @@ async fn framework_stream(url: &str, names: &Names, messages: usize) -> Sample {
     sample
 }
 
-async fn framework_pubsub(url: &str, names: &Names, messages: usize) -> Sample {
+async fn framework_pubsub(target: &Target, names: &Names, messages: usize) -> Sample {
     let run = Run::new(messages);
     install(names);
-    let app = start_pubsub(url, run.clone()).await;
-    let publishing = pool(url, 1).await;
+    let app = start_pubsub(target, run.clone()).await;
+    let publishing = pool(target, 1).await;
     publish_pubsub(&publishing, &names.key, &run).await;
     drain(&run, "framework pubsub").await;
     app.shutdown().await.expect("the service stops");
@@ -882,11 +981,11 @@ async fn framework_pubsub(url: &str, names: &Names, messages: usize) -> Sample {
     sample
 }
 
-async fn framework_list(url: &str, names: &Names, messages: usize) -> Sample {
+async fn framework_list(target: &Target, names: &Names, messages: usize) -> Sample {
     let run = Run::new(messages);
     install(names);
-    let app = start_list(url, run.clone()).await;
-    let publishing = pool(url, 1).await;
+    let app = start_list(target, run.clone()).await;
+    let publishing = pool(target, 1).await;
     publish_list(&publishing, &names.key, messages, &run).await;
     drain(&run, "framework list").await;
     app.shutdown().await.expect("the service stops");
@@ -914,12 +1013,17 @@ enum Scenario {
 }
 
 impl Scenario {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Stream => "Redis Streams consumer group, 512 B JSON, ack each",
-            Self::List => "Redis list work queue (reliable), 512 B JSON, ack each",
-            Self::PubSub => "Redis Pub/Sub, 512 B JSON, no acknowledgement",
-        }
+    fn name(self, server: Server) -> String {
+        let form = match self {
+            Self::Stream => "Redis Streams consumer group",
+            Self::List => "Redis list work queue (reliable)",
+            Self::PubSub => "Redis Pub/Sub",
+        };
+        let settle = match self {
+            Self::Stream | Self::List => "ack each",
+            Self::PubSub => "no acknowledgement",
+        };
+        format!("{form}, {}, 512 B JSON, {settle}", server.label())
     }
 
     /// Round trips a delivery costs the consumer, which is what decides whether the run was paced
@@ -936,29 +1040,29 @@ impl Scenario {
         }
     }
 
-    async fn raw(self, url: &str, names: &Names, messages: usize) -> Sample {
+    async fn raw(self, target: &Target, names: &Names, messages: usize) -> Sample {
         match self {
-            Self::Stream => raw_stream(url, names, messages).await,
-            Self::List => raw_list(url, names, messages).await,
-            Self::PubSub => raw_pubsub(url, names, messages).await,
+            Self::Stream => raw_stream(target, names, messages).await,
+            Self::List => raw_list(target, names, messages).await,
+            Self::PubSub => raw_pubsub(target, names, messages).await,
         }
     }
 
     /// The loop that drives this crate's own consumer.
-    async fn adapter(self, url: &str, names: &Names, messages: usize) -> Sample {
+    async fn adapter(self, target: &Target, names: &Names, messages: usize) -> Sample {
         match self {
-            Self::Stream => adapter_stream(url, names, messages).await,
-            Self::List => adapter_list(url, names, messages).await,
-            Self::PubSub => adapter_pubsub(url, names, messages).await,
+            Self::Stream => adapter_stream(target, names, messages).await,
+            Self::List => adapter_list(target, names, messages).await,
+            Self::PubSub => adapter_pubsub(target, names, messages).await,
         }
     }
 
     /// The service a user writes, started through the real runtime.
-    async fn framework(self, url: &str, names: &Names, messages: usize) -> Sample {
+    async fn framework(self, target: &Target, names: &Names, messages: usize) -> Sample {
         match self {
-            Self::Stream => framework_stream(url, names, messages).await,
-            Self::List => framework_list(url, names, messages).await,
-            Self::PubSub => framework_pubsub(url, names, messages).await,
+            Self::Stream => framework_stream(target, names, messages).await,
+            Self::List => framework_list(target, names, messages).await,
+            Self::PubSub => framework_pubsub(target, names, messages).await,
         }
     }
 }
@@ -989,7 +1093,7 @@ impl Stats {
 
 #[derive(Debug)]
 struct Measured {
-    scenario: Scenario,
+    name: String,
     messages: usize,
     rounds: usize,
     raw: Stats,
@@ -1023,8 +1127,8 @@ fn overhead(baseline: Stats, other: Stats) -> f64 {
 /// Sent sequentially on one connection, which is how a consumer sends the read and the
 /// acknowledgement its delivery needs, and against a key that does not exist, so the figure is the
 /// round trip and not the work behind it.
-async fn round_trip(url: &str) -> Duration {
-    let probe = pool(url, 1).await;
+async fn round_trip(target: &Target) -> Duration {
+    let probe = pool(target, 1).await;
     let key = format!("{}:rtt", Names::fresh().key);
     let started = Instant::now();
     for _ in 0..ROUND_TRIP_PROBES {
@@ -1040,19 +1144,19 @@ async fn round_trip(url: &str) -> Duration {
 
 async fn measure(
     scenario: Scenario,
-    url: &str,
+    target: &Target,
     rounds: usize,
     seconds: f64,
     round_trip: Duration,
 ) -> Measured {
     // The probe is the warm-up as well: its result is thrown away, and the rate it measured sets
     // a count that makes every run below last at least `seconds`.
-    let probe = scenario.raw(url, &Names::fresh(), PROBE_MESSAGES).await;
+    let probe = scenario.raw(target, &Names::fresh(), PROBE_MESSAGES).await;
     let messages = ((probe.rate(PROBE_MESSAGES) * seconds * MARGIN) as usize)
         .clamp(PROBE_MESSAGES, MAX_MESSAGES);
+    let name = scenario.name(target.server);
     println!(
-        "{}: {messages} messages per run ({:.0} msg/s probed)",
-        scenario.name(),
+        "{name}: {messages} messages per run ({:.0} msg/s probed)",
         probe.rate(PROBE_MESSAGES)
     );
 
@@ -1062,9 +1166,9 @@ async fn measure(
     for round in 1..=rounds {
         // Interleaved, never blocked: running one loop to the end and then the next would charge
         // every drift of the machine to whichever ran last.
-        let raw = scenario.raw(url, &Names::fresh(), messages).await;
-        let adapter = scenario.adapter(url, &Names::fresh(), messages).await;
-        let framework = scenario.framework(url, &Names::fresh(), messages).await;
+        let raw = scenario.raw(target, &Names::fresh(), messages).await;
+        let adapter = scenario.adapter(target, &Names::fresh(), messages).await;
+        let framework = scenario.framework(target, &Names::fresh(), messages).await;
         println!(
             "  round {round:>2}: raw {:>10.0} msg/s, adapter {:>10.0} msg/s, framework {:>10.0} \
              msg/s",
@@ -1081,7 +1185,7 @@ async fn measure(
     let adapter = Stats::of(&adapters);
     let framework = Stats::of(&frameworks);
     Measured {
-        scenario,
+        name,
         messages,
         rounds,
         raw,
@@ -1105,8 +1209,19 @@ fn broker_bound(scenario: Scenario, raw_rate: f64, round_trip: Duration) -> bool
     waiting >= per_message / 2.0
 }
 
-fn document(measured: &[Measured]) -> String {
-    let mut out = String::from("{\n  \"scenarios\": [\n");
+fn document(measured: &[Measured], round_trips: &[(Server, Duration)]) -> String {
+    let mut out = String::from("{\n  \"round_trip_micros\": {");
+    for (index, (server, round_trip)) in round_trips.iter().enumerate() {
+        let comma = if index == 0 { "" } else { "," };
+        write!(
+            out,
+            "{comma} \"{}\": {:.1}",
+            server.label(),
+            round_trip.as_secs_f64() * 1e6
+        )
+        .expect("writing to a String");
+    }
+    out.push_str(" },\n  \"scenarios\": [\n");
     for (index, row) in measured.iter().enumerate() {
         let comma = if index + 1 == measured.len() { "" } else { "," };
         write!(
@@ -1127,7 +1242,7 @@ fn document(measured: &[Measured]) -> String {
                 "      \"broker_bound\": {broker_bound}\n",
                 "    }}{comma}\n",
             ),
-            name = row.scenario.name(),
+            name = row.name,
             messages = row.messages,
             rounds = row.rounds,
             raw_best = row.raw.best,
@@ -1167,36 +1282,51 @@ fn number(name: &str, fallback: usize) -> usize {
 
 /// Turns the server's append-only file off for the run. What is measured is the cost of a
 /// delivery, and an `fsync` that lands inside one loop of a round belongs to none of them.
-async fn silence_the_disk(url: &str) {
-    let admin = pool(url, 1).await;
-    admin
-        .config_set("appendonly", "no")
-        .await
-        .expect("the server takes the setting");
-    close(admin).await;
-}
-
 fn main() {
-    let url = env::var("REDIS_TEST_URL")
-        .expect("REDIS_TEST_URL names the server to measure against; `just bench` sets it");
+    let targets: Vec<Target> = Server::ALL
+        .into_iter()
+        .filter_map(Target::from_env)
+        .collect();
+    assert!(
+        !targets.is_empty(),
+        "REDIS_TEST_URL, REDIS_CLUSTER_TEST_URL and REDIS_SENTINEL_TEST_URL name the servers to \
+         measure against; `just bench` sets all three"
+    );
     let rounds = number("RUSTSTREAM_BENCH_ROUNDS", ROUNDS);
     let seconds = number("RUSTSTREAM_BENCH_SECONDS", SECONDS as usize) as f64;
     let out = env::var("RUSTSTREAM_BENCH_OUT").unwrap_or_else(|_| "bench-paired.json".to_owned());
 
     let runtime = runtime();
-    runtime.block_on(silence_the_disk(&url));
-    let round_trip = runtime.block_on(round_trip(&url));
-    println!("one command to this server costs {round_trip:?}\n");
-    let measured: Vec<Measured> = SCENARIOS
-        .into_iter()
-        .map(|scenario| runtime.block_on(measure(scenario, &url, rounds, seconds, round_trip)))
+    let round_trips: Vec<(Server, Duration)> = targets
+        .iter()
+        .map(|target| {
+            let round_trip = runtime.block_on(round_trip(target));
+            println!(
+                "one command to the {} server costs {round_trip:?}",
+                target.server.label()
+            );
+            (target.server, round_trip)
+        })
         .collect();
+    println!();
+    let mut measured = Vec::with_capacity(SCENARIOS.len() * targets.len());
+    for scenario in SCENARIOS {
+        for (target, (_, round_trip)) in targets.iter().zip(&round_trips) {
+            measured.push(runtime.block_on(measure(
+                scenario,
+                target,
+                rounds,
+                seconds,
+                *round_trip,
+            )));
+        }
+    }
 
     println!();
     for row in &measured {
         println!(
             "{}: raw {:.0} msg/s, adapter {:.0} msg/s ({:.1}%, {}), framework {:.0} msg/s ({:.1}%, {}){}",
-            row.scenario.name(),
+            row.name,
             row.raw.best,
             row.adapter.best,
             row.adapter_overhead_percent,
@@ -1212,6 +1342,6 @@ fn main() {
         );
     }
 
-    std::fs::write(&out, document(&measured)).expect("the summary is written");
+    std::fs::write(&out, document(&measured, &round_trips)).expect("the summary is written");
     println!("\nwrote {out}");
 }

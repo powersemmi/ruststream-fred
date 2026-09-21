@@ -51,6 +51,8 @@ bench *ARGS: brokers-up
     # RUSTFLAGS is cleared so the numbers are not tied to this machine's CPU: a binary built with
     # `-C target-cpu=native` cannot be reproduced anywhere else.
     RUSTFLAGS="" REDIS_TEST_URL=redis://127.0.0.1:6379 \
+    REDIS_CLUSTER_TEST_URL=127.0.0.1:7000 \
+    REDIS_SENTINEL_TEST_URL=127.0.0.1:26379 \
     RUSTSTREAM_BENCH_OUT="$PWD/target/bench-paired.json" \
         cargo bench -p ruststream-fred-bench --bench paired {{ ARGS }}
     python3 scripts/bench_results.py target/bench-paired.json docs/benchmarks/results.json

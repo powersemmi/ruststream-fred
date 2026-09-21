@@ -23,8 +23,11 @@ is described under
 [methodology](https://powersemmi.github.io/ruststream/latest/benchmarks/#methodology); this page
 publishes what it produced here.
 
-Three scenarios are measured, one per delivery shape this crate offers: a Redis Streams consumer
-group acknowledging every entry, a reliable list work queue, and a Pub/Sub channel.
+Three consumer forms are measured, one per delivery shape this crate offers: a Redis Streams
+consumer group acknowledging every entry, a reliable list work queue, and a Pub/Sub channel. Each
+is measured against the three server forms this crate connects to: a standalone server, a cluster
+and a master behind Sentinel. The subscription is the same on all three; what differs underneath is
+the client's routing, so a difference between those rows is a finding about that.
 
 ## The numbers
 
@@ -75,10 +78,10 @@ The publish path is not in these rows. All three loops are fed by the same pipel
 publisher, so that what differs between them stays on the consuming side; what this crate's own
 publisher costs is a measurement of its own.
 
-The run turns the server's append-only file off. What is measured is the cost of a delivery, not
-the disk under the server, and an `fsync` that lands inside one half of a pair is noise that
-belongs to neither. A service that keeps the append-only file on pays for it, and pays the same on
-both sides.
+The stand runs its servers on the host network and without persistence: no port proxy between the
+client and the server, no append-only file, no snapshot. What is measured is the cost of a
+delivery, not the bridge in front of the server or the disk under it. A service that keeps
+persistence on pays for it, and pays the same on both sides.
 
 The Pub/Sub figure is taken under a publisher that never waits for the consumer. Redis Pub/Sub
 drops what a consumer is not there to take rather than queueing it, so what that row reports is

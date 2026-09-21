@@ -83,16 +83,26 @@ def memory() -> str:
 
 
 def broker_image() -> str:
-    """The image of the `redis` service, which is the standalone server the benchmark measures.
+    """The image of the `redis` service, and the three server forms the benchmark measures against.
 
-    The compose file also brings up a Redis 8.4 standalone, a cluster and a sentinel set; naming
-    the service rather than taking the first image keeps the published figure honest if that order
-    ever changes.
+    Every row is taken on a standalone server, on the six-node cluster and on the master behind
+    Sentinel that the same compose file brings up. All of them run on the host network and without
+    persistence, which is stated here because it is part of what the figures mean.
     """
     match = re.search(
         r"^  redis:\n(?:.*\n)*?\s+image:\s*(\S+)", COMPOSE.read_text(encoding="utf-8"), re.M
     )
-    return f"{match.group(1)} in Docker on localhost" if match else "unknown"
+    image = match.group(1) if match else "unknown"
+    return (
+        f"{image} in Docker on the host network, persistence off: a standalone server, "
+        "a six-node cluster and a master behind Sentinel"
+    )
+
+
+def round_trip(micros: dict[str, float]) -> str:
+    """One command and its answer, per server form, so a reader can redo the broker-bound sum."""
+    forms = ", ".join(f"{form} {value:.0f} µs" for form, value in micros.items())
+    return f"{forms} (one EXISTS and its answer)"
 
 
 def crate_version() -> str:
@@ -107,7 +117,7 @@ def core_version() -> str:
     return match.group(1) if match else "unknown"
 
 
-def environment() -> dict[str, str]:
+def environment(round_trip_micros: dict[str, float]) -> dict[str, str]:
     cpu = lscpu()
     return {
         "cpu": proc_field("/proc/cpuinfo", "model name") or cpu.get("Model name", "unknown"),
@@ -118,6 +128,7 @@ def environment() -> dict[str, str]:
         "memory_speed": "unknown",
         "os": f"Linux {run('uname', '-r').strip()}",
         "broker": broker_image(),
+        "round_trip": round_trip(round_trip_micros),
         "rustc": run("rustc", "--version").replace("rustc", "").strip().split()[0],
         "profile": PROFILE,
         "features": FEATURES,
@@ -136,7 +147,7 @@ def main() -> int:
         "crate_version": crate_version(),
         "core_version": core_version(),
         "measured_at": date.today().isoformat(),
-        "environment": environment(),
+        "environment": environment(summary["round_trip_micros"]),
         "scenarios": summary["scenarios"],
     }
     out = Path(sys.argv[2])
