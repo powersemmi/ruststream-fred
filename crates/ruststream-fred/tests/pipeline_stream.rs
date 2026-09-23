@@ -48,10 +48,7 @@ async fn queue_and_settle(
 }
 
 #[subscriber(PipelinedStream::new("orders").group("workers"))]
-async fn windowed(
-    order: &Order,
-    ctx: &mut Context<'_, ruststream_fred::context::PipelineContext>,
-) -> HandlerOutcome {
+async fn windowed(order: &Order, ctx: &mut Context<'_, PipelineContext>) -> HandlerOutcome {
     let retried = ctx.headers().get(RETRY_COUNT_HEADER).is_some();
     let pipeline = ctx.context(keys::Pipeline).clone();
     queue_and_settle(order, &pipeline, retried).await
