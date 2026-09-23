@@ -57,6 +57,24 @@ bench *ARGS: brokers-up
         cargo bench -p ruststream-fred-bench --bench paired {{ ARGS }}
     python3 scripts/bench_results.py target/bench-paired.json docs/benchmarks/results.json
 
+# What this crate's own code costs per message, counted under valgrind: instructions through
+# callgrind and allocations through DHAT, each scenario a service on the production broker against
+# the standalone server of the compose stand. The counts cover the service's thread, fred's work on
+# it included, and not the server. The page it feeds is the code table of docs/benchmarks.md.
+# RUSTFLAGS is cleared because valgrind aborts on the instructions a recent CPU advertises. Needs
+# valgrind and the runner the benches pin: cargo install --locked gungraun-runner --version =0.19.4
+# Extra arguments reach the runner: `just bench-code --save-baseline=main` records a baseline,
+# `just bench-code --baseline=main` compares against it.
+bench-code *ARGS: brokers-up
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap 'just brokers-down' EXIT
+    mkdir -p target
+    RUSTFLAGS="" REDIS_TEST_URL=redis://127.0.0.1:6379 \
+        cargo bench -p ruststream-fred-bench --bench consume --bench reply --bench batch \
+        -- --output-format=json {{ ARGS }} > target/bench-code.json
+    python3 scripts/bench_results.py --code target/bench-code.json docs/benchmarks/results.json
+
 fmt:
     cargo fmt --all
 
