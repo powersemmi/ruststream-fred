@@ -29,10 +29,10 @@ use crate::{
 /// One buffered publish (key, payload, headers), held while a transaction is open.
 type Buffered = (String, Bytes, HeaderMap);
 
-// The default reply publisher is the production stream policy, the same value a routes file
-// names: the stand-in has no policy of its own, so there is one spelling for both brokers.
+// The default publisher is the production default policy, the same value the real broker names:
+// the stand-in has no policy of its own, so there is one spelling for both brokers.
 impl DefaultPublish for ConnectedRedisTestBroker {
-    type Policy = crate::RedisPublish;
+    type Policy = crate::RedisDefaultPublish;
 }
 
 /// Publisher returned by
@@ -46,8 +46,9 @@ impl DefaultPublish for ConnectedRedisTestBroker {
 pub struct RedisTestPublisher {
     state: Arc<TestBrokerState>,
     txn: Arc<Mutex<Option<Vec<Buffered>>>>,
-    /// The command family this handle stands in for, which decides what it reaches.
-    form: Form,
+    /// The command family this handle stands in for, which decides what it reaches; `None` on
+    /// the default publisher, which takes the family the broker recorded for the name.
+    form: Option<Form>,
 }
 
 impl std::fmt::Debug for RedisTestPublisher {
@@ -58,10 +59,10 @@ impl std::fmt::Debug for RedisTestPublisher {
 
 impl RedisTestPublisher {
     pub(crate) fn new(state: Arc<TestBrokerState>) -> Self {
-        Self::of_form(state, Form::Stream)
+        Self::of_form(state, Some(Form::Stream))
     }
 
-    fn of_form(state: Arc<TestBrokerState>, form: Form) -> Self {
+    fn of_form(state: Arc<TestBrokerState>, form: Option<Form>) -> Self {
         Self {
             state,
             txn: Arc::new(Mutex::new(None)),
@@ -123,14 +124,16 @@ impl Publisher for RedisTestPublisher {
 }
 
 /// Hands one publish of `form` to the router, turning a refusal into the error the real publish
-/// would return.
+/// would return. With no form, the family is the one the broker recorded for the name, as the
+/// real default publisher reads it.
 fn fan_out(
     state: &TestBrokerState,
     key: String,
     payload: Bytes,
     headers: HeaderMap,
-    form: Form,
+    form: Option<Form>,
 ) -> Result<(), RedisError> {
+    let form = form.unwrap_or_else(|| Form::of(&state.routes.route(&key)));
     state
         .router
         .publish(
@@ -256,7 +259,7 @@ impl std::fmt::Debug for RedisTestPlainPublisher {
 }
 
 impl RedisTestPlainPublisher {
-    pub(crate) fn new(state: Arc<TestBrokerState>, form: Form) -> Self {
+    pub(crate) fn new(state: Arc<TestBrokerState>, form: Option<Form>) -> Self {
         Self(RedisTestPublisher::of_form(state, form))
     }
 }
@@ -378,7 +381,7 @@ impl Transaction for RedisTestTransaction {
             return ready(Err(err));
         }
         for (key, payload, headers) in std::mem::take(&mut self.buffered) {
-            if let Err(err) = fan_out(&self.state, key, payload, headers, Form::Stream) {
+            if let Err(err) = fan_out(&self.state, key, payload, headers, Some(Form::Stream)) {
                 return ready(Err(err));
             }
         }

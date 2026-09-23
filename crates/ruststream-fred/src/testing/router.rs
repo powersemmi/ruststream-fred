@@ -26,6 +26,8 @@ use bytes::Bytes;
 use ruststream::{HeaderMap, RawMessage, testing::Coordinator};
 use tokio::sync::mpsc;
 
+use crate::route::Route;
+
 /// The namespace a name is read or written in: the command family of one of this crate's forms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Form {
@@ -38,6 +40,15 @@ pub(crate) enum Form {
 }
 
 impl Form {
+    /// The family a recorded route writes in.
+    pub(crate) const fn of(route: &Route) -> Self {
+        match route {
+            Route::Stream => Self::Stream,
+            Route::List { .. } => Self::List,
+            Route::Channel { .. } => Self::Channel,
+        }
+    }
+
     /// The command a publish of this form issues on a server.
     const fn command(self) -> &'static str {
         match self {

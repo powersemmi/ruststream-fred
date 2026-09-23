@@ -35,13 +35,14 @@ use ruststream::codec::Codec;
 use ruststream::{
     AckError, AddressedCopies, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage,
     Lend, NamedCopies, OutgoingMessage, PairError, Partitioned, PublishPolicy, Publisher,
-    RedeliveryAddress, RedeliveryAddressed, SubscriptionSource,
+    RedeliveryAddress, RedeliveryAddressed, RetryDeclaration, SubscriptionSource,
 };
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::envelope::{SharedEnvelope, frame, unframe};
 use crate::partition::{RedisPublishOptions, resolved_headers};
+use crate::route::Route;
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
 
 /// This form's publish policy, [`RedisPubSubPublish`], under the mount-site name every form gives
@@ -127,6 +128,9 @@ pub struct RedisPubSub {
     channel: String,
     mode: PubSubMode,
     codec: Option<SharedEnvelope>,
+    /// Where the mount site sends a spent delivery, taken from its retry declaration when the
+    /// subscription opens, so the broker publishes to that name as the channel it is.
+    dead_letter: Option<String>,
 }
 
 impl Debug for RedisPubSub {
@@ -135,6 +139,7 @@ impl Debug for RedisPubSub {
             .field("channel", &self.channel)
             .field("mode", &self.mode)
             .field("codec", &self.codec.is_some())
+            .field("dead_letter", &self.dead_letter)
             .finish()
     }
 }
@@ -146,6 +151,7 @@ impl RedisPubSub {
             channel: channel.into(),
             mode: PubSubMode::default(),
             codec: None,
+            dead_letter: None,
         }
     }
 
@@ -174,6 +180,27 @@ impl RedisPubSub {
 
     pub(crate) fn codec_handle(&self) -> Option<SharedEnvelope> {
         self.codec.clone()
+    }
+
+    /// How a name this subscription reads or dead-letters to is written: a publish in its mode
+    /// and its framing.
+    pub(crate) fn route(&self) -> Route {
+        Route::Channel {
+            mode: self.mode,
+            envelope: self.codec.clone(),
+        }
+    }
+
+    /// The dead-letter destination the mount site declared, once the registration has handed its
+    /// declaration over.
+    pub(crate) fn dead_letter(&self) -> Option<&str> {
+        self.dead_letter.as_deref()
+    }
+
+    /// Takes the dead-letter destination out of the mount site's declaration.
+    fn with_declaration(mut self, declaration: &RetryDeclaration) -> Self {
+        self.dead_letter = declaration.dead_letter().map(str::to_owned);
+        self
     }
 
     /// Where a publisher reaches this subscription again, shared by both broker forms.
@@ -270,6 +297,10 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisPubSub {
         self.channel()
     }
 
+    fn declare_retry(self, declaration: &RetryDeclaration) -> Self {
+        self.with_declaration(declaration)
+    }
+
     async fn subscribe(
         self,
         connected: &ConnectedRedisBroker,
@@ -343,10 +374,15 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisPubSu
         self.channel()
     }
 
+    fn declare_retry(self, declaration: &RetryDeclaration) -> Self {
+        self.with_declaration(declaration)
+    }
+
     async fn subscribe(
         self,
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> Result<Self::Subscriber, RedisError> {
+        connected.record_routes(self.channel(), self.dead_letter(), &self.route())?;
         connected.subscribe_channel(self.channel()).await
     }
 
@@ -683,7 +719,8 @@ impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisPubSubPubl
         self,
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
-        ready(Ok(connected.pubsub_publisher(self)))
+        let _ = self;
+        ready(Ok(connected.pubsub_publisher()))
     }
 
     /// The same body the real broker's policy writes, so a document built in a test is the
@@ -748,22 +785,39 @@ impl Publisher for RedisPubSubPublisher {
         msg: OutgoingMessage<'_>,
         options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
-        let pool = self.core.pool()?;
-        let client = pool.next();
         let (channel, payload, headers) = msg.into_parts();
-        let body = frame(
+        send(
+            &self.core,
+            self.mode,
             self.codec.as_ref(),
+            channel,
             payload,
-            &resolved_headers(headers, options),
-        );
-        let channel = channel.to_owned();
-        let _: i64 = match self.mode {
-            PubSubMode::Classic => client.publish(channel, body).await,
-            PubSubMode::Sharded => client.spublish(channel, body).await,
-        }
-        .map_err(RedisError::publish)?;
-        Ok(())
+            resolved_headers(headers, options),
+        )
+        .await
     }
+}
+
+/// Publishes one framed message on `channel` in `mode`: the Pub/Sub publish, shared by
+/// [`RedisPubSubPublisher`] and the broker's default publisher.
+pub(crate) async fn send(
+    core: &RedisCore,
+    mode: PubSubMode,
+    codec: Option<&SharedEnvelope>,
+    channel: &str,
+    payload: &[u8],
+    headers: HeaderMap,
+) -> Result<(), RedisError> {
+    let pool = core.pool()?;
+    let client = pool.next();
+    let body = frame(codec, payload, &headers);
+    let channel = channel.to_owned();
+    let _: i64 = match mode {
+        PubSubMode::Classic => client.publish(channel, body).await,
+        PubSubMode::Sharded => client.spublish(channel, body).await,
+    }
+    .map_err(RedisError::publish)?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -39,13 +39,14 @@ use ruststream::codec::Codec;
 use ruststream::{
     AckError, AddressedCopies, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage,
     Lend, PairError, Partitioned, PublishPolicy, RedeliveryAddress, RedeliveryAddressed,
-    SubscriptionSource,
+    RetryDeclaration, SubscriptionSource,
 };
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::envelope::{SharedEnvelope, frame, unframe};
 use crate::partition::{RedisPublishOptions, resolved_headers};
 use crate::recovery::{self, RecoveryConfig};
+use crate::route::Route;
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
 
 /// This form's publish policy, [`RedisListPublish`], under the mount-site name every form gives
@@ -133,6 +134,9 @@ pub struct RedisList {
     min_idle: Option<Duration>,
     recovery_zset: Option<String>,
     recovery_ttl: Option<Duration>,
+    /// Where the mount site sends a spent delivery, taken from its retry declaration when the
+    /// subscription opens, so the broker writes that name as the list it is.
+    dead_letter: Option<String>,
 }
 
 impl Debug for RedisList {
@@ -144,6 +148,7 @@ impl Debug for RedisList {
             .field("codec", &self.codec.is_some())
             .field("recovery_zset", &self.recovery_zset)
             .field("recovery_ttl", &self.recovery_ttl)
+            .field("dead_letter", &self.dead_letter)
             .finish_non_exhaustive()
     }
 }
@@ -160,6 +165,7 @@ impl RedisList {
             min_idle: None,
             recovery_zset: None,
             recovery_ttl: None,
+            dead_letter: None,
         }
     }
 
@@ -254,6 +260,25 @@ impl RedisList {
         self.codec.clone()
     }
 
+    /// How a name this subscription reads or dead-letters to is written: `LPUSH`, in its framing.
+    pub(crate) fn route(&self) -> Route {
+        Route::List {
+            envelope: self.codec.clone(),
+        }
+    }
+
+    /// The dead-letter destination the mount site declared, once the registration has handed its
+    /// declaration over.
+    pub(crate) fn dead_letter(&self) -> Option<&str> {
+        self.dead_letter.as_deref()
+    }
+
+    /// Takes the dead-letter destination out of the mount site's declaration.
+    fn with_declaration(mut self, declaration: &RetryDeclaration) -> Self {
+        self.dead_letter = declaration.dead_letter().map(str::to_owned);
+        self
+    }
+
     /// What this subscription adds to its channel in the generated `AsyncAPI` document, shared by
     /// both broker forms: whether it acknowledges, the processing list it holds claims on, and
     /// how headers are framed beside the payload.
@@ -299,6 +324,10 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisList {
 
     fn name(&self) -> &str {
         self.key()
+    }
+
+    fn declare_retry(self, declaration: &RetryDeclaration) -> Self {
+        self.with_declaration(declaration)
     }
 
     async fn subscribe(
@@ -353,11 +382,16 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisList 
         self.key()
     }
 
+    fn declare_retry(self, declaration: &RetryDeclaration) -> Self {
+        self.with_declaration(declaration)
+    }
+
     async fn subscribe(
         self,
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> Result<Self::Subscriber, RedisError> {
         self.recovery_config()?;
+        connected.record_routes(self.key(), self.dead_letter(), &self.route())?;
         connected
             .subscribe_list(self.key(), self.is_reliable())
             .await
@@ -762,7 +796,8 @@ impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisListPublis
         self,
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
-        ready(Ok(connected.list_publisher(self)))
+        let _ = self;
+        ready(Ok(connected.list_publisher()))
     }
 
     /// The list key the policy pushes onto, the expiry it re-arms there on every push, and how
@@ -833,31 +868,48 @@ impl ruststream::Publisher for RedisListPublisher {
         msg: ruststream::OutgoingMessage<'_>,
         options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
-        let pool = self.core.pool()?;
         let (key, payload, headers) = msg.into_parts();
-        let body = frame(
+        push(
+            &self.core,
             self.codec.as_ref(),
+            self.ttl,
+            key,
             payload,
-            &resolved_headers(headers, options),
-        );
-        let Some(ttl) = self.ttl else {
-            let _: i64 = pool.lpush(key, body).await.map_err(RedisError::publish)?;
-            return Ok(());
-        };
-        // Push the entry and re-arm the key TTL in one pipeline, so an actively used queue keeps
-        // resetting its expiry and only an idle one is allowed to lapse.
-        let pipeline = pool.next().pipeline();
-        let _: () = pipeline
-            .lpush(key, body)
-            .await
-            .map_err(RedisError::publish)?;
-        let _: () = pipeline
-            .pexpire(key, ttl_millis(ttl), None)
-            .await
-            .map_err(RedisError::publish)?;
-        let _: Vec<fred::types::Value> = pipeline.all().await.map_err(RedisError::publish)?;
-        Ok(())
+            resolved_headers(headers, options),
+        )
+        .await
     }
+}
+
+/// `LPUSH`es one framed entry onto `key`, re-arming the key's `ttl` when there is one: the list
+/// publish, shared by [`RedisListPublisher`] and the broker's default publisher.
+pub(crate) async fn push(
+    core: &RedisCore,
+    codec: Option<&SharedEnvelope>,
+    ttl: Option<Duration>,
+    key: &str,
+    payload: &[u8],
+    headers: HeaderMap,
+) -> Result<(), RedisError> {
+    let pool = core.pool()?;
+    let body = frame(codec, payload, &headers);
+    let Some(ttl) = ttl else {
+        let _: i64 = pool.lpush(key, body).await.map_err(RedisError::publish)?;
+        return Ok(());
+    };
+    // Push the entry and re-arm the key TTL in one pipeline, so an actively used queue keeps
+    // resetting its expiry and only an idle one is allowed to lapse.
+    let pipeline = pool.next().pipeline();
+    let _: () = pipeline
+        .lpush(key, body)
+        .await
+        .map_err(RedisError::publish)?;
+    let _: () = pipeline
+        .pexpire(key, ttl_millis(ttl), None)
+        .await
+        .map_err(RedisError::publish)?;
+    let _: Vec<fred::types::Value> = pipeline.all().await.map_err(RedisError::publish)?;
+    Ok(())
 }
 
 #[cfg(test)]

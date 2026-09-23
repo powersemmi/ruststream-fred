@@ -230,3 +230,77 @@ moves_at_the_cap!(
     channel_dead,
     "events.dead"
 );
+
+#[subscriber(RedisList::new("jobs").reliable())]
+async fn job_to_orders(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::retry()
+}
+
+#[subscriber(RedisStream::new("orders").group("workers"))]
+async fn order_reader(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::ack()
+}
+
+/// A list's dead-letter move is an `LPUSH`, and a key a stream subscription reads cannot take one,
+/// so the service refuses to start and names both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dead_letter_read_as_another_type_refuses_to_start() {
+    let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
+        RedisTestBroker::new(),
+        |b| {
+            b.include(order_reader);
+            b.include(job_to_orders)
+                .max_attempts(nonzero!(2u32))
+                .dead_letter("orders");
+        },
+    );
+    let err = TestApp::start(app)
+        .await
+        .expect_err("a name is one Redis type");
+    let text = format!("{err:?}");
+    assert!(
+        text.contains("orders") && text.contains("list") && text.contains("stream"),
+        "the refusal names the name and both types: {text}"
+    );
+}
+
+#[subscriber(RedisStream::new("orders").group("workers"), publish("jobs"))]
+async fn order_to_job(order: &Order) -> Order {
+    Order { id: order.id }
+}
+
+#[subscriber(RedisList::new("jobs").reliable())]
+async fn job_reader(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::ack()
+}
+
+/// A reply the mount site names no publisher for leaves through the default one, which writes a
+/// name this service reads as a list with `LPUSH`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_default_reply_reaches_a_list_this_service_reads() {
+    let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
+        RedisTestBroker::new(),
+        |b| {
+            b.include(order_to_job);
+            b.include(job_reader);
+        },
+    );
+    let tb = TestApp::start(app).await.expect("start");
+
+    tb.broker::<RedisTestBroker>()
+        .message(&Order { id: 3 })
+        .to("orders")
+        .publish()
+        .await
+        .expect("publish");
+
+    tb.broker::<RedisTestBroker>()
+        .subscriber("jobs")
+        .assert_called_once()
+        .with(&Order { id: 3 });
+
+    tb.shutdown().await.expect("shutdown");
+}
