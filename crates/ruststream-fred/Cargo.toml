@@ -18,7 +18,7 @@ workspace = true
 default = []
 # User-facing test support only: the conformance harness is broker-author tooling and stays a
 # dev-dependency of this crate.
-testing = ["ruststream/testing"]
+testing = ["ruststream/testing", "fred/mocks"]
 
 # The document-plane hooks: what this crate's descriptors and publish policies add to the
 # generated AsyncAPI document. Forwards the core feature that defines them.

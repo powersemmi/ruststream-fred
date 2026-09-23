@@ -7,6 +7,10 @@
 use std::future::{Future, ready};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
+
+use fred::clients::Pool;
+use fred::interfaces::ClientLike;
+use fred::types::config::Config;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -18,6 +22,7 @@ use ruststream::{
 
 use crate::broker::missing_default_group;
 use crate::route::{Recorded, Route, Routes};
+use crate::testing::commands::StandInCommands;
 use crate::{
     error::RedisError,
     testing::{
@@ -34,6 +39,9 @@ use crate::{
 #[derive(Default)]
 pub(crate) struct TestBrokerState {
     pub(crate) router: KeyRouter,
+    /// The pool a handler reaches through `Ctx<keys::FredPool>`: `fred`'s own client over a mock
+    /// layer that applies the commands to the router. Set on the first connect.
+    pool: OnceLock<Pool>,
     /// The routes the real connection records, read by the default publisher.
     pub(crate) routes: Routes,
     /// The harness's quiescence-and-recording coordinator, installed by a
@@ -56,6 +64,18 @@ impl TestBrokerState {
     /// a requeue can re-count and a consumed delivery can decrement. `None` outside a harness run.
     pub(crate) fn coordinator(&self) -> Option<Coordinator> {
         self.coordinator.get().cloned()
+    }
+
+    /// The stand-in's pool, as the connected form hands it out.
+    ///
+    /// # Panics
+    ///
+    /// Panics before the first connect, which is the only place the pool is built; every caller is
+    /// reached from the connected form.
+    pub(crate) fn pool(&self) -> &Pool {
+        self.pool
+            .get()
+            .expect("the stand-in's pool is built when it connects")
     }
 
     fn close(&self) {
@@ -149,11 +169,25 @@ impl Broker for RedisTestBroker {
     type Error = RedisError;
     type Connected = ConnectedRedisTestBroker;
 
-    fn connect(self) -> impl Future<Output = Result<Self::Connected, Self::Error>> {
-        ready(Ok(ConnectedRedisTestBroker {
+    async fn connect(self) -> Result<Self::Connected, Self::Error> {
+        if self.state.pool.get().is_none() {
+            let commands = StandInCommands::new(Arc::downgrade(&self.state));
+            let config = Config {
+                mocks: Some(Arc::new(commands)),
+                ..Config::default()
+            };
+            let pool = Pool::new(config, None, None, None, 1)
+                .map_err(|err| RedisError::Connect(Box::new(err)))?;
+            // Starts the mock layer's router; nothing is dialed.
+            pool.init()
+                .await
+                .map_err(|err| RedisError::Connect(Box::new(err)))?;
+            let _ = self.state.pool.set(pool);
+        }
+        Ok(ConnectedRedisTestBroker {
             state: self.state,
             default_group: self.default_group,
-        }))
+        })
     }
 }
 
@@ -301,6 +335,36 @@ impl ConnectedRedisTestBroker {
         self.state
             .routes
             .record_subscription(name, dead_letter, route)
+    }
+
+    /// Returns the pool a handler reaches through `Ctx<keys::FredPool>`, the counterpart of
+    /// [`ConnectedRedisBroker::pool_handle`](crate::ConnectedRedisBroker::pool_handle).
+    ///
+    /// It is `fred`'s own pool over a mock layer: `XADD`, `LPUSH` and `PUBLISH` sent through it
+    /// reach this broker's subscriptions under the same rules as a publisher's, and every other
+    /// command is answered as queued.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RedisError::ShutDown`] once the connection has been shut down.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fred::interfaces::ListInterface;
+    /// use ruststream::Broker;
+    /// use ruststream_fred::testing::RedisTestBroker;
+    ///
+    /// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
+    /// let connected = RedisTestBroker::new().connect().await?;
+    /// let pool = connected.pool_handle()?;
+    /// let _: i64 = pool.lpush("jobs", "{}").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn pool_handle(&self) -> Result<Pool, RedisError> {
+        self.state.alive()?;
+        Ok(self.state.pool().clone())
     }
 
     /// Returns a list publisher (`LPUSH`), the counterpart of

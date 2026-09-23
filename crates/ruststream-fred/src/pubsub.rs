@@ -24,7 +24,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use fred::clients::Client;
+use fred::clients::{Client, Pool};
 use fred::interfaces::{ClientLike, PubsubInterface};
 use fred::types::{Message, MessageKind};
 use futures::Stream;
@@ -462,8 +462,14 @@ impl RedisPubSubSubscriber {
         client: Client,
         rx: Receiver<Message>,
         codec: Option<SharedEnvelope>,
+        pool: Pool,
     ) -> Self {
-        Self(BufferedSubscriber::new(PubSubWire { client, rx, codec }))
+        Self(BufferedSubscriber::new(PubSubWire {
+            client,
+            rx,
+            codec,
+            pool,
+        }))
     }
 }
 
@@ -505,6 +511,8 @@ struct PubSubWire {
     client: Client,
     rx: Receiver<Message>,
     codec: Option<SharedEnvelope>,
+    /// The broker's pool, handed to every delivery for `Ctx<keys::FredPool>`.
+    pool: Pool,
 }
 
 impl Debug for PubSubWire {
@@ -524,7 +532,7 @@ impl Drop for PubSubWire {
     }
 }
 
-fn to_message(msg: &Message, codec: Option<&SharedEnvelope>) -> RedisPubSubMessage {
+fn to_message(msg: &Message, codec: Option<&SharedEnvelope>, pool: &Pool) -> RedisPubSubMessage {
     let raw = msg.value.as_bytes().unwrap_or(&[]);
     let (payload, headers) = unframe(codec, raw);
     RedisPubSubMessage {
@@ -534,6 +542,7 @@ fn to_message(msg: &Message, codec: Option<&SharedEnvelope>) -> RedisPubSubMessa
         pattern: matches!(msg.kind, MessageKind::PMessage),
         payload,
         headers,
+        pool: pool.clone(),
     }
 }
 
@@ -543,11 +552,12 @@ impl ruststream::Subscriber for PubSubWire {
 
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
         let codec = self.codec.clone();
-        unfold((&mut self.rx, codec), |(rx, codec)| async move {
+        let pool = &self.pool;
+        unfold((&mut self.rx, codec), move |(rx, codec)| async move {
             loop {
                 match rx.recv().await {
                     Ok(msg) => {
-                        let message = to_message(&msg, codec.as_ref());
+                        let message = to_message(&msg, codec.as_ref(), pool);
                         return Some((Ok(message), (rx, codec)));
                     }
                     // The receiver fell behind the broadcast buffer; skip the gap and keep reading.
@@ -566,6 +576,8 @@ pub struct RedisPubSubMessage {
     pattern: bool,
     payload: Bytes,
     headers: HeaderMap,
+    /// The broker's pool, which `Ctx<keys::FredPool>` hands the handler.
+    pool: Pool,
 }
 
 impl Debug for RedisPubSubMessage {
@@ -593,6 +605,11 @@ impl RedisPubSubMessage {
     #[must_use]
     pub fn from_pattern(&self) -> bool {
         self.pattern
+    }
+
+    /// The broker's connection pool, for the per-delivery context.
+    pub(crate) const fn pool(&self) -> &Pool {
+        &self.pool
     }
 }
 
@@ -827,7 +844,13 @@ pub(crate) async fn send(
 mod tests {
     use super::*;
     use crate::context::PubSubContext;
+    use fred::types::config::Config;
     use ruststream::BuildContext;
+
+    /// An unconnected pool (just client structs); `Pool::new` opens no sockets.
+    fn offline_pool() -> Pool {
+        Pool::new(Config::default(), None, None, None, 1).expect("offline pool")
+    }
 
     #[test]
     fn build_context_reads_channel_and_pattern_flag() {
@@ -836,6 +859,7 @@ mod tests {
             pattern: false,
             payload: Bytes::from_static(b"{}"),
             headers: HeaderMap::new(),
+            pool: offline_pool(),
         };
         let cx = PubSubContext::build(&exact);
         assert_eq!(cx.channel(), "events");
@@ -846,6 +870,7 @@ mod tests {
             pattern: true,
             payload: Bytes::from_static(b"{}"),
             headers: HeaderMap::new(),
+            pool: offline_pool(),
         };
         assert!(PubSubContext::build(&matched).from_pattern());
     }

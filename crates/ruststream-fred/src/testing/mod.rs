@@ -48,6 +48,7 @@
 //! against a real Redis server.
 
 mod broker;
+mod commands;
 mod publisher;
 mod router;
 mod subscriber;

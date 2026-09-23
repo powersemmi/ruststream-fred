@@ -518,6 +518,7 @@ impl ListWire {
             payload,
             headers,
             ack: None,
+            pool: self.pool.clone(),
         }
     }
 
@@ -526,8 +527,8 @@ impl ListWire {
         RedisListMessage {
             payload,
             headers,
+            pool: self.pool.clone(),
             ack: Some(ListAck {
-                pool: self.pool.clone(),
                 main_key: self.key.clone(),
                 processing_key: self.processing.clone(),
                 value: raw,
@@ -597,7 +598,6 @@ impl ruststream::Subscriber for ListWire {
 
 /// Settlement handle for a reliable-mode list delivery.
 struct ListAck {
-    pool: Pool,
     main_key: String,
     processing_key: String,
     /// The raw wire value (framed), needed verbatim to `LREM` it from the processing list.
@@ -619,6 +619,16 @@ pub struct RedisListMessage {
     payload: Bytes,
     headers: HeaderMap,
     ack: Option<ListAck>,
+    /// The connection the entry was read on: what settles it, and what `Ctx<keys::FredPool>`
+    /// hands the handler.
+    pool: Pool,
+}
+
+impl RedisListMessage {
+    /// The broker's connection pool, for the per-delivery context.
+    pub(crate) const fn pool(&self) -> &Pool {
+        &self.pool
+    }
 }
 
 impl Debug for RedisListMessage {
@@ -648,7 +658,7 @@ impl IncomingMessage for RedisListMessage {
         let Some(handle) = self.ack else {
             return Err(AckError::Unsupported);
         };
-        settle(&handle).await
+        settle(&self.pool, &handle).await
     }
 
     async fn nack(self, requeue: bool) -> Result<(), AckError> {
@@ -658,9 +668,9 @@ impl IncomingMessage for RedisListMessage {
         if requeue {
             // Return the original entry verbatim to the main list, before removing it from
             // processing (a crash in between leaves a duplicate rather than a loss).
-            lpush(&handle.pool, handle.main_key.as_str(), handle.value.clone()).await?;
+            lpush(&self.pool, handle.main_key.as_str(), handle.value.clone()).await?;
         }
-        settle(&handle).await
+        settle(&self.pool, &handle).await
     }
 }
 
@@ -675,14 +685,13 @@ async fn lpush(pool: &Pool, key: &str, body: Vec<u8>) -> Result<(), AckError> {
 
 /// Removes the entry from the processing list and, when recovery is enabled, drops its tracking from
 /// the recovery ZSET.
-async fn settle(handle: &ListAck) -> Result<(), AckError> {
-    let _: i64 = handle
-        .pool
+async fn settle(pool: &Pool, handle: &ListAck) -> Result<(), AckError> {
+    let _: i64 = pool
         .lrem(handle.processing_key.as_str(), 1, handle.value.clone())
         .await
         .map_err(ack_broker)?;
     if let Some(rec) = &handle.recovery {
-        recovery::forget(&handle.pool, &rec.zset_key, &rec.member).await?;
+        recovery::forget(pool, &rec.zset_key, &rec.member).await?;
     }
     Ok(())
 }

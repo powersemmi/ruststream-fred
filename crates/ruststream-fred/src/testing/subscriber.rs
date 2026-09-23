@@ -10,6 +10,7 @@ use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use fred::clients::Pool;
 use futures::Stream;
 use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::{
@@ -164,6 +165,7 @@ impl Subscriber for RedisTestSubscriber {
         let coordinator = self.coordinator.clone();
         let settlement = self.settlement;
         let delayed = self.delayed;
+        let pool = self.state.pool().clone();
         // Poll the receiver in place rather than wrapping it in an owning stream, so `stream` can
         // be called again after the returned stream is dropped (the runtime and the conformance
         // helpers re-enter it per call).
@@ -176,6 +178,7 @@ impl Subscriber for RedisTestSubscriber {
                         coordinator.clone(),
                         settlement,
                         delayed,
+                        pool.clone(),
                     ))
                 })
             })
@@ -205,6 +208,8 @@ pub struct RedisTestMessage {
     delayed: bool,
     /// The server's own delivery count, counting this delivery, on a claiming subscription.
     delivered: Option<u64>,
+    /// The stand-in's pool, which `Ctx<keys::FredPool>` hands the handler.
+    pool: Pool,
 }
 
 impl Drop for RedisTestMessage {
@@ -236,6 +241,7 @@ impl RedisTestMessage {
         coordinator: Option<Coordinator>,
         settlement: Settlement,
         delayed: bool,
+        pool: Pool,
     ) -> Self {
         // Only a claiming subscription stamps the counter, and only there does the real broker
         // report a count of its own.
@@ -250,7 +256,13 @@ impl RedisTestMessage {
             settlement,
             delayed,
             delivered,
+            pool,
         }
+    }
+
+    /// The stand-in's pool, for the per-delivery context.
+    pub(crate) const fn pool(&self) -> &Pool {
+        &self.pool
     }
 
     /// Returns the stream key this message was published to.
@@ -427,6 +439,7 @@ impl BatchSubscriber for RedisTestSubscriber {
         let coordinator = self.coordinator.clone();
         let settlement = self.settlement;
         let delayed = self.delayed;
+        let pool = self.state.pool().clone();
         futures::stream::poll_fn(move |cx| {
             let first = match self.poll_delivery(cx) {
                 Poll::Pending => return Poll::Pending,
@@ -437,6 +450,7 @@ impl BatchSubscriber for RedisTestSubscriber {
                     coordinator.clone(),
                     settlement,
                     delayed,
+                    pool.clone(),
                 ),
             };
             let mut batch = vec![first];
@@ -449,6 +463,7 @@ impl BatchSubscriber for RedisTestSubscriber {
                             coordinator.clone(),
                             settlement,
                             delayed,
+                            pool.clone(),
                         ));
                     }
                     Poll::Ready(None) | Poll::Pending => break,
