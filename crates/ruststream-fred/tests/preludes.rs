@@ -40,6 +40,21 @@ mod stream_prelude {
         #[cfg(feature = "testing")]
         pairs_in_process::<Publish>();
     }
+
+    /// The windowed forms of this descriptor, the reply transform that joins a delivery's round,
+    /// and the bound a handler's bound slot takes, all reached through the one glob.
+    #[test]
+    fn the_windowed_forms_are_in_reach() {
+        fn bindable<T: Bindable>() {}
+        let _ = PipelinedStream::new("{jobs}").group("workers");
+        let _ = AtomicStream::new("{jobs}").group("workers");
+        let _ = RedisStream::new("{jobs}")
+            .group("workers")
+            .pipeline()
+            .atomic();
+        let _: InRound = InRound;
+        bindable::<ruststream_fred::RedisPublisher>();
+    }
 }
 
 mod list_prelude {
@@ -60,6 +75,18 @@ mod list_prelude {
         #[cfg(feature = "testing")]
         pairs_in_process::<Publish>();
     }
+
+    /// The windowed forms of this descriptor, the reply transform that joins a delivery's round,
+    /// and the bound a handler's bound slot takes, all reached through the one glob.
+    #[test]
+    fn the_windowed_forms_are_in_reach() {
+        fn bindable<T: Bindable>() {}
+        let _ = PipelinedList::new("{jobs}").reliable();
+        let _ = AtomicList::new("{jobs}").reliable();
+        let _ = RedisList::new("{jobs}").reliable().pipeline().atomic();
+        let _: InRound = InRound;
+        bindable::<ruststream_fred::RedisListPublisher>();
+    }
 }
 
 mod pubsub_prelude {
@@ -79,6 +106,18 @@ mod pubsub_prelude {
         pairs::<Publish>();
         #[cfg(feature = "testing")]
         pairs_in_process::<Publish>();
+    }
+
+    /// The windowed forms of this descriptor, the reply transform that joins a delivery's round,
+    /// and the bound a handler's bound slot takes, all reached through the one glob.
+    #[test]
+    fn the_windowed_forms_are_in_reach() {
+        fn bindable<T: Bindable>() {}
+        let _ = PipelinedPubSub::new("{jobs}");
+        let _ = AtomicPubSub::new("{jobs}");
+        let _ = RedisPubSub::new("{jobs}").pipeline().atomic();
+        let _: InRound = InRound;
+        bindable::<ruststream_fred::RedisPubSubPublisher>();
     }
 }
 
@@ -102,6 +141,21 @@ mod crate_prelude {
         // Reached through the form modules, which is how a mixed file writes them.
         pairs::<stream::Publish>();
         pairs::<pubsub::Publish>();
+    }
+
+    /// The windowed forms of this descriptor, the reply transform that joins a delivery's round,
+    /// and the bound a handler's bound slot takes, all reached through the one glob.
+    #[test]
+    fn the_windowed_forms_are_in_reach() {
+        fn bindable<T: Bindable>() {}
+        let _ = PipelinedStream::new("{jobs}").group("workers");
+        let _ = AtomicStream::new("{jobs}").group("workers");
+        let _ = RedisStream::new("{jobs}")
+            .group("workers")
+            .pipeline()
+            .atomic();
+        let _: InRound = InRound;
+        bindable::<ruststream_fred::RedisPublisher>();
     }
 }
 

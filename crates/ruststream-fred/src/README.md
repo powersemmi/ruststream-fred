@@ -614,10 +614,7 @@ into the delivery's segment of that window.
 
 ```
 # mod demo {
-use ruststream_fred::context::keys;
-use ruststream_fred::pipeline::InRound;
 use ruststream_fred::stream::prelude::*;
-use ruststream_fred::PipelinedStream;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -661,7 +658,9 @@ fn app() -> impl App {
 `#[subscriber(..)]` attribute reads a descriptor's type off the constructor its chain starts
 from, so the attribute spells a pipelined subscription with [`PipelinedStream`],
 [`PipelinedList`] and [`PipelinedPubSub`], and an atomic one with [`AtomicStream`],
-[`AtomicList`] and [`AtomicPubSub`]. They take the same builder steps as the descriptor.
+[`AtomicList`] and [`AtomicPubSub`]. They take the same builder steps as the descriptor, and
+each form's prelude carries its two, with the [`pipeline::InRound`] transform and the
+[`pipeline::Bindable`] bound.
 
 A window flushes in three cases: the read's `COUNT` has settled, nothing is outstanding, or the
 subscription stops. The flush sends every committed segment and then one pipeline of settles on
@@ -686,7 +685,8 @@ settles failed stay pending and are delivered again.
 [`pipeline::RedisPipeline`] carries `fred`'s command methods for keys, strings, hashes, lists,
 sets, sorted sets, streams, functions, `PUBLISH`, and Lua through `eval` and `evalsha`, plus
 `custom` for any other command. Each
-one queues the command and returns `()`, so its reply is not available inside the handler.
+one queues the command and returns `Result<(), fred::error::Error>`: `Ok` means queued, and an
+error is `fred`'s refusal at queue time. The command's reply is not available inside the handler.
 Take `Ctx<keys::FredPool>` for a command whose answer the handler needs now. A delivery whose
 handler queues nothing costs the window no buffer. One that queues gets a `fred` pipeline of its
 own, the first time it queues.
