@@ -229,6 +229,7 @@ impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker> for Pipelined<Re
         let window = Window::new(
             inner.round_form(),
             inner.round_client(),
+            Arc::clone(connected.rounds()),
             Mode::ATOMIC,
             inner.key(),
             prefetch(),
@@ -254,6 +255,7 @@ impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker> for Pipelined<Re
         let window = Window::new(
             PubSubForm,
             inner.round_client(),
+            Arc::clone(connected.rounds()),
             Mode::ATOMIC,
             channel,
             prefetch(),
@@ -277,6 +279,7 @@ impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker> for Pipelined<Re
             let window = Window::new(
                 wire.round_form(),
                 wire.round_client(),
+                Arc::clone(connected.rounds()),
                 Mode::ATOMIC,
                 wire.key(),
                 prefetch(),
@@ -294,6 +297,7 @@ addressed!(ConnectedRedisBroker, RedisPubSub);
 mod testing {
     use std::future::Future;
     use std::num::NonZeroUsize;
+    use std::sync::Arc;
 
     use futures::Stream;
     #[cfg(feature = "asyncapi")]
@@ -356,6 +360,7 @@ mod testing {
                     let window = Window::new(
                         TestForm,
                         connected.pool_handle()?.next().clone(),
+                        Arc::clone(connected.rounds()),
                         Mode::ATOMIC,
                         name,
                         prefetch(),

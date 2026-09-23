@@ -17,8 +17,10 @@ use ruststream::{
 use tracing::warn;
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
+use crate::envelope::frame;
 use crate::list::push;
 use crate::partition::{RedisPublishOptions, resolved_headers};
+use crate::pubsub::PubSubMode;
 use crate::pubsub::send;
 use crate::route::Route;
 use crate::{convert::fields_for_publish, error::RedisError};
@@ -165,6 +167,8 @@ impl DefaultPublish for ConnectedRedisBroker {
 #[derive(Clone)]
 pub struct RedisDefaultPublisher {
     core: Arc<RedisCore>,
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    round_name: u64,
 }
 
 impl Debug for RedisDefaultPublisher {
@@ -176,8 +180,16 @@ impl Debug for RedisDefaultPublisher {
 }
 
 impl RedisDefaultPublisher {
-    pub(crate) const fn new(core: Arc<RedisCore>) -> Self {
-        Self { core }
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    pub(crate) const fn round_name(&self) -> u64 {
+        self.round_name
+    }
+
+    pub(crate) fn new(core: Arc<RedisCore>) -> Self {
+        Self {
+            round_name: core.rounds().publisher(),
+            core,
+        }
     }
 }
 
@@ -197,6 +209,34 @@ impl Publisher for RedisDefaultPublisher {
     ) -> Result<(), Self::Error> {
         let (key, payload, headers) = msg.into_parts();
         let headers = resolved_headers(headers, options);
+        if let Some(round) = self
+            .core
+            .rounds()
+            .joined(self.round_name, joins_round(options))
+        {
+            let joined = match self.core.routes().route(key) {
+                Route::Stream => {
+                    round
+                        .xadd(key, fields_for_publish(Vec::from(payload), &headers))
+                        .await
+                }
+                Route::List { envelope } => {
+                    round
+                        .lpush(key, frame(envelope.as_ref(), &payload, &headers), None)
+                        .await
+                }
+                Route::Channel { mode, envelope } => {
+                    round
+                        .publish(
+                            key,
+                            frame(envelope.as_ref(), &payload, &headers),
+                            mode == PubSubMode::Sharded,
+                        )
+                        .await
+                }
+            };
+            return joined.map_err(RedisError::publish);
+        }
         match self.core.routes().route(key) {
             Route::Stream => append(&self.core, key, Vec::from(payload), &headers).await,
             Route::List { envelope } => {
@@ -207,6 +247,11 @@ impl Publisher for RedisDefaultPublisher {
             }
         }
     }
+}
+
+/// Whether the call site asked this message to join the round of the delivery being handled.
+pub(crate) fn joins_round(options: Option<&RedisPublishOptions>) -> bool {
+    options.is_some_and(|options| options.join_round)
 }
 
 /// `XADD`s one entry onto the stream `key`: the stream publish, shared by [`RedisPublisher`] and
@@ -316,6 +361,8 @@ impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisPublish {
 pub struct RedisPublisher {
     core: Arc<RedisCore>,
     txn: Arc<Mutex<Option<Vec<Buffered>>>>,
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    round_name: u64,
 }
 
 impl Debug for RedisPublisher {
@@ -327,8 +374,14 @@ impl Debug for RedisPublisher {
 }
 
 impl RedisPublisher {
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    pub(crate) const fn round_name(&self) -> u64 {
+        self.round_name
+    }
+
     pub(crate) fn new(core: Arc<RedisCore>) -> Self {
         Self {
+            round_name: core.rounds().publisher(),
             core,
             txn: Arc::new(Mutex::new(None)),
         }
@@ -374,6 +427,16 @@ impl Publisher for RedisPublisher {
         msg: OutgoingMessage<'_, BytesMut>,
         options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
+        if let Some(round) = self
+            .core
+            .rounds()
+            .joined(self.round_name, joins_round(options))
+        {
+            let (key, payload, headers) = msg.into_parts();
+            let fields =
+                fields_for_publish(Vec::from(payload), &resolved_headers(headers, options));
+            return round.xadd(key, fields).await.map_err(RedisError::publish);
+        }
         let (key, payload, headers) = msg.into_parts();
         let entry: Buffered = (
             key.to_owned(),

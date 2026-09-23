@@ -14,16 +14,21 @@ mod commands;
 mod descriptors;
 mod forms;
 mod message;
+mod rounds;
 mod source;
 mod window;
 
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
+use std::ops::Deref;
 
 use fred::clients::{Client, Pipeline};
 use fred::error::Error;
 use fred::interfaces::ClientLike;
 use fred::types::{CustomCommand, Value};
+use ruststream::runtime::{ForReply, Outgoing, PublishContext, PublishTransform, Reads};
+
+use crate::partition::RedisPublishOptions;
 
 pub use descriptors::{
     AtomicList, AtomicPubSub, AtomicStream, PipelinedList, PipelinedPubSub, PipelinedStream,
@@ -32,6 +37,7 @@ pub use descriptors::{
 pub(crate) use forms::testing::TestForm;
 pub(crate) use forms::{ListForm, PubSubForm, StreamForm};
 pub use message::RoundMessage;
+pub(crate) use rounds::Rounds;
 pub use source::PipelinedSubscriber;
 pub(crate) use window::{Form, Round, Segment, Window};
 
@@ -214,6 +220,155 @@ impl AtomicStep for crate::RedisList {}
 impl AtomicStep for crate::RedisPubSub {}
 impl<Descriptor, Mode> AtomicStep for Pipelined<Descriptor, Mode> {}
 
+mod bindable {
+    /// What a publisher of this crate is named by in a binding.
+    pub trait Named {
+        fn round_name(&self) -> u64;
+    }
+}
+
+/// A publisher of this crate, which `pipeline.bind(&out)` can bind to a delivery's round.
+///
+/// Implemented by every publisher this crate's policies pair into, and by nothing else: a
+/// publisher of another broker publishes through its own connection, which no round of this one
+/// can carry. A handler bounds its slot with it, `Out(out): Out<impl Bindable>`, to bind it.
+///
+/// # Examples
+///
+/// ```
+/// # mod demo {
+/// use ruststream::prelude::*;
+/// use ruststream::subscriber;
+/// use ruststream_fred::PipelinedStream;
+/// use ruststream_fred::context::keys;
+/// use ruststream_fred::pipeline::Bindable;
+/// # #[derive(serde::Deserialize)]
+/// # struct Order { id: u64 }
+/// #[derive(serde::Serialize, Outgoing)]
+/// #[outgoing(name = "audit")]
+/// struct Audit {
+///     id: u64,
+/// }
+///
+/// /// The audit entry leaves with the delivery's acknowledgement, and not without it.
+/// #[subscriber(PipelinedStream::new("orders").group("workers"))]
+/// async fn record(
+///     order: &Order,
+///     Ctx(pipeline): Ctx<keys::Pipeline>,
+///     Out(out): Out<impl Bindable>,
+/// ) -> HandlerOutcome {
+///     let out = pipeline.bind(out);
+///     if out.message(&Audit { id: order.id }).publish().await.is_err() {
+///         return HandlerOutcome::retry();
+///     }
+///     HandlerOutcome::ack()
+/// }
+/// # }
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a publisher of ruststream-fred, so it cannot join a delivery's round",
+    label = "this slot publishes through another broker",
+    note = "bind a slot whose policy is one of this crate's (`stream::Publish`, `list::Publish`, \
+            `pubsub::Publish`), and bound the slot parameter as `Out<impl Bindable>`"
+)]
+pub trait Bindable: ruststream::Publisher + bindable::Named {}
+
+impl<T: ruststream::Publisher + bindable::Named> Bindable for T {}
+
+impl bindable::Named for crate::RedisPublisher {
+    fn round_name(&self) -> u64 {
+        self.round_name()
+    }
+}
+
+impl bindable::Named for crate::RedisListPublisher {
+    fn round_name(&self) -> u64 {
+        self.round_name()
+    }
+}
+
+impl bindable::Named for crate::RedisPubSubPublisher {
+    fn round_name(&self) -> u64 {
+        self.round_name()
+    }
+}
+
+impl bindable::Named for crate::RedisDefaultPublisher {
+    fn round_name(&self) -> u64 {
+        self.round_name()
+    }
+}
+
+#[cfg(feature = "testing")]
+impl bindable::Named for crate::testing::RedisTestPublisher {
+    fn round_name(&self) -> u64 {
+        self.round_name()
+    }
+}
+
+#[cfg(feature = "testing")]
+impl bindable::Named for crate::testing::RedisTestPlainPublisher {
+    fn round_name(&self) -> u64 {
+        self.round_name()
+    }
+}
+
+/// The reply transform that puts a reply in the round of the delivery it answers.
+///
+/// A reply is published after the handler returns and before the delivery settles. Mounted on
+/// the reply position of a `.pipeline()` subscription, this transform queues it into the
+/// delivery's segment instead: it leaves with the window, after what the handler queued, and
+/// under `.atomic()` inside the delivery's `MULTI` / `EXEC`. On a subscription without a window
+/// the reply leaves at once, as it does without the transform.
+///
+/// # Examples
+///
+/// ```
+/// # mod demo {
+/// use ruststream_fred::pipeline::InRound;
+/// use ruststream_fred::stream::prelude::*;
+/// use ruststream_fred::PipelinedStream;
+/// # #[derive(serde::Deserialize)]
+/// # struct Order { id: u64 }
+/// #[derive(serde::Serialize, Outgoing)]
+/// #[outgoing(name = "receipts")]
+/// struct Receipt {
+///     id: u64,
+/// }
+///
+/// #[subscriber(PipelinedStream::new("orders").group("workers"), publish)]
+/// async fn issue(order: &Order) -> Receipt {
+///     Receipt { id: order.id }
+/// }
+///
+/// fn app() -> RustStream {
+///     RustStream::new(AppInfo::new("receipts", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             b.include(issue).out_reply(Publish).transform(InRound);
+///         },
+///     )
+/// }
+/// # }
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InRound;
+
+impl<C> PublishTransform<ForReply<C>, RedisPublishOptions> for InRound {
+    type Destination = Reads;
+
+    fn apply(
+        &self,
+        _out: &mut Outgoing<'_>,
+        options: &mut Option<RedisPublishOptions>,
+        _cx: &PublishContext<'_, C>,
+    ) {
+        options
+            .get_or_insert_with(RedisPublishOptions::default)
+            .join_round = true;
+    }
+}
+
 /// The delivery's own buffer in the window: what a handler queues its Redis commands into.
 ///
 /// Reached as `Ctx<keys::Pipeline>` on a `.pipeline()` subscription. It carries `fred`'s command
@@ -294,6 +449,40 @@ impl RedisPipeline {
     /// The delivery's segment, created on first use.
     async fn segment(&self) -> Result<Segment, Error> {
         self.round.segment().await
+    }
+
+    /// Binds a slot's publisher to this delivery's round, and hands the slot back.
+    ///
+    /// What the slot publishes from this delivery's handler is queued into the delivery's segment
+    /// from then on: it leaves with the window, after what was queued before it, only if the
+    /// delivery is acknowledged, and under `.atomic()` inside the delivery's `MULTI` / `EXEC`.
+    /// The slot keeps its codec and its transforms. A slot publish the handler does not bind
+    /// leaves at once.
+    ///
+    /// See [`Bindable`] for a handler that binds its slot.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::ops::Deref;
+    /// use ruststream_fred::pipeline::{Bindable, RedisPipeline};
+    ///
+    /// fn bound<'o, O>(pipeline: &RedisPipeline, out: &'o O) -> &'o O
+    /// where
+    ///     O: Deref,
+    ///     O::Target: Bindable,
+    /// {
+    ///     pipeline.bind(out)
+    /// }
+    /// # let _ = bound::<Box<ruststream_fred::RedisPublisher>>;
+    /// ```
+    pub fn bind<'o, O>(&self, out: &'o O) -> &'o O
+    where
+        O: Deref,
+        O::Target: Bindable,
+    {
+        self.round.bind(bindable::Named::round_name(&**out));
+        out
     }
 
     /// Queues a command this facade does not name, by its name and its arguments.

@@ -44,6 +44,7 @@ use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::envelope::{SharedEnvelope, frame, unframe};
 use crate::partition::{RedisPublishOptions, resolved_headers};
 use crate::pipeline::{Pipelined, PubSubForm, RoundMessage, Window};
+use crate::publisher::joins_round;
 use crate::route::Route;
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
 
@@ -880,6 +881,8 @@ pub struct RedisPubSubPublisher {
     core: Arc<RedisCore>,
     mode: PubSubMode,
     codec: Option<SharedEnvelope>,
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    round_name: u64,
 }
 
 impl Debug for RedisPubSubPublisher {
@@ -892,8 +895,14 @@ impl Debug for RedisPubSubPublisher {
 }
 
 impl RedisPubSubPublisher {
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    pub(crate) const fn round_name(&self) -> u64 {
+        self.round_name
+    }
+
     pub(crate) fn new(core: Arc<RedisCore>, publish: RedisPubSubPublish) -> Self {
         Self {
+            round_name: core.rounds().publisher(),
             core,
             mode: publish.mode,
             codec: publish.codec,
@@ -919,6 +928,21 @@ impl Publisher for RedisPubSubPublisher {
         options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
         let (channel, payload, headers) = msg.into_parts();
+        if let Some(round) = self
+            .core
+            .rounds()
+            .joined(self.round_name, joins_round(options))
+        {
+            let body = frame(
+                self.codec.as_ref(),
+                payload,
+                &resolved_headers(headers, options),
+            );
+            return round
+                .publish(channel, body, self.mode == PubSubMode::Sharded)
+                .await
+                .map_err(RedisError::publish);
+        }
         send(
             &self.core,
             self.mode,

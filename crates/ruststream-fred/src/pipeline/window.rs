@@ -15,13 +15,15 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use fred::clients::{Client, Pipeline, WithOptions};
 use fred::error::Error;
-use fred::interfaces::ClientLike;
+use fred::interfaces::{
+    ClientLike, KeysInterface, ListInterface, PubsubInterface, StreamsInterface,
+};
 use fred::types::config::Options;
 use fred::types::{ClusterHash, CustomCommand, Value};
 use futures::future::join_all;
 use ruststream::{AckError, IncomingMessage};
 
-use super::pipeline_on;
+use super::{Rounds, pipeline_on};
 use crate::error::RedisError;
 
 /// One delivery's buffer: a `fred` pipeline, pinned to the subscription's slot and opened with
@@ -60,6 +62,7 @@ fn transaction_edge(name: &'static str, slot: u16) -> CustomCommand {
 /// What the slots of one subscription hold: the part of the window a handler's facade reaches.
 pub(crate) struct Segments {
     client: Client,
+    rounds: Arc<Rounds>,
     atomic: bool,
     /// The cluster slot of the subscription key, which an atomic segment is pinned to.
     hash_slot: u16,
@@ -178,6 +181,80 @@ pub(crate) struct Round {
 impl Round {
     pub(crate) async fn segment(&self) -> Result<Segment, Error> {
         self.segments.segment(self.slot).await
+    }
+
+    /// Whether `other` is this very slot of this very window.
+    pub(crate) fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.segments, &other.segments) && self.slot == other.slot
+    }
+
+    /// Records that the delivery of this round is handled in the current task.
+    pub(crate) fn enter(&self) {
+        self.segments.rounds.enter(self);
+    }
+
+    /// Records that `publisher` publishes into this round from the current task.
+    pub(crate) fn bind(&self, publisher: u64) {
+        self.segments.rounds.bind(self, publisher);
+    }
+
+    /// Queues an `XADD` into this round's segment.
+    pub(crate) async fn xadd(
+        &self,
+        key: &str,
+        fields: Vec<(String, Vec<u8>)>,
+    ) -> Result<(), Error> {
+        match self.segment().await? {
+            Segment::Plain(segment) => {
+                segment
+                    .xadd::<(), _, _, _, _>(key, false, None::<()>, "*", fields)
+                    .await
+            }
+            Segment::Atomic(segment) => {
+                segment
+                    .xadd::<(), _, _, _, _>(key, false, None::<()>, "*", fields)
+                    .await
+            }
+        }
+    }
+
+    /// Queues an `LPUSH`, and the key's expiry when there is one, into this round's segment.
+    pub(crate) async fn lpush(
+        &self,
+        key: &str,
+        body: Vec<u8>,
+        ttl_millis: Option<i64>,
+    ) -> Result<(), Error> {
+        match self.segment().await? {
+            Segment::Plain(segment) => {
+                segment.lpush::<(), _, _>(key, body).await?;
+                if let Some(ttl) = ttl_millis {
+                    segment.pexpire::<(), _>(key, ttl, None).await?;
+                }
+            }
+            Segment::Atomic(segment) => {
+                segment.lpush::<(), _, _>(key, body).await?;
+                if let Some(ttl) = ttl_millis {
+                    segment.pexpire::<(), _>(key, ttl, None).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Queues a `PUBLISH`, or an `SPUBLISH` when `sharded`, into this round's segment.
+    pub(crate) async fn publish(
+        &self,
+        channel: &str,
+        body: Vec<u8>,
+        sharded: bool,
+    ) -> Result<(), Error> {
+        match (self.segment().await?, sharded) {
+            (Segment::Plain(segment), false) => segment.publish::<(), _, _>(channel, body).await,
+            (Segment::Plain(segment), true) => segment.spublish::<(), _, _>(channel, body).await,
+            (Segment::Atomic(segment), false) => segment.publish::<(), _, _>(channel, body).await,
+            (Segment::Atomic(segment), true) => segment.spublish::<(), _, _>(channel, body).await,
+        }
     }
 }
 
@@ -322,6 +399,7 @@ impl<F: Form> Window<F> {
     pub(crate) fn new(
         form: F,
         client: Client,
+        rounds: Arc<Rounds>,
         atomic: bool,
         name: impl Into<Arc<str>>,
         capacity: usize,
@@ -332,6 +410,7 @@ impl<F: Form> Window<F> {
             form,
             segments: Arc::new(Segments {
                 client,
+                rounds,
                 atomic,
                 hash_slot,
                 slots: Mutex::new(Slots::default()),
@@ -406,6 +485,9 @@ impl<F: Form> Window<F> {
         settle: impl FnOnce(&F, &mut Vec<F::Op>) -> Result<(), AckError>,
     ) -> Result<(), AckError> {
         let closed = self.segments.close(round.slot, commit);
+        if closed.is_some() {
+            self.segments.rounds.leave(round);
+        }
         let (mut result, closing) = {
             let mut guard = self.owed();
             let owed = &mut *guard;
@@ -481,6 +563,9 @@ impl<F: Form> Window<F> {
     /// its segment is dropped and the entry stays with the broker.
     pub(crate) fn abandon(&self, round: &Round) {
         let closed = self.segments.close(round.slot, false);
+        if closed.is_some() {
+            self.segments.rounds.leave(round);
+        }
         let mut guard = self.owed();
         let owed = &mut *guard;
         // The last member of a batch gives back what the members before it owe.

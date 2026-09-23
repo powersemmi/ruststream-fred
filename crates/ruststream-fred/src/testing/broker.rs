@@ -21,6 +21,7 @@ use ruststream::{
 };
 
 use crate::broker::missing_default_group;
+use crate::pipeline::Rounds;
 use crate::route::{Recorded, Route, Routes};
 use crate::testing::commands::StandInCommands;
 use crate::{
@@ -44,6 +45,8 @@ pub(crate) struct TestBrokerState {
     pool: OnceLock<Pool>,
     /// The routes the real connection records, read by the default publisher.
     pub(crate) routes: Routes,
+    /// The rounds a publish of this broker may join, as the real connection keeps them.
+    pub(crate) rounds: Arc<Rounds>,
     /// The harness's quiescence-and-recording coordinator, installed by a
     /// [`TestApp`](ruststream::testing::TestApp) run. Empty in production and under the conformance
     /// suite, so fanout does no extra work.
@@ -365,6 +368,11 @@ impl ConnectedRedisTestBroker {
     pub fn pool_handle(&self) -> Result<Pool, RedisError> {
         self.state.alive()?;
         Ok(self.state.pool().clone())
+    }
+
+    /// The rounds a publish of this broker may join.
+    pub(crate) fn rounds(&self) -> &Arc<Rounds> {
+        &self.state.rounds
     }
 
     /// Returns a list publisher (`LPUSH`), the counterpart of
