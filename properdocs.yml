@@ -95,7 +95,8 @@ plugins:
         testing.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/testing/index.html
         ru/testing.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/testing/index.html
         zh/testing.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/testing/index.html
-  # Versioned docs are published with `mike` (see the Docs workflow and the version switcher).
+  # Versioned docs are published with `mike` (see the Deploy docs workflow and the version
+  # switcher).
   # Each translation is a tree of its own under `docs/<locale>/`, mirroring the English paths.
   # English stays at the docs root: a file outside a locale folder is the default language.
   # The alternative, a `<page>.<locale>.md` suffix beside each original, put a page and its

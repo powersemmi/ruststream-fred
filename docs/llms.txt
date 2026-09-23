@@ -1,0 +1,40 @@
+# ruststream-fred
+
+> `ruststream-fred` is the Redis and Valkey broker crate for RustStream, a Rust framework for services that subscribe to message brokers and publish to them. Over the `fred` client it serves three transports: Redis Streams read through a consumer group, lists as a competing-consumers work queue, and Pub/Sub channels and patterns, on standalone, cluster and sentinel topologies.
+
+A subscription is a descriptor: `RedisStream`, `RedisList` (or `RedisList::reliable`), `RedisPubSub` or `RedisPubSubPattern`; a bare `#[subscriber("key")]` opens a consumer group over that stream key. A service on one transport imports that form's prelude (`ruststream_fred::stream::prelude::*`, `list::prelude` or `pubsub::prelude`), which offers its policy as `Publish` (`RedisPublish`, `RedisListPublish`, `RedisPubSubPublish`); a file mixing forms imports `ruststream_fred::prelude::*`. The partition key of one publish is its per-message setting. Three `cargo generate` templates (`redis-stream`, `redis-pubsub`, `redis-list`) scaffold a service.
+
+This site holds the entry pages. The crate's guide is its overview on docs.rs, and the framework itself is documented on the RustStream site.
+
+## Site
+
+- [Home](https://powersemmi.github.io/ruststream-fred/latest/): the transports, the dependency lines, the scaffolds and the three topologies
+- [Benchmarks](https://powersemmi.github.io/ruststream-fred/latest/benchmarks/): what this crate and the framework's runtime cost over the raw `fred` client, and how to re-measure it with `just bench`
+
+## Guide
+
+- [Overview](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html): the transport and a service
+- [Subscribing](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#subscribing): the descriptors, what each settles and where its retry copy goes
+- [Streams](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#streams): consumer groups over a stream key
+- [Lists](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#lists): the simple and the reliable list
+- [Pub/Sub](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#pubsub): channels and patterns
+- [Batches](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#batches): batch handlers per transport
+- [Native delivery fields](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#native-delivery-fields): the Redis metadata a handler reads by typed context key
+- [Acknowledgement](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#acknowledgement): how each handler outcome settles a delivery
+- [Delayed retry](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#delayed-retry): the copy the runtime republishes after a delay
+- [Capping the retries](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#capping-the-retries): the retry cap and the dead-letter destination
+- [Repositioning a group](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#repositioning-a-group): moving a stream consumer group
+- [Publishing](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#publishing): the three publish policies
+- [Partition keys](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#partition-keys): the partition key step of one publish
+- [Transactions](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#transactions): `MULTI` / `EXEC` groups of publishes on the stream publisher
+- [The prelude](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#the-prelude): the form preludes and the mixed-form prelude
+- [The generated document](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#the-generated-document): what the `asyncapi` feature reports about a Redis channel
+- [Testing](https://docs.rs/ruststream-fred/latest/ruststream_fred/testing/index.html): the in-process broker behind the `testing` feature, driven by `TestApp`
+- [Operations](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#operations): topologies, pools, credentials and TLS
+- [Cargo features](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#cargo-features): `testing`, `asyncapi`, the TLS backends, `sentinel-auth` and `credential-provider`
+
+## Optional
+
+- [API reference](https://docs.rs/ruststream-fred): the full rustdoc of the crate
+- [RustStream llms.txt](https://powersemmi.github.io/ruststream/llms.txt): the index of the framework's own documentation
+- [Source](https://github.com/powersemmi/ruststream-fred): the crate's repository and its templates
