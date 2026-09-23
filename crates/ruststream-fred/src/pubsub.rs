@@ -347,7 +347,7 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisPubSu
         self,
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> Result<Self::Subscriber, RedisError> {
-        connected.subscribe_unsettleable(self.channel()).await
+        connected.subscribe_channel(self.channel()).await
     }
 
     /// The same body the real broker's descriptor writes, so a document built in a test is the
@@ -683,7 +683,7 @@ impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisPubSubPubl
         self,
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
-        ready(Ok(connected.plain_publisher()))
+        ready(Ok(connected.pubsub_publisher(self)))
     }
 
     /// The same body the real broker's policy writes, so a document built in a test is the
