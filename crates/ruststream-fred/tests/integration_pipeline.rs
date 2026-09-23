@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fred::interfaces::{KeysInterface, ListInterface, StreamsInterface};
 use ruststream::{Broker, ConnectedBroker, OutgoingMessage, Publisher};
-use ruststream_fred::context::keys;
+use ruststream_fred::context::{PipelineContext, keys};
 use ruststream_fred::pipeline::RedisPipeline;
 use ruststream_fred::prelude::*;
 use ruststream_fred::{
@@ -123,6 +123,25 @@ async fn atomic_list(order: &Order, Ctx(pipeline): Ctx<keys::Pipeline>) -> Handl
 #[subscriber(PipelinedList::new(key("simple")))]
 async fn simple(order: &Order, Ctx(pipeline): Ctx<keys::Pipeline>) -> HandlerOutcome {
     queue_and_settle(order, &pipeline, format!("{}.audit", key("simple"))).await
+}
+
+#[subscriber(
+    PipelinedStream::new(key("batch")).group("workers"),
+    start_at(RedisGroupPosition::beginning())
+)]
+async fn batch(orders: &[Order], ctx: &mut Context<'_, PipelineContext>) -> HandlerOutcome {
+    let pipeline = ctx.context(keys::Pipeline).clone();
+    let audit = format!("{}.audit", key("batch"));
+    for order in orders.iter().filter(|order| order.outcome != "drop") {
+        if pipeline
+            .lpush(audit.as_str(), order.id.to_string())
+            .await
+            .is_err()
+        {
+            return HandlerOutcome::retry();
+        }
+    }
+    HandlerOutcome::ack()
 }
 
 async fn connected(url: &str) -> ConnectedRedisBroker {
@@ -314,3 +333,18 @@ list_case!(
     "atomic-list"
 );
 list_case!(a_simple_list_window_pops_in_batches, simple, "simple");
+
+/// A batch is one segment: its body's commands and the settles of every entry leave together.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_batch_window_sends_what_the_batch_queued_and_settles_every_entry() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let app = RustStream::new(AppInfo::new("pipeline", "0.1.0")).with_broker(
+        RedisBroker::standalone(url.clone()),
+        |b| {
+            b.include(batch.batch(nonzero!(8)));
+        },
+    );
+    run_window(&url, "batch", app).await;
+}

@@ -416,6 +416,14 @@ impl<F: Form> BuildContext<RoundMessage<F>> for PipelineContext {
     }
 }
 
+/// A batch of a `.pipeline()` subscription is one segment: its context hands the batch body the
+/// round every delivery of the batch shares.
+impl<F: Form> BuildBatchContext<RoundMessage<F>> for PipelineContext {
+    fn build(first: &RoundMessage<F>) -> Self {
+        <Self as BuildContext<RoundMessage<F>>>::build(first)
+    }
+}
+
 impl<F: Form> BuildContext<RoundMessage<F>> for PoolContext {
     fn build(msg: &RoundMessage<F>) -> Self {
         Self::from_pool(F::pool(msg.inner()).clone())

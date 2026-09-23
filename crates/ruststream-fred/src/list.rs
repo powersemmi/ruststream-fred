@@ -831,6 +831,48 @@ impl ListReader {
     }
 }
 
+impl ListReader {
+    /// Yields one batch per read of up to `size` entries, sharing one slot of `window`, so what
+    /// the batch handler queued commits with the settles of every entry.
+    pub(crate) fn round_batches<'a>(
+        &'a mut self,
+        window: &'a Arc<Window<ListForm>>,
+        size: NonZeroUsize,
+    ) -> impl Stream<Item = Result<Vec<RoundMessage<ListForm>>, RedisError>> + Send + 'a {
+        window.fill_at(size.get());
+        unfold(self, move |reader| async move {
+            loop {
+                if let Some(failure) = window.take_failure() {
+                    return Some((Err(failure), reader));
+                }
+                if !reader.buffer.is_empty() {
+                    let take = size.get().min(reader.buffer.len());
+                    let members = u32::try_from(take).unwrap_or(u32::MAX);
+                    let round = window.open_batch(members);
+                    let batch = reader
+                        .buffer
+                        .drain(..take)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .map(|claimed| {
+                            RoundMessage::new(
+                                reader.wire.message_of(claimed),
+                                Arc::clone(window),
+                                round.clone(),
+                            )
+                        })
+                        .collect();
+                    return Some((Ok(batch), reader));
+                }
+                if let Err(err) = reader.wire.claim(size.get(), &mut reader.buffer).await {
+                    return Some((Err(err), reader));
+                }
+                window.fetched(reader.buffer.len());
+            }
+        })
+    }
+}
+
 impl ruststream::Subscriber for ListWire {
     type Message = RedisListMessage;
     type Error = RedisError;
