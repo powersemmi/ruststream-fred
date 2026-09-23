@@ -27,6 +27,7 @@ pub mod prelude;
 // mount site names the policy by the same word whichever form it is on; the types they hold stay
 // re-exported at the crate root as well, for a file that mixes forms.
 pub mod list;
+pub mod pipeline;
 pub mod pubsub;
 pub mod stream;
 
@@ -38,6 +39,9 @@ pub use list::{
 };
 pub use message::{DELIVERY_COUNT_HEADER, IDLE_MS_HEADER, PARTITION_KEY_HEADER, RedisMessage};
 pub use partition::{RedisPublishOptions, RedisPublishSteps};
+pub use pipeline::{
+    AtomicList, AtomicPubSub, AtomicStream, PipelinedList, PipelinedPubSub, PipelinedStream,
+};
 pub use publisher::{
     RedisDefaultPublish, RedisDefaultPublisher, RedisPublish, RedisPublisher, RedisTransaction,
 };

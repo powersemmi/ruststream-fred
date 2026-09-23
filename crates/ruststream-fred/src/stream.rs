@@ -29,6 +29,7 @@ use ruststream::{
 use crate::asyncapi;
 use crate::broker::ConnectedRedisBroker;
 use crate::delay::{DelayConfig, DelayedRetry};
+use crate::pipeline::Pipelined;
 #[cfg(feature = "testing")]
 use crate::route::Route;
 #[cfg(feature = "testing")]
@@ -313,6 +314,27 @@ impl RedisStream {
     pub fn start_id(mut self, start: StreamStart) -> Self {
         self.start = start;
         self
+    }
+
+    /// Opens a window on this subscription: its settles and the commands its handlers queue
+    /// through [`keys::Pipeline`](crate::context::keys::Pipeline) leave together, in one pipeline
+    /// on a connection of the pool.
+    ///
+    /// The window flushes once the read's `COUNT` has settled, once nothing is outstanding, or
+    /// when the subscription stops. Under load that is one `XACK` per fetched batch; on a trickle
+    /// the window leaves as soon as the last handler of the batch returns. See
+    /// [`pipeline`](crate::pipeline) for what a handler queues and what the outcome does with it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream_fred::RedisStream;
+    ///
+    /// let orders = RedisStream::new("orders").group("workers").pipeline();
+    /// # let _ = orders;
+    /// ```
+    pub const fn pipeline(self) -> Pipelined<Self> {
+        Pipelined::wrap(self)
     }
 
     /// Opts this subscription into durable, crash-safe delayed retry backed by a ZSET delay queue.

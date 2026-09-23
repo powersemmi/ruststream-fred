@@ -61,6 +61,7 @@ use ruststream::{BuildBatchContext, BuildContext, Field};
 
 use crate::list::RedisListMessage;
 use crate::message::RedisMessage;
+use crate::pipeline::{Form, RedisPipeline, RoundMessage};
 use crate::pubsub::RedisPubSubMessage;
 use crate::seek::{EntryId, RedisGroupPosition, RedisGroupSeeker};
 
@@ -358,6 +359,82 @@ impl BuildContext<crate::testing::RedisTestMessage> for PoolContext {
     }
 }
 
+/// The per-delivery context of a `.pipeline()` subscription: the delivery's round and the
+/// broker's connection pool.
+///
+/// Only a pipelined subscription's delivery builds it, which is what makes `Ctx<keys::Pipeline>`
+/// a compile error on a subscription without a window.
+///
+/// # Examples
+///
+/// ```
+/// # mod demo {
+/// use ruststream::prelude::*;
+/// use ruststream::subscriber;
+/// use ruststream_fred::PipelinedStream;
+/// use ruststream_fred::context::{PipelineContext, keys};
+/// # #[derive(serde::Deserialize)]
+/// # struct Order { id: u64 }
+///
+/// #[subscriber(PipelinedStream::new("orders").group("workers"))]
+/// async fn work(order: &Order, ctx: &mut Context<'_, PipelineContext>) -> HandlerOutcome {
+///     let queued = ctx.context(keys::Pipeline).incr("orders.seen").await;
+///     let _ = order.id;
+///     if queued.is_err() {
+///         return HandlerOutcome::retry();
+///     }
+///     HandlerOutcome::ack()
+/// }
+/// # }
+/// ```
+#[derive(Debug, Clone)]
+pub struct PipelineContext {
+    pipeline: RedisPipeline,
+    pool: Pool,
+}
+
+impl PipelineContext {
+    /// The delivery's round: what the handler queues its commands into.
+    #[must_use]
+    pub const fn pipeline(&self) -> &RedisPipeline {
+        &self.pipeline
+    }
+
+    /// The broker's connection pool, for a command whose answer the handler needs now.
+    #[must_use]
+    pub const fn pool(&self) -> &Pool {
+        &self.pool
+    }
+}
+
+impl<F: Form> BuildContext<RoundMessage<F>> for PipelineContext {
+    fn build(msg: &RoundMessage<F>) -> Self {
+        Self {
+            pipeline: RedisPipeline::new(msg.round().clone()),
+            pool: F::pool(msg.inner()).clone(),
+        }
+    }
+}
+
+impl<F: Form> BuildContext<RoundMessage<F>> for PoolContext {
+    fn build(msg: &RoundMessage<F>) -> Self {
+        Self::from_pool(F::pool(msg.inner()).clone())
+    }
+}
+
+/// `Ctx<keys::FredPool>` beside `Ctx<keys::Pipeline>`: the handler's context is
+/// [`PipelineContext`] there.
+impl<State: Sync> FromContext<PipelineContext, State> for Ctx<keys::FredPool> {
+    type Rejection = Infallible;
+
+    fn from_context(
+        ctx: &mut Context<'_, PipelineContext, State>,
+    ) -> impl Future<Output = Result<Self, Infallible>> + Send {
+        let pool = ctx.context(keys::FredPool).clone();
+        async move { Ok(Self(pool)) }
+    }
+}
+
 /// `Ctx<keys::FredPool>` beside a stream key: the handler's context is [`StreamContext`] there.
 impl<State: Sync> FromContext<StreamContext, State> for Ctx<keys::FredPool> {
     type Rejection = Infallible;
@@ -395,9 +472,39 @@ pub mod keys {
     use fred::clients::Pool;
 
     use super::{
-        Field, PoolContext, PubSubContext, RedisGroupPosition, RedisGroupSeeker,
-        StreamBatchContext, StreamContext,
+        Field, PipelineContext, PoolContext, PubSubContext, RedisGroupPosition, RedisGroupSeeker,
+        RedisPipeline, StreamBatchContext, StreamContext,
     };
+
+    /// Reads the delivery's round off the context of a `.pipeline()` subscription: the
+    /// [`RedisPipeline`] its handler queues commands into.
+    ///
+    /// The key names [`PipelineContext`], which only a pipelined subscription's delivery builds,
+    /// so taking it on a subscription without a window does not compile.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+    pub struct Pipeline;
+
+    impl ContextField for Pipeline {
+        type Context = PipelineContext;
+        type Value = RedisPipeline;
+        fn read(self, src: &PipelineContext) -> RedisPipeline {
+            src.pipeline().clone()
+        }
+    }
+
+    impl Field<PipelineContext> for Pipeline {
+        type Value<'a> = &'a RedisPipeline;
+        fn get(self, src: &PipelineContext) -> &RedisPipeline {
+            src.pipeline()
+        }
+    }
+
+    impl Field<PipelineContext> for FredPool {
+        type Value<'a> = &'a Pool;
+        fn get(self, src: &PipelineContext) -> &Pool {
+            src.pool()
+        }
+    }
 
     /// Reads the broker's connection pool, `fred::clients::Pool`, off the context of any
     /// subscription.

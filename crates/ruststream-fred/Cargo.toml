@@ -65,7 +65,8 @@ async-trait = "0.1.77"
 
 [dependencies]
 ruststream = { workspace = true, default-features = false }
-fred.workspace = true
+# `i-scripts` is the Lua and function surface a pipelined handler queues through.
+fred = { workspace = true, features = ["i-scripts"] }
 bytes.workspace = true
 futures.workspace = true
 serde = { version = "1", features = ["derive"] }

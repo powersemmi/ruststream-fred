@@ -19,6 +19,7 @@ use ruststream::{
 };
 use tokio::sync::mpsc;
 
+use crate::pipeline::{RoundMessage, TestForm, Window};
 use crate::{
     delay::next_retry_count,
     error::RedisError,
@@ -150,6 +151,49 @@ fn stamp_fresh(delivery: &mut Delivery) {
     delivery.headers.insert(IDLE_MS_HEADER, "0");
 }
 
+impl RedisTestSubscriber {
+    /// Yields one delivery at a time, each with a slot in `window`, telling the window how many
+    /// more have arrived behind it, and reports a failed flush of the window once.
+    pub(crate) fn round_stream<'a>(
+        &'a mut self,
+        window: &'a Arc<Window<TestForm>>,
+    ) -> impl Stream<Item = Result<RoundMessage<TestForm>, RedisError>> + Send + 'a {
+        let retry = self.retry();
+        let coordinator = self.coordinator.clone();
+        let settlement = self.settlement;
+        let delayed = self.delayed;
+        let pool = self.state.pool().clone();
+        futures::stream::poll_fn(move |cx| {
+            if let Some(failure) = window.take_failure() {
+                return Poll::Ready(Some(Err(failure)));
+            }
+            self.poll_delivery(cx).map(|next| {
+                next.map(|delivery| {
+                    let waiting = self.rx.len()
+                        + self
+                            .claiming
+                            .as_ref()
+                            .map_or(0, |claiming| claiming.rx.len());
+                    window.yielded(waiting);
+                    let delivery = RedisTestMessage::from_delivery(
+                        delivery,
+                        retry.clone(),
+                        coordinator.clone(),
+                        settlement,
+                        delayed,
+                        pool.clone(),
+                    );
+                    Ok(RoundMessage::new(
+                        delivery,
+                        Arc::clone(window),
+                        window.open(),
+                    ))
+                })
+            })
+        })
+    }
+}
+
 impl Drop for RedisTestSubscriber {
     fn drop(&mut self) {
         self.state.router.unsubscribe(self.id);
@@ -263,6 +307,15 @@ impl RedisTestMessage {
     /// The stand-in's pool, for the per-delivery context.
     pub(crate) const fn pool(&self) -> &Pool {
         &self.pool
+    }
+
+    /// What settling this delivery answers, before the settle runs: nothing on a form that settles,
+    /// `Unsupported` on Pub/Sub and a simple list, as on a server.
+    pub(crate) fn settle_answer(&self) -> Result<(), AckError> {
+        match self.settlement {
+            Settlement::Settleable => Ok(()),
+            Settlement::Unsupported => Err(AckError::Unsupported),
+        }
     }
 
     /// Returns the stream key this message was published to.

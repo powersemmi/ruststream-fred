@@ -42,6 +42,7 @@ use tokio::sync::broadcast::{Receiver, error::RecvError};
 use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::envelope::{SharedEnvelope, frame, unframe};
 use crate::partition::{RedisPublishOptions, resolved_headers};
+use crate::pipeline::{Pipelined, PubSubForm, RoundMessage, Window};
 use crate::route::Route;
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
 
@@ -172,6 +173,25 @@ impl RedisPubSub {
     #[must_use]
     pub fn channel(&self) -> &str {
         &self.channel
+    }
+
+    /// Opens a window on this subscription: the commands its handlers queue through
+    /// [`keys::Pipeline`](crate::context::keys::Pipeline) leave together, in one pipeline on a
+    /// connection of the pool, once nothing is in flight.
+    ///
+    /// Pub/Sub settles nothing, so the window carries the handlers' commands alone; what it adds
+    /// is that a handler's Redis side effects follow its outcome. See [`pipeline`](crate::pipeline).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream_fred::RedisPubSub;
+    ///
+    /// let events = RedisPubSub::new("events").pipeline();
+    /// # let _ = events;
+    /// ```
+    pub const fn pipeline(self) -> Pipelined<Self> {
+        Pipelined::wrap(self)
     }
 
     pub(crate) const fn delivery_mode(&self) -> PubSubMode {
@@ -458,18 +478,8 @@ impl Debug for RedisPubSubSubscriber {
 }
 
 impl RedisPubSubSubscriber {
-    pub(crate) fn new(
-        client: Client,
-        rx: Receiver<Message>,
-        codec: Option<SharedEnvelope>,
-        pool: Pool,
-    ) -> Self {
-        Self(BufferedSubscriber::new(PubSubWire {
-            client,
-            rx,
-            codec,
-            pool,
-        }))
+    pub(crate) fn new(wire: PubSubWire) -> Self {
+        Self(BufferedSubscriber::new(wire))
     }
 }
 
@@ -507,7 +517,7 @@ impl BatchSubscriber for RedisPubSubSubscriber {
 }
 
 /// The wire side of a Pub/Sub subscription: the dedicated client and the channel it feeds.
-struct PubSubWire {
+pub(crate) struct PubSubWire {
     client: Client,
     rx: Receiver<Message>,
     codec: Option<SharedEnvelope>,
@@ -518,6 +528,58 @@ struct PubSubWire {
 impl Debug for PubSubWire {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PubSubWire").finish_non_exhaustive()
+    }
+}
+
+impl PubSubWire {
+    pub(crate) const fn new(
+        client: Client,
+        rx: Receiver<Message>,
+        codec: Option<SharedEnvelope>,
+        pool: Pool,
+    ) -> Self {
+        Self {
+            client,
+            rx,
+            codec,
+            pool,
+        }
+    }
+
+    /// The window's client: a connection of the pool the flushes go out on.
+    pub(crate) fn round_client(&self) -> Client {
+        self.pool.next().clone()
+    }
+
+    /// Yields one delivery per message, each with a slot in `window`, telling the window how
+    /// many more have arrived behind it, and reports a failed flush of the window once.
+    pub(crate) fn round_stream<'a>(
+        &'a mut self,
+        window: &'a Arc<Window<PubSubForm>>,
+    ) -> impl Stream<Item = Result<RoundMessage<PubSubForm>, RedisError>> + Send + 'a {
+        let codec = self.codec.clone();
+        let pool = &self.pool;
+        unfold((&mut self.rx, codec), move |(rx, codec)| async move {
+            loop {
+                if let Some(failure) = window.take_failure() {
+                    return Some((Err(failure), (rx, codec)));
+                }
+                match rx.recv().await {
+                    Ok(msg) => {
+                        let delivery = to_message(&msg, codec.as_ref(), pool);
+                        window.yielded(rx.len());
+                        let round = window.open();
+                        return Some((
+                            Ok(RoundMessage::new(delivery, Arc::clone(window), round)),
+                            (rx, codec),
+                        ));
+                    }
+                    // The receiver fell behind the broadcast buffer; skip the gap and keep reading.
+                    Err(RecvError::Lagged(_)) => {}
+                    Err(RecvError::Closed) => return None,
+                }
+            }
+        })
     }
 }
 
