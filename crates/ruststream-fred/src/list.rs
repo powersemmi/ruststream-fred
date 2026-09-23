@@ -358,11 +358,9 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisList 
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> Result<Self::Subscriber, RedisError> {
         self.recovery_config()?;
-        if self.is_reliable() {
-            connected.subscribe(self.key()).await
-        } else {
-            connected.subscribe_unsettleable(self.key()).await
-        }
+        connected
+            .subscribe_list(self.key(), self.is_reliable())
+            .await
     }
 
     /// The same body the real broker's descriptor writes, so a document built in a test is the
@@ -764,7 +762,7 @@ impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisListPublis
         self,
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
-        ready(Ok(connected.plain_publisher()))
+        ready(Ok(connected.list_publisher(self)))
     }
 
     /// The list key the policy pushes onto, the expiry it re-arms there on every push, and how

@@ -16,10 +16,12 @@ use ruststream::{
     testing::{Coordinator, TestableBroker},
 };
 
+use crate::{RedisListPublish, RedisPubSubPublish};
 use crate::{
     error::RedisError,
     testing::{
-        RedisTestPlainPublisher, RedisTestPublisher, RedisTestSubscriber, router::KeyRouter,
+        RedisTestPlainPublisher, RedisTestPublisher, RedisTestSubscriber,
+        router::{Form, KeyRouter},
     },
 };
 
@@ -147,7 +149,12 @@ impl ConnectedRedisTestBroker {
         &self,
         key: impl Into<String>,
     ) -> impl Future<Output = Result<RedisTestSubscriber, RedisError>> {
-        self.open(key, Settlement::Settleable, StreamRetry::default())
+        self.open(
+            key,
+            Form::Stream,
+            Settlement::Settleable,
+            StreamRetry::default(),
+        )
     }
 
     /// A [`RedisStream`](crate::RedisStream) subscription on `key`, retrying the way the
@@ -164,21 +171,43 @@ impl ConnectedRedisTestBroker {
         key: impl Into<String>,
         retry: StreamRetry,
     ) -> impl Future<Output = Result<RedisTestSubscriber, RedisError>> {
-        self.open(key, Settlement::Settleable, retry)
+        self.open(key, Form::Stream, Settlement::Settleable, retry)
     }
 
-    /// The same subscription with settlement refused, for the forms whose real deliveries report
-    /// [`AckError::Unsupported`](ruststream::AckError::Unsupported): Pub/Sub and a simple list.
-    pub(crate) fn subscribe_unsettleable(
+    /// A [`RedisList`](crate::RedisList) subscription on `key`: a reliable one settles, a simple
+    /// one reports [`AckError::Unsupported`](ruststream::AckError::Unsupported) as it does on a
+    /// server.
+    pub(crate) fn subscribe_list(
         &self,
         key: impl Into<String>,
+        reliable: bool,
     ) -> impl Future<Output = Result<RedisTestSubscriber, RedisError>> {
-        self.open(key, Settlement::Unsupported, StreamRetry::default())
+        let settlement = if reliable {
+            Settlement::Settleable
+        } else {
+            Settlement::Unsupported
+        };
+        self.open(key, Form::List, settlement, StreamRetry::default())
+    }
+
+    /// A [`RedisPubSub`](crate::RedisPubSub) subscription on `channel`, whose deliveries report
+    /// [`AckError::Unsupported`](ruststream::AckError::Unsupported) as they do on a server.
+    pub(crate) fn subscribe_channel(
+        &self,
+        channel: impl Into<String>,
+    ) -> impl Future<Output = Result<RedisTestSubscriber, RedisError>> {
+        self.open(
+            channel,
+            Form::Channel,
+            Settlement::Unsupported,
+            StreamRetry::default(),
+        )
     }
 
     fn open(
         &self,
         key: impl Into<String>,
+        form: Form,
         settlement: Settlement,
         retry: StreamRetry,
     ) -> impl Future<Output = Result<RedisTestSubscriber, RedisError>> {
@@ -189,7 +218,7 @@ impl ConnectedRedisTestBroker {
         if let Err(err) = validate_key(&key) {
             return ready(Err(RedisError::Subscribe(err)));
         }
-        let (id, requeue, rx) = self.state.router.subscribe(key);
+        let (id, requeue, rx) = self.state.router.subscribe(key, form);
         ready(Ok(RedisTestSubscriber::new(
             Arc::clone(&self.state),
             id,
@@ -207,15 +236,60 @@ impl ConnectedRedisTestBroker {
         RedisTestPublisher::new(Arc::clone(&self.state))
     }
 
-    /// Returns a publisher offering [`Publisher`](ruststream::Publisher) alone, the surface the
-    /// list and Pub/Sub publishers have on a real server. Cheap to clone.
+    /// Returns a list publisher (`LPUSH`), the counterpart of
+    /// [`ConnectedRedisBroker::list_publisher`](crate::ConnectedRedisBroker::list_publisher).
+    /// Cheap to clone.
     ///
-    /// Reached in a test by pairing [`RedisListPublish`](crate::RedisListPublish) or
-    /// [`RedisPubSubPublish`](crate::RedisPubSubPublish), which is how a routes file writes it;
-    /// this is the direct handle for code that has no policy in hand.
+    /// It reaches a [`RedisList`](crate::RedisList) subscription and nothing else: a key a stream
+    /// subscription reads, or a name a Pub/Sub subscription reads, refuses it as a server would.
+    /// The policy's options are inert here, as its pairing notes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream::{Broker, OutgoingMessage, Publisher};
+    /// use ruststream_fred::RedisListPublish;
+    /// use ruststream_fred::testing::RedisTestBroker;
+    ///
+    /// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
+    /// let connected = RedisTestBroker::new().connect().await?;
+    /// let jobs = connected.list_publisher(RedisListPublish::new());
+    /// jobs.publish(OutgoingMessage::new("jobs", b"{}".as_slice()), None).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     #[must_use]
-    pub fn plain_publisher(&self) -> RedisTestPlainPublisher {
-        RedisTestPlainPublisher::new(Arc::clone(&self.state))
+    pub fn list_publisher(&self, publish: RedisListPublish) -> RedisTestPlainPublisher {
+        let _ = publish;
+        RedisTestPlainPublisher::new(Arc::clone(&self.state), Form::List)
+    }
+
+    /// Returns a Pub/Sub publisher (`PUBLISH`), the counterpart of
+    /// [`ConnectedRedisBroker::pubsub_publisher`](crate::ConnectedRedisBroker::pubsub_publisher).
+    /// Cheap to clone.
+    ///
+    /// It reaches a [`RedisPubSub`](crate::RedisPubSub) subscription and nothing else: a name only
+    /// a stream or a list subscription reads refuses it, since a channel publish never lands in a
+    /// key. The policy's options are inert here, as its pairing notes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream::{Broker, OutgoingMessage, Publisher};
+    /// use ruststream_fred::RedisPubSubPublish;
+    /// use ruststream_fred::testing::RedisTestBroker;
+    ///
+    /// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
+    /// let connected = RedisTestBroker::new().connect().await?;
+    /// let events = connected.pubsub_publisher(RedisPubSubPublish::new());
+    /// events.publish(OutgoingMessage::new("events", b"{}".as_slice()), None).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn pubsub_publisher(&self, publish: RedisPubSubPublish) -> RedisTestPlainPublisher {
+        let _ = publish;
+        RedisTestPlainPublisher::new(Arc::clone(&self.state), Form::Channel)
     }
 }
 
@@ -311,11 +385,14 @@ impl TestableBroker for ConnectedRedisTestBroker {
         // Route synchronously through the broker's own fanout, bypassing subject validation: the
         // harness injects as an external producer would, and the publish is recorded and counted
         // like any other.
-        self.state.router.publish(
+        // An injected message stands for no command of this crate, so it reaches whatever reads
+        // the name and nothing refuses it.
+        let _ = self.state.router.publish(
             message.name().to_owned(),
             Bytes::copy_from_slice(message.payload()),
             message.headers().clone(),
             self.state.coordinator().as_ref(),
+            None,
         );
     }
 
