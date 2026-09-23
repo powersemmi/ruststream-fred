@@ -2,6 +2,7 @@
 
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned};
@@ -38,6 +39,8 @@ pub struct RoundMessage<F: Form> {
     inner: Option<F::Message>,
     window: Arc<Window<F>>,
     round: Round,
+    /// Set once the round is recorded against the task handling the delivery.
+    entered: AtomicBool,
 }
 
 impl<F: Form> Debug for RoundMessage<F>
@@ -57,6 +60,7 @@ impl<F: Form> RoundMessage<F> {
             inner: Some(inner),
             window,
             round,
+            entered: AtomicBool::new(false),
         }
     }
 
@@ -113,7 +117,13 @@ impl<F: Form> IncomingMessage for RoundMessage<F> {
         self.inner().payload()
     }
 
+    /// Also records the delivery's round against the task reading them: the runtime reads a
+    /// delivery's headers in the task that handles it, before the handler runs, and a reply
+    /// marked to join the round finds it there.
     fn headers(&self) -> &HeaderMap {
+        if !self.entered.swap(true, Ordering::Relaxed) {
+            self.round.enter();
+        }
         self.inner().headers()
     }
 

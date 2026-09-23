@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use fred::interfaces::{KeysInterface, ListInterface, StreamsInterface};
 use ruststream::{Broker, ConnectedBroker, OutgoingMessage, Publisher};
 use ruststream_fred::context::{PipelineContext, keys};
-use ruststream_fred::pipeline::RedisPipeline;
+use ruststream_fred::pipeline::{Bindable, InRound, RedisPipeline};
 use ruststream_fred::prelude::*;
 use ruststream_fred::{
     AtomicList, AtomicStream, ConnectedRedisBroker, PipelinedList, PipelinedPubSub,
@@ -142,6 +142,41 @@ async fn batch(orders: &[Order], ctx: &mut Context<'_, PipelineContext>) -> Hand
         }
     }
     HandlerOutcome::ack()
+}
+
+/// Where the bound case's replies go; the hash tag keeps it on the stream's slot on a cluster.
+const RECEIPTS: &str = "{it.pipeline.bound}.receipts";
+
+#[derive(Serialize, Outgoing)]
+struct Receipt {
+    id: u64,
+}
+
+#[subscriber(
+    AtomicStream::new(key("bound")).group("workers"),
+    publish("{it.pipeline.bound}.receipts"),
+    start_at(RedisGroupPosition::beginning())
+)]
+async fn bound(
+    order: &Order,
+    Ctx(pipeline): Ctx<keys::Pipeline>,
+    Out(out): Out<impl Bindable>,
+) -> Result<Receipt, HandlerOutcome> {
+    let out = pipeline.bind(out);
+    let audit = format!("{}.audit", key("bound"));
+    if out
+        .message(&Receipt { id: order.id })
+        .to(audit.as_str())
+        .publish()
+        .await
+        .is_err()
+    {
+        return Err(HandlerOutcome::retry());
+    }
+    if order.outcome == "drop" {
+        return Err(HandlerOutcome::drop());
+    }
+    Ok(Receipt { id: order.id })
 }
 
 async fn connected(url: &str) -> ConnectedRedisBroker {
@@ -347,4 +382,71 @@ async fn a_batch_window_sends_what_the_batch_queued_and_settles_every_entry() {
         },
     );
     run_window(&url, "batch", app).await;
+}
+
+/// A bound slot publish and a reply in the round leave with the acknowledged delivery's segment,
+/// inside its `MULTI` / `EXEC`, and a dropped delivery's never leave.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bound_publishes_and_replies_in_the_round_follow_the_outcome() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let stream = key("bound");
+    let receipts = RECEIPTS.to_owned();
+    let app = RustStream::new(AppInfo::new("pipeline", "0.1.0")).with_broker(
+        RedisBroker::standalone(url.clone()),
+        |b| {
+            b.include(bound)
+                .out_reply(stream::Publish)
+                .transform(InRound)
+                .out(DefaultSlot, stream::Publish)
+                .build();
+        },
+    );
+    let watcher = connected(&url).await;
+    let pool = watcher.pool_handle().expect("pool");
+    // The reply destination is named in the attribute, so it is the same on every run.
+    let _: i64 = pool.del(receipts.as_str()).await.expect("del");
+    let running = app.start().await.expect("start");
+    let publisher = watcher.publisher();
+    for id in 0..DELIVERIES {
+        let outcome = if id % 3 == 0 { "drop" } else { "ack" };
+        let body = serde_json::to_vec(&Order {
+            id: id as u64,
+            outcome: outcome.to_owned(),
+        })
+        .expect("encode");
+        publisher
+            .publish(OutgoingMessage::new(stream.as_str(), &body), None)
+            .await
+            .expect("publish");
+    }
+    let acknowledged = (0..DELIVERIES).filter(|id| id % 3 != 0).count() as u64;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let audited: u64 = pool
+            .xlen(format!("{stream}.audit").as_str())
+            .await
+            .expect("xlen");
+        let replied: u64 = pool.xlen(receipts.as_str()).await.expect("xlen");
+        if audited == acknowledged && replied == acknowledged {
+            break;
+        }
+        assert!(
+            audited <= acknowledged,
+            "a dropped delivery's bound publish left"
+        );
+        assert!(replied <= acknowledged, "a dropped delivery's reply left");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{audited} audited and {replied} replied of {acknowledged}"
+        );
+        tokio::task::yield_now().await;
+    }
+    running.shutdown().await.expect("shutdown");
+    let _: i64 = pool
+        .del(vec![stream.clone(), receipts, format!("{stream}.audit")])
+        .await
+        .expect("del");
+    watcher.shutdown().await.expect("shutdown watcher");
 }

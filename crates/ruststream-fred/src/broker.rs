@@ -27,6 +27,7 @@ use ruststream::{AddressedCopies, Broker, ConnectedBroker, DescribeServer, Serve
 use crate::{
     error::RedisError,
     list::{ListWire, RedisList, RedisListPublish, RedisListPublisher, RedisListSubscriber},
+    pipeline::Rounds,
     publisher::{RedisDefaultPublisher, RedisPublisher},
     pubsub::{
         PubSubMode, PubSubWire, RedisPubSub, RedisPubSubPattern, RedisPubSubPublish,
@@ -477,6 +478,7 @@ impl Broker for RedisBroker {
                 clustered,
                 closed: AtomicBool::new(false),
                 routes: Routes::default(),
+                rounds: Arc::default(),
             }),
         })
     }
@@ -556,9 +558,17 @@ pub(crate) struct RedisCore {
     /// How each name this connection's subscriptions read or dead-letter to is written, for the
     /// default publisher.
     routes: Routes,
+    /// The rounds of the deliveries in flight on this connection's pipelined subscriptions, which
+    /// a reply or a bound slot publish joins.
+    rounds: Arc<Rounds>,
 }
 
 impl RedisCore {
+    /// The rounds a publish of this connection may join.
+    pub(crate) fn rounds(&self) -> &Arc<Rounds> {
+        &self.rounds
+    }
+
     /// The route table the default publisher reads.
     pub(crate) const fn routes(&self) -> &Routes {
         &self.routes
@@ -792,6 +802,11 @@ impl ConnectedRedisBroker {
     #[must_use]
     pub fn list_publisher(&self, publish: RedisListPublish) -> RedisListPublisher {
         RedisListPublisher::new(Arc::clone(&self.core), publish)
+    }
+
+    /// The rounds a publish of this connection may join.
+    pub(crate) fn rounds(&self) -> &Arc<Rounds> {
+        self.core.rounds()
     }
 
     /// Returns a clone of the underlying pool, for advanced operations not covered by the

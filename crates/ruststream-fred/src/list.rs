@@ -48,6 +48,7 @@ use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::envelope::{SharedEnvelope, frame, unframe};
 use crate::partition::{RedisPublishOptions, resolved_headers};
 use crate::pipeline::{ListForm, Pipelined, RoundMessage, Window};
+use crate::publisher::joins_round;
 use crate::recovery::{self, RecoveryConfig};
 use crate::route::Route;
 use crate::subscriber::other_than;
@@ -1137,6 +1138,8 @@ pub struct RedisListPublisher {
     core: Arc<RedisCore>,
     codec: Option<SharedEnvelope>,
     ttl: Option<Duration>,
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    round_name: u64,
 }
 
 impl Debug for RedisListPublisher {
@@ -1149,8 +1152,14 @@ impl Debug for RedisListPublisher {
 }
 
 impl RedisListPublisher {
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    pub(crate) const fn round_name(&self) -> u64 {
+        self.round_name
+    }
+
     pub(crate) fn new(core: Arc<RedisCore>, publish: RedisListPublish) -> Self {
         Self {
+            round_name: core.rounds().publisher(),
             core,
             codec: publish.codec,
             ttl: publish.ttl,
@@ -1181,6 +1190,21 @@ impl ruststream::Publisher for RedisListPublisher {
         options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
         let (key, payload, headers) = msg.into_parts();
+        if let Some(round) = self
+            .core
+            .rounds()
+            .joined(self.round_name, joins_round(options))
+        {
+            let body = frame(
+                self.codec.as_ref(),
+                payload,
+                &resolved_headers(headers, options),
+            );
+            return round
+                .lpush(key, body, self.ttl.map(ttl_millis))
+                .await
+                .map_err(RedisError::publish);
+        }
         push(
             &self.core,
             self.codec.as_ref(),

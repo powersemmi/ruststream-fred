@@ -117,6 +117,7 @@ async fn the_step_sets_the_key_the_delivery_reports() {
         .assert_called_once()
         .with_options(&RedisPublishOptions {
             partition_key: Some(b"tenant-a".to_vec()),
+            ..RedisPublishOptions::default()
         });
     tb.broker::<RedisTestBroker>()
         .published::<Seen>("orders.seen")
@@ -180,6 +181,7 @@ async fn a_keyed_publish_keeps_the_codec_the_mount_site_named() {
         .with_codec(&CborCodec, &Order { id: 7 })
         .with_options(&RedisPublishOptions {
             partition_key: Some(b"tenant-a".to_vec()),
+            ..RedisPublishOptions::default()
         });
 
     tb.shutdown().await.expect("shutdown");
