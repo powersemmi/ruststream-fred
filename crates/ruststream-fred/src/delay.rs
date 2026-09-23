@@ -151,6 +151,32 @@ fn broker_err(err: fred::error::Error) -> AckError {
 /// `ZADD`s a delayed copy of the message (retry count incremented) at `now + delay`, refreshing the
 /// optional key TTL. The caller `XACK`s the original afterwards, so a crash in between leaves the
 /// scheduled copy (a duplicate) rather than losing the message.
+/// The `ZADD` a delayed redelivery owes: the score it is due at and the member that carries it,
+/// with the retry-count header raised.
+pub(crate) fn scheduled(
+    id: &str,
+    payload: &[u8],
+    headers: &HeaderMap,
+    delay: Duration,
+) -> (f64, Vec<u8>) {
+    let fire_at = now_ms().saturating_add(delay_millis(delay));
+    let mut next = headers.clone();
+    next.insert(RETRY_COUNT_HEADER, next_retry_count(headers).to_string());
+    (as_score(fire_at), encode_member(id, payload, &next))
+}
+
+impl DelayConfig {
+    /// The key of the delay queue.
+    pub(crate) fn zset_key(&self) -> &str {
+        &self.zset_key
+    }
+
+    /// The expiry re-armed on the delay queue with every `ZADD`, in milliseconds.
+    pub(crate) fn ttl_millis(&self) -> Option<i64> {
+        self.ttl.map(ttl_millis)
+    }
+}
+
 pub(crate) async fn schedule(
     pool: &Pool,
     cfg: &DelayConfig,

@@ -29,8 +29,8 @@ use crate::{
     list::{RedisList, RedisListPublish, RedisListPublisher, RedisListSubscriber},
     publisher::{RedisDefaultPublisher, RedisPublisher},
     pubsub::{
-        PubSubMode, RedisPubSub, RedisPubSubPattern, RedisPubSubPublish, RedisPubSubPublisher,
-        RedisPubSubSubscriber,
+        PubSubMode, PubSubWire, RedisPubSub, RedisPubSubPattern, RedisPubSubPublish,
+        RedisPubSubPublisher, RedisPubSubSubscriber,
     },
     route::{Recorded, Route, Routes},
     stream::{ReadMode, RedisStream},
@@ -661,6 +661,11 @@ impl ConnectedRedisBroker {
         &self,
         def: RedisPubSub,
     ) -> Result<RedisPubSubSubscriber, RedisError> {
+        Ok(RedisPubSubSubscriber::new(self.open_pubsub(def).await?))
+    }
+
+    /// Subscribes a dedicated client to the channel `def` names and hands back its wire.
+    pub(crate) async fn open_pubsub(&self, def: RedisPubSub) -> Result<PubSubWire, RedisError> {
         let codec = def.codec_handle();
         let recorded = self
             .core
@@ -690,7 +695,7 @@ impl ConnectedRedisBroker {
         }
         let pool = self.core.pool()?;
         recorded.keep();
-        Ok(RedisPubSubSubscriber::new(client, rx, codec, pool))
+        Ok(PubSubWire::new(client, rx, codec, pool))
     }
 
     /// Opens a Pub/Sub subscription on a glob (`PSUBSCRIBE`), described by `def`, on a dedicated
@@ -714,12 +719,12 @@ impl ConnectedRedisBroker {
             .await
             .map_err(RedisError::subscribe)?;
         confirm_subscribed(&client).await?;
-        Ok(RedisPubSubSubscriber::new(
+        Ok(RedisPubSubSubscriber::new(PubSubWire::new(
             client,
             rx,
             codec,
             self.core.pool()?,
-        ))
+        )))
     }
 
     /// Opens a list (work-queue) subscription described by `def`.
