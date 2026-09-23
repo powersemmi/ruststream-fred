@@ -867,15 +867,23 @@ impl Subscribe for ConnectedRedisBroker {
     type Copies = AddressedCopies;
 
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
-        let group = self.core.default_group.clone().ok_or_else(|| {
-            RedisError::InvalidOptions(format!(
-                "bare-string subscription on `{name}` needs a broker-wide default group: \
-                 call RedisBroker::default_group(name), or subscribe with \
-                 RedisStream::new(name).group(group)"
-            ))
-        })?;
+        let group = self
+            .core
+            .default_group
+            .clone()
+            .ok_or_else(|| missing_default_group(name, "RedisBroker"))?;
         ConnectedRedisBroker::subscribe(self, RedisStream::new(name).group(group)).await
     }
+}
+
+/// The refusal of a bare-string subscription on a broker with no default group: Redis Streams read
+/// through a consumer group, and a bare name names none. `broker` is the type whose
+/// `default_group` setting supplies one.
+pub(crate) fn missing_default_group(name: &str, broker: &str) -> RedisError {
+    RedisError::InvalidOptions(format!(
+        "bare-string subscription on `{name}` needs a broker-wide default group: call \
+         {broker}::default_group(name), or subscribe with RedisStream::new(name).group(group)"
+    ))
 }
 
 /// Refuses a [`RedisStream::claiming`] subscription the connected server cannot serve.
