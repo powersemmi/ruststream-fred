@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::fmt::{Debug, Formatter};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::envelope::SharedEnvelope;
 use crate::error::RedisError;
@@ -57,10 +58,15 @@ impl Debug for Route {
 
 /// The names this connection's subscriptions read or dead-letter to, each with its family.
 ///
-/// Written when a subscription opens and read on every publish through the default policy, so a
-/// read takes the shared lock only.
+/// Written when a subscription opens and read on every publish through the default policy. A
+/// service that reads nothing but streams records no list or channel, and its publishes skip the
+/// table on one relaxed load.
 #[derive(Debug, Default)]
-pub(crate) struct Routes(RwLock<HashMap<String, Route>>);
+pub(crate) struct Routes {
+    table: RwLock<HashMap<String, Route>>,
+    /// Set once a list or a channel is recorded: before that every name is a stream.
+    foreign: AtomicBool,
+}
 
 impl Routes {
     /// Records that `name` is written the way `route` says, for the subscription `owner`.
@@ -74,9 +80,12 @@ impl Routes {
     /// dead-letters to `name` in another family, since one of the two would receive writes it
     /// cannot read.
     pub(crate) fn record(&self, owner: &str, name: &str, route: Route) -> Result<(), RedisError> {
-        let mut routes = self.0.write().expect("redis route table poisoned");
+        let mut routes = self.table.write().expect("redis route table poisoned");
         match routes.entry(name.to_owned()) {
             Entry::Vacant(vacant) => {
+                if !matches!(route, Route::Stream) {
+                    self.foreign.store(true, Ordering::Release);
+                }
                 vacant.insert(route);
                 Ok(())
             }
@@ -112,7 +121,12 @@ impl Routes {
 
     /// How `name` is written: the recorded family, or `XADD` for a name nothing here reads.
     pub(crate) fn route(&self, name: &str) -> Route {
-        self.0
+        // A relaxed load suffices: a route is recorded while its subscription opens, before any
+        // delivery of it exists to be answered or retried.
+        if !self.foreign.load(Ordering::Relaxed) {
+            return Route::Stream;
+        }
+        self.table
             .read()
             .expect("redis route table poisoned")
             .get(name)
