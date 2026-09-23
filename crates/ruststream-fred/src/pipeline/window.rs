@@ -69,7 +69,19 @@ pub(crate) struct Segments {
 #[derive(Default)]
 struct Slots {
     segments: Vec<Option<Segment>>,
+    /// The deliveries of each slot not settled yet: one for a delivery, the batch's size for a
+    /// batch, whose segment is the batch.
+    members: Vec<u32>,
+    /// Whether every member settled so far acknowledged.
+    clean: Vec<bool>,
     free: Vec<u32>,
+}
+
+/// What closing a slot's last member hands back: its segment and whether every member of it
+/// acknowledged.
+struct Closed {
+    segment: Option<Segment>,
+    clean: bool,
 }
 
 impl Segments {
@@ -77,21 +89,37 @@ impl Segments {
         self.slots.lock().expect("pipeline slots poisoned")
     }
 
-    fn open(&self) -> u32 {
+    fn open(&self, members: u32) -> u32 {
         let mut slots = self.lock();
-        if let Some(slot) = slots.free.pop() {
-            return slot;
-        }
-        slots.segments.push(None);
-        u32::try_from(slots.segments.len() - 1).expect("fewer than 2^32 deliveries in flight")
+        let slot = slots.free.pop().unwrap_or_else(|| {
+            slots.segments.push(None);
+            slots.members.push(0);
+            slots.clean.push(true);
+            u32::try_from(slots.segments.len() - 1).expect("fewer than 2^32 deliveries in flight")
+        });
+        slots.members[slot as usize] = members;
+        slots.clean[slot as usize] = true;
+        drop(slots);
+        slot
     }
 
-    /// Takes the slot's segment and gives the slot back.
-    fn close(&self, slot: u32) -> Option<Segment> {
+    /// Settles one member of the slot. The last one takes the segment and gives the slot back;
+    /// the others hand back nothing.
+    fn close(&self, slot: u32, acknowledged: bool) -> Option<Closed> {
         let mut slots = self.lock();
-        let segment = slots.segments.get_mut(slot as usize).and_then(Option::take);
+        let at = slot as usize;
+        slots.clean[at] &= acknowledged;
+        slots.members[at] = slots.members[at].saturating_sub(1);
+        if slots.members[at] > 0 {
+            return None;
+        }
+        let closed = Closed {
+            segment: slots.segments[at].take(),
+            clean: slots.clean[at],
+        };
         slots.free.push(slot);
-        segment
+        drop(slots);
+        Some(closed)
     }
 
     /// The slot's segment, created on first use: a pipeline on the window's client, opened with
@@ -251,6 +279,8 @@ struct Owed<Op> {
     outstanding: usize,
     /// Deliveries settled since the last flush.
     settled: usize,
+    /// The read's `COUNT`: this many settles fill the window.
+    capacity: usize,
     /// Deliveries that arrived and were not yielded yet, on a form whose reads are not counted
     /// in `outstanding`.
     waiting: usize,
@@ -258,6 +288,9 @@ struct Owed<Op> {
     ops: Vec<Op>,
     /// The ops of the delivery being settled, for an atomic segment to take.
     scratch: Vec<Op>,
+    /// The ops of the members of a batch settled before its last one, by slot: the batch's segment
+    /// takes them when its last member settles.
+    staged: Vec<Vec<Op>>,
     /// A flush that failed, reported once on the delivery stream.
     failure: Option<RedisError>,
 }
@@ -268,8 +301,6 @@ pub(crate) struct Window<F: Form> {
     segments: Arc<Segments>,
     /// The subscription, named in a flush failure.
     name: Arc<str>,
-    /// The read's `COUNT`: this many settles fill the window.
-    capacity: usize,
     owed: Mutex<Owed<F::Op>>,
 }
 
@@ -277,7 +308,6 @@ impl<F: Form> Debug for Window<F> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Window")
             .field("name", &self.name)
-            .field("capacity", &self.capacity)
             .finish_non_exhaustive()
     }
 }
@@ -307,14 +337,15 @@ impl<F: Form> Window<F> {
                 slots: Mutex::new(Slots::default()),
             }),
             name,
-            capacity: capacity.max(1),
             owed: Mutex::new(Owed {
                 outstanding: 0,
                 settled: 0,
+                capacity: capacity.max(1),
                 waiting: 0,
                 committed: Vec::new(),
                 ops: Vec::new(),
                 scratch: Vec::new(),
+                staged: Vec::new(),
                 failure: None,
             }),
         }
@@ -322,6 +353,11 @@ impl<F: Form> Window<F> {
 
     fn owed(&self) -> MutexGuard<'_, Owed<F::Op>> {
         self.owed.lock().expect("pipeline window poisoned")
+    }
+
+    /// Sets how many settles fill the window: the batch size a batch mount reads with.
+    pub(crate) fn fill_at(&self, capacity: usize) {
+        self.owed().capacity = capacity.max(1);
     }
 
     /// Counts `n` deliveries a read has just buffered.
@@ -345,9 +381,14 @@ impl<F: Form> Window<F> {
 
     /// A slot for a delivery being yielded.
     pub(crate) fn open(&self) -> Round {
+        self.open_batch(1)
+    }
+
+    /// One slot for a batch of `members` deliveries: the batch's segment.
+    pub(crate) fn open_batch(&self, members: u32) -> Round {
         Round {
             segments: Arc::clone(&self.segments),
-            slot: self.segments.open(),
+            slot: self.segments.open(members),
         }
     }
 
@@ -364,20 +405,39 @@ impl<F: Form> Window<F> {
         commit: bool,
         settle: impl FnOnce(&F, &mut Vec<F::Op>) -> Result<(), AckError>,
     ) -> Result<(), AckError> {
-        let segment = self.segments.close(round.slot);
+        let closed = self.segments.close(round.slot, commit);
         let (mut result, closing) = {
             let mut guard = self.owed();
             let owed = &mut *guard;
-            match segment {
-                Some(segment) if commit => {
+            let slot = round.slot as usize;
+            match closed {
+                // A batch member before its last: its settle waits for the batch's.
+                None => {
+                    if owed.staged.len() <= slot {
+                        owed.staged.resize_with(slot + 1, Vec::new);
+                    }
+                    (settle(&self.form, &mut owed.staged[slot]), None)
+                }
+                Some(Closed {
+                    segment: Some(segment),
+                    clean: true,
+                }) if commit => {
                     let mut scratch = std::mem::take(&mut owed.scratch);
+                    if let Some(staged) = owed.staged.get_mut(slot) {
+                        scratch.append(staged);
+                    }
                     let result = settle(&self.form, &mut scratch);
                     drop(guard);
                     (result, Some((segment, scratch)))
                 }
-                // An outcome other than `ack` drops the segment: what the handler queued never
-                // leaves.
-                _ => (settle(&self.form, &mut owed.ops), None),
+                // An outcome other than `ack` on any member drops the segment: what the handler
+                // queued never leaves.
+                Some(_) => {
+                    if let Some(staged) = owed.staged.get_mut(slot) {
+                        owed.ops.append(staged);
+                    }
+                    (settle(&self.form, &mut owed.ops), None)
+                }
             }
         };
         let mut kept = None;
@@ -406,7 +466,7 @@ impl<F: Form> Window<F> {
             }
             owed.outstanding = owed.outstanding.saturating_sub(1);
             owed.settled += 1;
-            let due = (owed.outstanding == 0 && owed.waiting == 0) || owed.settled >= self.capacity;
+            let due = (owed.outstanding == 0 && owed.waiting == 0) || owed.settled >= owed.capacity;
             let flush = due.then(|| Self::take(owed));
             drop(guard);
             flush
@@ -420,9 +480,17 @@ impl<F: Form> Window<F> {
     /// Gives a delivery's slot back without settling it: the delivery was dropped unsettled, so
     /// its segment is dropped and the entry stays with the broker.
     pub(crate) fn abandon(&self, round: &Round) {
-        drop(self.segments.close(round.slot));
-        let mut owed = self.owed();
+        let closed = self.segments.close(round.slot, false);
+        let mut guard = self.owed();
+        let owed = &mut *guard;
+        // The last member of a batch gives back what the members before it owe.
+        if closed.is_some()
+            && let Some(staged) = owed.staged.get_mut(round.slot as usize)
+        {
+            owed.ops.append(staged);
+        }
         owed.outstanding = owed.outstanding.saturating_sub(1);
+        drop(guard);
     }
 
     /// Takes what the window owes, for a flush on stop.

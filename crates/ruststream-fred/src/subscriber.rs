@@ -429,6 +429,50 @@ impl RedisSubscriber {
     }
 }
 
+impl RedisSubscriber {
+    /// Yields one batch per read, native all the way down as the batches without a window are:
+    /// `size` is the read's `COUNT`, and the batch shares one slot of `window`, so what the batch
+    /// handler queued commits with the settles of every entry.
+    pub(crate) fn round_batches<'a>(
+        &'a mut self,
+        window: &'a Arc<Window<StreamForm>>,
+        size: NonZeroUsize,
+    ) -> impl Stream<Item = Result<Vec<RoundMessage<StreamForm>>, RedisError>> + Send + 'a {
+        let count = u64::try_from(size.get()).unwrap_or(u64::MAX);
+        window.fill_at(size.get());
+        unfold(self, move |s| async move {
+            loop {
+                if let Some(failure) = window.take_failure() {
+                    return Some((Err(failure), s));
+                }
+                window.discarded(s.discard_stale());
+                if !s.buffer.is_empty() {
+                    let tail = s.buffer.split_off(size.get().min(s.buffer.len()));
+                    let entries = std::mem::replace(&mut s.buffer, tail);
+                    let members = u32::try_from(entries.len()).unwrap_or(u32::MAX);
+                    let round = window.open_batch(members);
+                    let mut batch = Vec::with_capacity(entries.len());
+                    for entry in entries {
+                        match s.message(entry) {
+                            Ok(delivery) => batch.push(RoundMessage::new(
+                                delivery,
+                                Arc::clone(window),
+                                round.clone(),
+                            )),
+                            Err(err) => return Some((Err(err), s)),
+                        }
+                    }
+                    return Some((Ok(batch), s));
+                }
+                if let Err(err) = s.fetch(count).await {
+                    return Some((Err(err), s));
+                }
+                window.fetched(s.buffer.len());
+            }
+        })
+    }
+}
+
 /// A connection of `pool` other than `reader`, or `reader` itself on a pool of one.
 pub(crate) fn other_than(pool: &Pool, reader: &Client) -> Client {
     pool.clients()

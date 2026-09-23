@@ -37,7 +37,8 @@ use ruststream::{
     Lend, NamedCopies, OutgoingMessage, PairError, Partitioned, PublishPolicy, Publisher,
     RedeliveryAddress, RedeliveryAddressed, RetryDeclaration, SubscriptionSource,
 };
-use tokio::sync::broadcast::{Receiver, error::RecvError};
+use tokio::sync::broadcast::Receiver;
+use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::envelope::{SharedEnvelope, frame, unframe};
@@ -578,6 +579,56 @@ impl PubSubWire {
                     Err(RecvError::Lagged(_)) => {}
                     Err(RecvError::Closed) => return None,
                 }
+            }
+        })
+    }
+}
+
+impl PubSubWire {
+    /// Yields one batch of up to `size` messages: the first one waited for, and those already
+    /// arrived behind it. The batch shares one slot of `window`.
+    pub(crate) fn round_batches<'a>(
+        &'a mut self,
+        window: &'a Arc<Window<PubSubForm>>,
+        size: NonZeroUsize,
+    ) -> impl Stream<Item = Result<Vec<RoundMessage<PubSubForm>>, RedisError>> + Send + 'a {
+        window.fill_at(size.get());
+        let codec = self.codec.clone();
+        let pool = &self.pool;
+        unfold((&mut self.rx, codec), move |(rx, codec)| async move {
+            loop {
+                if let Some(failure) = window.take_failure() {
+                    return Some((Err(failure), (rx, codec)));
+                }
+                let first = match rx.recv().await {
+                    Ok(msg) => msg,
+                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => return None,
+                };
+                let mut messages = vec![first];
+                while messages.len() < size.get() {
+                    match rx.try_recv() {
+                        Ok(msg) => messages.push(msg),
+                        Err(TryRecvError::Lagged(_)) => {}
+                        Err(_) => break,
+                    }
+                }
+                let members = u32::try_from(messages.len()).unwrap_or(u32::MAX);
+                for _ in 0..members {
+                    window.yielded(rx.len());
+                }
+                let round = window.open_batch(members);
+                let batch = messages
+                    .iter()
+                    .map(|msg| {
+                        RoundMessage::new(
+                            to_message(msg, codec.as_ref(), pool),
+                            Arc::clone(window),
+                            round.clone(),
+                        )
+                    })
+                    .collect();
+                return Some((Ok(batch), (rx, codec)));
             }
         })
     }

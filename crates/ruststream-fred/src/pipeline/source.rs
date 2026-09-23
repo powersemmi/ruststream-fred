@@ -2,14 +2,15 @@
 
 use std::fmt::{Debug, Formatter};
 use std::future::{Future, ready};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use futures::Stream;
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::Bindings;
 use ruststream::{
-    AddressedCopies, RedeliveryAddress, RedeliveryAddressed, RetryDeclaration, Seekable,
-    Subscriber, SubscriptionSource,
+    AddressedCopies, BatchSubscriber, RedeliveryAddress, RedeliveryAddressed, RetryDeclaration,
+    Seekable, Subscriber, SubscriptionSource,
 };
 
 use super::forms::{ListForm, PubSubForm, StreamForm};
@@ -78,6 +79,23 @@ impl Subscriber for PipelinedSubscriber<RedisSubscriber, StreamForm> {
     }
 }
 
+impl BatchSubscriber for PipelinedSubscriber<RedisSubscriber, StreamForm> {
+    type Batch = Vec<RoundMessage<StreamForm>>;
+
+    /// Yields one batch per read, `size` being the read's `COUNT`; the batch is one segment of the
+    /// window, so its settles leave as one `XACK`.
+    ///
+    /// # Cancel safety
+    ///
+    /// As [`RedisSubscriber`]'s batches: entries fetched and not yet settled stay pending.
+    fn batches(
+        &mut self,
+        size: NonZeroUsize,
+    ) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
+        self.inner.round_batches(&self.window, size)
+    }
+}
+
 /// Repositions the consumer group as the subscription without a window does, which is what a
 /// mount site's `start_at(..)` seeks through.
 impl Seekable for PipelinedSubscriber<RedisSubscriber, StreamForm> {
@@ -124,6 +142,40 @@ impl Subscriber for PipelinedSubscriber<ListReader, ListForm> {
     /// claimed and not settled stays on the processing list.
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
         self.inner.round_stream(&self.window, prefetch())
+    }
+}
+
+impl BatchSubscriber for PipelinedSubscriber<ChannelReader, PubSubForm> {
+    type Batch = Vec<RoundMessage<PubSubForm>>;
+
+    /// Yields a batch of the messages already arrived, up to `size`; the batch is one segment of
+    /// the window.
+    ///
+    /// # Cancel safety
+    ///
+    /// As a Pub/Sub subscription's: a message nobody is polling for is lost.
+    fn batches(
+        &mut self,
+        size: NonZeroUsize,
+    ) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
+        self.inner.0.round_batches(&self.window, size)
+    }
+}
+
+impl BatchSubscriber for PipelinedSubscriber<ListReader, ListForm> {
+    type Batch = Vec<RoundMessage<ListForm>>;
+
+    /// Yields one batch per read of up to `size` entries; the batch is one segment of the window.
+    ///
+    /// # Cancel safety
+    ///
+    /// As a list subscription's batches: on a reliable list an entry claimed and not settled
+    /// stays on the processing list.
+    fn batches(
+        &mut self,
+        size: NonZeroUsize,
+    ) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
+        self.inner.round_batches(&self.window, size)
     }
 }
 
@@ -241,13 +293,14 @@ addressed!(ConnectedRedisBroker, RedisPubSub);
 #[cfg(feature = "testing")]
 mod testing {
     use std::future::Future;
+    use std::num::NonZeroUsize;
 
     use futures::Stream;
     #[cfg(feature = "asyncapi")]
     use ruststream::asyncapi::Bindings;
     use ruststream::{
-        AddressedCopies, RedeliveryAddress, RedeliveryAddressed, RetryDeclaration, Subscriber,
-        SubscriptionSource,
+        AddressedCopies, BatchSubscriber, RedeliveryAddress, RedeliveryAddressed, RetryDeclaration,
+        Subscriber, SubscriptionSource,
     };
 
     use super::{PipelinedSubscriber, prefetch};
@@ -257,6 +310,17 @@ mod testing {
     use crate::pubsub::RedisPubSub;
     use crate::stream::RedisStream;
     use crate::testing::{ConnectedRedisTestBroker, RedisTestSubscriber};
+
+    impl BatchSubscriber for PipelinedSubscriber<RedisTestSubscriber, TestForm> {
+        type Batch = Vec<RoundMessage<TestForm>>;
+
+        fn batches(
+            &mut self,
+            size: NonZeroUsize,
+        ) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
+            self.inner.round_batches(&self.window, size)
+        }
+    }
 
     impl Subscriber for PipelinedSubscriber<RedisTestSubscriber, TestForm> {
         type Message = RoundMessage<TestForm>;
