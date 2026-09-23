@@ -14,7 +14,7 @@ use ruststream::codec::Codec;
 use super::{Atomic, Pipelined, Plain, WindowMode};
 use crate::delay::DelayedRetry;
 use crate::pubsub::{PubSubMode, RedisPubSub};
-use crate::{RedisList, RedisStream};
+use crate::{RedisList, RedisStream, StreamStart};
 
 /// A stream subscription with a window: `RedisStream::new(..).pipeline()`, under a name
 /// `#[subscriber(..)]` reads.
@@ -186,6 +186,22 @@ impl<Mode: WindowMode> Pipelined<RedisStream, Mode> {
     /// ```
     pub fn block(self, block: Duration) -> Self {
         self.map(|stream| stream.block(block))
+    }
+
+    /// Sets where a newly created group starts reading, as [`RedisStream::start_id`] does.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream_fred::{PipelinedStream, StreamStart};
+    ///
+    /// let orders = PipelinedStream::new("orders")
+    ///     .group("workers")
+    ///     .start_id(StreamStart::Beginning);
+    /// # let _ = orders;
+    /// ```
+    pub fn start_id(self, start: StreamStart) -> Self {
+        self.map(|stream| stream.start_id(start))
     }
 
     /// Names a ZSET delay queue, as [`RedisStream::delayed_retry`] does.
