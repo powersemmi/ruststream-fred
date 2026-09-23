@@ -688,8 +688,9 @@ impl ConnectedRedisBroker {
                     .map_err(RedisError::subscribe)?;
             }
         }
+        let pool = self.core.pool()?;
         recorded.keep();
-        Ok(RedisPubSubSubscriber::new(client, rx, codec))
+        Ok(RedisPubSubSubscriber::new(client, rx, codec, pool))
     }
 
     /// Opens a Pub/Sub subscription on a glob (`PSUBSCRIBE`), described by `def`, on a dedicated
@@ -713,7 +714,12 @@ impl ConnectedRedisBroker {
             .await
             .map_err(RedisError::subscribe)?;
         confirm_subscribed(&client).await?;
-        Ok(RedisPubSubSubscriber::new(client, rx, codec))
+        Ok(RedisPubSubSubscriber::new(
+            client,
+            rx,
+            codec,
+            self.core.pool()?,
+        ))
     }
 
     /// Opens a list (work-queue) subscription described by `def`.

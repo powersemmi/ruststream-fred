@@ -264,6 +264,11 @@ impl RedisGroupSeeker {
         }
     }
 
+    /// The connection pool this handle issues its commands on.
+    pub(crate) const fn pool(&self) -> &Pool {
+        &self.pool
+    }
+
     /// The stream key this handle repositions a group over.
     #[must_use]
     pub fn key(&self) -> &str {
