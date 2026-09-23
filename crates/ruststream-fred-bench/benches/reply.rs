@@ -42,7 +42,7 @@ fn app(messages: usize) -> Pending {
     })
 }
 
-// Twice MESSAGES deliveries allocated 88,237 to 88,239 blocks over five runs, the client's
+// Twice MESSAGES deliveries allocated 88,237 to 88,239 blocks over six runs, the client's
 // allocations as much as the crate's. The floor is the highest, stated over a thousand deliveries,
 // plus a 0.1% margin of 89 blocks; one more allocation per delivery would add 2,000.
 #[library_benchmark(config = common::config_every(44_119, 1_000, 90))]

@@ -80,8 +80,8 @@ group, opening the subscription and taking the first delivery cost once. The num
 the framework's own cost included; the core publishes that cost alone on its
 [benchmarks page](https://powersemmi.github.io/ruststream/latest/benchmarks/).
 
-The service talks to a real server, so a count moves a little between runs: over five runs the
-instruction totals of a scenario stayed within 0.4% of each other and its allocations within seven
+The service talks to a real server, so a count moves a little between runs: over six runs the
+instruction totals of a scenario stayed within 0.4% of each other and its allocations within eight
 blocks of 59,000. Each floor is therefore the highest count seen plus a margin of 0.1%.
 `just bench-code` fails on an allocation above the floor a scenario declares, and with
 `--baseline=main` on more than two percent more instructions, and a pull request that changes the
