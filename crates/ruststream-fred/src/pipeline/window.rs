@@ -619,15 +619,17 @@ impl<F: Form> Window<F> {
         );
         let settles = self.form.send_ops(&self.segments.client, &mut flush.ops);
         let (segments, settles) = futures::join!(segments, settles);
-        let mut sent = Sent::default();
+        let mut commands = Sent::default();
         for results in segments {
-            sent.record(results);
+            commands.record(results);
         }
-        sent.merge(settles);
-        if let Some(error) = sent.first_error {
+        let carried = (commands.commands, settles.commands);
+        commands.merge(settles);
+        if let Some(error) = commands.first_error {
             let failure = RedisError::Flush(format!(
-                "the window of `{}` sent {} commands and {} of them failed: {error}",
-                self.name, sent.commands, sent.failed,
+                "the window of `{}` carried {} commands and {} settles, and {} of them failed: \
+                 {error}",
+                self.name, carried.0, carried.1, commands.failed,
             ));
             self.owed().failure.get_or_insert(failure);
         }
