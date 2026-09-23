@@ -183,6 +183,28 @@ async fn bound(
     Ok(Receipt { id: order.id })
 }
 
+/// The same work as `queue_and_settle`, queued as a Lua script.
+#[subscriber(
+    PipelinedStream::new(key("script")).group("workers"),
+    start_at(RedisGroupPosition::beginning())
+)]
+async fn scripted(order: &Order, Ctx(pipeline): Ctx<keys::Pipeline>) -> HandlerOutcome {
+    let audit = format!("{}.audit", key("script"));
+    let script = "return redis.call('LPUSH', KEYS[1], ARGV[1])";
+    if pipeline
+        .eval(script, vec![audit], vec![order.id.to_string()])
+        .await
+        .is_err()
+    {
+        return HandlerOutcome::retry();
+    }
+    if order.outcome == "drop" {
+        HandlerOutcome::drop()
+    } else {
+        HandlerOutcome::ack()
+    }
+}
+
 async fn connected(url: &str) -> ConnectedRedisBroker {
     RedisBroker::standalone(url)
         .connect()
@@ -530,4 +552,18 @@ async fn a_failed_flush_is_reported_once_on_the_delivery_stream() {
         .await
         .expect("del");
     watcher.shutdown().await.expect("shutdown watcher");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_queued_script_runs_with_the_ack() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let app = RustStream::new(AppInfo::new("pipeline", "0.1.0")).with_broker(
+        RedisBroker::standalone(url.clone()),
+        |b| {
+            b.include(scripted);
+        },
+    );
+    run_window(&url, "script", app).await;
 }

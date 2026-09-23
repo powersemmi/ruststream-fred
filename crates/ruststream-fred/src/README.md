@@ -349,12 +349,18 @@ its context type, or binds one key with a `Ctx<K>` parameter; a batch body names
 | `keys::Position` | [`RedisGroupPosition`], the cursor that redelivers this entry | delivery |
 | `keys::ConsumerGroup` | the group the subscription reads through | delivery and batch |
 | `keys::SeekHandle` | [`RedisGroupSeeker`], the group's reposition handle | delivery and batch |
+| `keys::FredPool` | `fred::clients::Pool`, the broker's connection pool | every form |
+| `keys::Pipeline` | [`pipeline::RedisPipeline`], the delivery's round | a `.pipeline()` subscription |
 
 A batch spans many deliveries, so the batch context carries only what belongs to the
 subscription; an entry id or a position is read off the batch's own elements instead. Pub/Sub
 has [`context::PubSubContext`] (the channel a delivery arrived on, and whether it matched
-through a pattern), and a list carries nothing beyond payload and headers, so its context stays
-`()`.
+through a pattern), and a list carries nothing beyond payload and headers.
+
+`Ctx<keys::FredPool>` hands a handler the connection pool on every form, for a command whose
+answer it needs now. Alone it names [`context::PoolContext`]; beside a stream or Pub/Sub key it
+reads that form's context, and goes after that key in the signature, because the first `Ctx` key
+names the handler's context.
 
 The two claiming read modes report their delivery count and idle time as the
 [`DELIVERY_COUNT_HEADER`] and [`IDLE_MS_HEADER`] headers, which every transport reads the same
@@ -600,6 +606,109 @@ path. Copies already sitting in a ZSET delay queue are keyed by their due time, 
 appended when they fall due regardless of where the group reads. And a replayed entry is
 delivered again, so its native delivery count grows, which means a claiming subscription counts
 replays towards a declared cap while the framework's own retry-count header does not move.
+
+# Pipelining
+
+A `.pipeline()` subscription settles in a window, and a handler queues its own Redis commands
+into the delivery's segment of that window.
+
+```
+# mod demo {
+use ruststream_fred::context::keys;
+use ruststream_fred::pipeline::InRound;
+use ruststream_fred::stream::prelude::*;
+use ruststream_fred::PipelinedStream;
+use serde::{Deserialize, Serialize};
+
+#[derive(Deserialize)]
+struct Order {
+    id: u64,
+}
+
+#[derive(Serialize, Outgoing)]
+#[outgoing(name = "receipts")]
+struct Receipt {
+    id: u64,
+}
+
+#[subscriber(PipelinedStream::new("orders").group("workers"), publish)]
+async fn record(
+    order: &Order,
+    Ctx(pipeline): Ctx<keys::Pipeline>,
+) -> Result<Receipt, HandlerOutcome> {
+    // Queued: it runs after the handler returns, with the delivery's `XACK`.
+    if pipeline.hincrby("orders:count", "seen", 1).await.is_err() {
+        return Err(HandlerOutcome::retry());
+    }
+    Ok(Receipt { id: order.id })
+}
+
+#[ruststream::app]
+fn app() -> impl App {
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+        RedisBroker::standalone("redis://localhost:6379"),
+        |b| {
+            // The reply joins the delivery's round and leaves after what the handler queued.
+            b.include(record).out_reply(Publish).transform(InRound);
+        },
+    )
+}
+# }
+# fn main() {}
+```
+
+`.pipeline()` is a step of [`RedisStream`], [`RedisList`] and [`RedisPubSub`]. The
+`#[subscriber(..)]` attribute reads a descriptor's type off the constructor its chain starts
+from, so the attribute spells a pipelined subscription with [`PipelinedStream`],
+[`PipelinedList`] and [`PipelinedPubSub`], and an atomic one with [`AtomicStream`],
+[`AtomicList`] and [`AtomicPubSub`]. They take the same builder steps as the descriptor.
+
+A window flushes in three cases: the read's `COUNT` has settled, nothing is outstanding, or the
+subscription stops. The flush sends every committed segment and then one pipeline of settles on
+a connection of the pool other than the one the reads block on. A stream's settles leave as one
+`XACK`, and a reliable list's as one `LREM` per entry. Under load that is one round trip per
+fetched batch. On a trickle the window leaves as soon as the last handler of the batch returns.
+
+What a handler queued follows the delivery's outcome:
+
+| Outcome | The handler's commands | The settle |
+| --- | --- | --- |
+| `ack` | sent, before the settle | the form's own: `XACK`, `LREM` |
+| `drop` | dropped | queued alone |
+| `retry`, `retry_after` | dropped | the crate's own: the copy or the `ZADD`, then `XACK` |
+| unsettled | dropped | none: the entry stays pending |
+
+Pub/Sub and a simple list settle nothing, so every outcome but `ack` drops the segment. A flush
+that fails is reported once on the delivery stream, and names the subscription, how many
+commands and settles it carried and how many failed. On the forms that settle, the entries whose
+settles failed stay pending and are delivered again.
+
+[`pipeline::RedisPipeline`] carries `fred`'s command methods for keys, strings, hashes, lists,
+sets, sorted sets, streams, functions, `PUBLISH`, and Lua through `eval` and `evalsha`, plus
+`custom` for any other command. Each
+one queues the command and returns `()`, so its reply is not available inside the handler.
+Take `Ctx<keys::FredPool>` for a command whose answer the handler needs now. A delivery whose
+handler queues nothing costs the window no buffer. One that queues gets a `fred` pipeline of its
+own, the first time it queues.
+
+`.atomic()` follows `.pipeline()`, and makes each segment `MULTI`, the handler's commands, the
+settle and `EXEC`, still inside the window's pipeline. A handler's Redis side effects and its
+acknowledgement then happen together or not at all. Redis has no rollback, so a command that
+fails inside `EXEC` leaves the others executed. On a cluster a transaction needs every key on
+one slot, the subscription key's, which a hash tag gives: `{orders}:invoices` beside a stream
+`{orders}`. A command for another slot fails inside the transaction, and Redis refuses the whole
+`EXEC`.
+
+A publish joins a delivery's segment in two ways. `pipeline.bind(&out)` binds a slot's
+publisher, bounded as `Out<impl pipeline::Bindable>`, and hands the slot back with its codec and
+transforms. A slot publish the handler does not bind leaves at once. The
+[`pipeline::InRound`] transform on the reply position puts the reply in the round.
+
+A batch mount's segment is the batch: the body's commands and the settles of every entry leave
+together, and the commands only if every entry is acknowledged. A reliable list reads with one
+pipeline of `LMOVE` and a simple one with `RPOP key count`, both waiting with their blocking pop
+on an empty queue.
+
 
 # Publishing
 

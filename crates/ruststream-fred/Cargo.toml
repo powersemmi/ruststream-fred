@@ -113,4 +113,7 @@ required-features = ["tls-rustls"]
 name = "fred_transaction"
 
 [[example]]
+name = "fred_pipeline"
+
+[[example]]
 name = "fred_testing"
