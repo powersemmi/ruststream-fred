@@ -261,11 +261,11 @@
       "name": "stream consumer group, JSON decode into a small struct, XACK each",
       "messages": 1000,
       "framework": {
-        "instructions": 33073.5,
+        "instructions": 33041.5,
         "allocations": 29.6
       },
       "cold": {
-        "instructions": 657146,
+        "instructions": 657157,
         "allocations": 378
       },
       "gated": true
@@ -274,11 +274,11 @@
       "name": "stream reply, appended with XADD through RedisPublish",
       "messages": 1000,
       "framework": {
-        "instructions": 53009.3,
+        "instructions": 52965.2,
         "allocations": 44.1
       },
       "cold": {
-        "instructions": 643941,
+        "instructions": 643960,
         "allocations": 381
       },
       "gated": true
@@ -287,11 +287,11 @@
       "name": "stream consumer group in batches of 64, XACK each",
       "messages": 1000,
       "framework": {
-        "instructions": 33719.5,
+        "instructions": 33665.0,
         "allocations": 30.0
       },
       "cold": {
-        "instructions": 659567,
+        "instructions": 662058,
         "allocations": 381
       },
       "gated": true
