@@ -12,6 +12,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fred::interfaces::{KeysInterface, ListInterface, StreamsInterface};
+use fred::types::{ClusterHash, CustomCommand};
 use futures::StreamExt;
 use ruststream::{
     Broker, BuildContext, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
@@ -549,6 +550,69 @@ async fn a_failed_flush_is_reported_once_on_the_delivery_stream() {
     drop(subscription);
     let _: i64 = pool
         .del(vec![stream.as_str(), wrong.as_str()])
+        .await
+        .expect("del");
+    watcher.shutdown().await.expect("shutdown watcher");
+}
+
+/// Under `.atomic()` a segment runs whole or not at all: a command Redis refuses when it is queued
+/// aborts the `EXEC`, so neither the handler's other commands nor the `XACK` run, and the entry
+/// stays pending.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_atomic_segment_redis_refuses_runs_nothing() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let stream = key("refused");
+    let audit = format!("{stream}.audit");
+    let watcher = connected(&url).await;
+    let pool = watcher.pool_handle().expect("pool");
+    let mut subscription = SubscriptionSource::subscribe(
+        AtomicStream::new(stream.as_str()).group("workers"),
+        &watcher,
+    )
+    .await
+    .expect("subscribe");
+    watcher
+        .publisher()
+        .publish(OutgoingMessage::new(stream.as_str(), b"{}"), None)
+        .await
+        .expect("publish");
+
+    let mut deliveries = Box::pin(subscription.stream());
+    let delivery = tokio::time::timeout(WAIT, deliveries.next())
+        .await
+        .expect("a delivery")
+        .expect("the stream goes on")
+        .expect("a delivery, not an error");
+    let pipeline = PipelineContext::build(&delivery).pipeline().clone();
+    pipeline
+        .lpush(audit.as_str(), "written")
+        .await
+        .expect("queued");
+    // `INCR` takes one key: Redis refuses it inside `MULTI`, which aborts the `EXEC`.
+    let incr = CustomCommand::new_static("INCR", ClusterHash::Random, false);
+    pipeline
+        .custom(incr, Vec::<String>::new())
+        .await
+        .expect("queued");
+    delivery.ack().await.expect("the acknowledgement is taken");
+
+    let written: i64 = pool.llen(audit.as_str()).await.expect("llen");
+    assert_eq!(written, 0, "no command of the refused segment ran");
+    let pending: PendingSummary = pool
+        .xpending(stream.as_str(), "workers", ())
+        .await
+        .expect("xpending");
+    assert_eq!(
+        pending.0, 1,
+        "the XACK inside the refused segment did not run"
+    );
+
+    drop(deliveries);
+    drop(subscription);
+    let _: i64 = pool
+        .del(vec![stream.as_str(), audit.as_str()])
         .await
         .expect("del");
     watcher.shutdown().await.expect("shutdown watcher");
