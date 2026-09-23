@@ -76,7 +76,12 @@ broker with no default group refuses it at startup and the error names the key.
 | Pub/Sub pattern | [`RedisPubSubPattern`] | none, `AckError::Unsupported` | the mount site says |
 
 The last column is the descriptor's own answer, and it is what the runtime's delayed retry and
-its dead-letter cap publish through. A pattern reads every channel its glob matches, and a glob
+its dead-letter cap publish through. Both leave through the broker's default publisher,
+[`RedisDefaultPublish`], unless the mount site names another with `.out_retry(policy)`. It
+writes a name the way this service reads it: a list key and a list's dead-letter destination
+with `LPUSH` in that list's framing, a channel and its dead-letter destination with `PUBLISH` in
+its mode and framing, anything else with `XADD`. A name one subscription reads as one type and
+another writes as a second type refuses to start, naming both. A pattern reads every channel its glob matches, and a glob
 is not a channel a `PUBLISH` can name, so a registration on one names the destination itself
 with `.out_retry(policy).to("events.retry")` or with a publish transform that reads the channel
 each delivery came in on. A registration that names neither does not start.
@@ -508,7 +513,7 @@ fn app() -> impl App {
 
 Redis maps none of this natively, so no descriptor here declares a broker-side retry: the
 runtime applies the cap and makes the move, and the destination is a plain name on the same
-broker. What Redis does supply is the count the cap reads. The two read modes that claim report
+broker, written with the publish of the form the delivery came from. What Redis does supply is the count the cap reads. The two read modes that claim report
 the delivery count from the pending entries list, so a message a dead worker never acked counts
 towards the cap without anything in this process having seen it fail; the reclaim path therefore
 issues one `XPENDING` per read that found something. Every other subscription has no count of
@@ -609,9 +614,10 @@ not representable on this path. Each form exports its policy under the same moun
 | [`RedisPubSubPublish`] | `pubsub::Publish` | `PUBLISH` / `SPUBLISH` | mode, framing codec |
 | [`RedisListPublish`] | `list::Publish` | `LPUSH` | framing codec, key TTL |
 
-The stream policy is the broker's default publisher, so a registration that replies without
-naming one gets it. It is also its own transactional name: a stream publisher buffers on the
-handle as it is, so there is no second type to transition to.
+A registration that replies without naming a policy gets [`RedisDefaultPublish`], which writes
+each name the way this service reads it and `XADD`s a name it does not read. The stream policy
+is its own transactional name: a stream publisher buffers on the handle as it is, so there is no
+second type to transition to.
 
 The policy covers the publish, with one setting left to the message itself. `XADD`, `LPUSH` and
 `PUBLISH` take the key or channel and the value, so a handler body usually writes
@@ -647,7 +653,8 @@ fn app() -> impl App {
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
             // The reply type names where it goes; the policy names how it gets there, a
-            // `PUBLISH` rather than the default publisher's `XADD`.
+            // `PUBLISH` rather than the `XADD` the default publisher sends to a name this
+            // service does not read.
             b.include(on_event).out_reply(Publish::default());
         },
     )
@@ -856,8 +863,8 @@ because this crate routes no reply through a header.
 The `testing` feature ships [`testing::RedisTestBroker`], an in-process transport that routes by
 exact stream key or channel, with no server, no docker and no network. Every descriptor and
 every publish policy this crate ships mounts on it, so a test wires the declaration the service
-ships rather than a test-only spelling, and `Publish` is also the stand-in's default reply
-publisher. `TestApp` and the assertions are the framework's:
+ships rather than a test-only spelling, and [`RedisDefaultPublish`] is the default publisher on
+both brokers. `TestApp` and the assertions are the framework's:
 <https://docs.rs/ruststream/latest/ruststream/testing/index.html>.
 
 ```
@@ -920,6 +927,13 @@ requeue, while Pub/Sub and a simple list report `AckError::Unsupported` and refu
 exactly as on a real server. Capabilities match per form too, so a slot bounded on a transaction
 capability fails to compile in process exactly where it would fail against Redis. A handle that
 outlived `shutdown` reports [`RedisError::ShutDown`].
+
+The stand-in keeps Redis's namespaces apart as a server does. A stream and a list are keys of a
+type, so an `XADD` to a key a list subscription reads, or an `LPUSH` to a stream, fails with
+`WRONGTYPE`; a channel is no key, so a stream or list write under a channel's name, or a
+`PUBLISH` to a name only a stream or a list reads, fails instead of landing where nobody reads it.
+A message a test injects with `tb.broker::<RedisTestBroker>().publish(..)` stands for an external
+producer and reaches whatever reads the name.
 
 The stand-in routes by key or channel and nothing else, so consumer and group names, `start_id`,
 `block`, a list's processing list and recovery watchdog, a Pub/Sub mode and the envelope codec

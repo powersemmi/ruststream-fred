@@ -10,7 +10,8 @@
 //!   the [`TestApp`](ruststream::testing::TestApp) harness and the framework's conformance suite;
 //! * [`RedisTestPublisher`] / [`RedisTestPlainPublisher`] - what this crate's publish policies pair
 //!   into here, one per capability surface the real publishers offer: the first carries both
-//!   transaction kinds ([`RedisTestTransaction`] is the owned one), the second `Publisher` alone;
+//!   transaction kinds ([`RedisTestTransaction`] is the owned one), the second `Publisher` alone
+//!   and stands for a list publish, a Pub/Sub publish or the default one;
 //! * [`RedisTestSubscriber`] / [`RedisTestMessage`] - `Subscriber` and `IncomingMessage` impls
 //!   settling the way the form they were opened from settles: acknowledgement and
 //!   `nack(requeue = true)` redelivery on a stream or a reliable list, `AckError::Unsupported` and
@@ -21,8 +22,14 @@
 //! file writes is the one the harness mounts, the same holds for [`RedisList`](crate::RedisList)
 //! and [`RedisPubSub`](crate::RedisPubSub), and `.out_reply(Publish)` names the production policy
 //! on both brokers. A [`RedisPubSubPattern`](crate::RedisPubSubPattern) is the exception and says
-//! so at startup: the stand-in matches channel names exactly. There is no test-only policy type; [`RedisPublish`](crate::RedisPublish) is also
-//! the stand-in's default reply publisher.
+//! so at startup: the stand-in matches channel names exactly. There is no test-only policy type;
+//! [`RedisDefaultPublish`](crate::RedisDefaultPublish) is the default publisher on both brokers.
+//!
+//! The router keeps Redis's namespaces apart the way a server does: a stream and a list are keys
+//! of a type, and a write of the other type fails with `WRONGTYPE`; a channel is no key, so a
+//! stream or list write under a channel's name, or a `PUBLISH` to a name only a stream or a list
+//! reads, fails instead of landing where nobody reads it. A message the harness injects stands for
+//! an external producer and reaches whatever reads the name.
 //!
 //! A descriptor resolves to its key or channel, which is all the stand-in routes by, and a policy
 //! pairs into the publisher whose capability surface matches the one it would get on a real server,
