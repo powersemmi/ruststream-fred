@@ -79,10 +79,14 @@ pub mod prelude {
     pub use super::{Publish, RedisStream, StreamStart, TransactionalPublish};
     // `keys` arrives as the module, not as a glob: its members are short words a service also uses
     // for its own types, and `Ctx<keys::SeekHandle>` reads as what it is at the use site.
-    pub use crate::context::{StreamBatchContext, StreamContext, keys};
+    pub use crate::context::{
+        PipelineContext, PoolContext, StreamBatchContext, StreamContext, keys,
+    };
+    pub use crate::pipeline::{AtomicStep, Bindable, InRound};
     pub use crate::{
-        DelayedRetry, PARTITION_KEY_HEADER, RedisBroker, RedisGroupPosition, RedisGroupSeeker,
-        RedisPublishOptions, RedisPublishSteps, RedisSubscribeExt,
+        AtomicStream, DelayedRetry, PARTITION_KEY_HEADER, PipelinedStream, RedisBroker,
+        RedisGroupPosition, RedisGroupSeeker, RedisPublishOptions, RedisPublishSteps,
+        RedisSubscribeExt,
     };
 
     #[cfg(any(

@@ -80,8 +80,12 @@ pub mod prelude {
     pub use super::{PubSubMode, Publish, RedisPubSub, RedisPubSubPattern};
     // `keys` arrives as the module, not as a glob: its members are short words a service also uses
     // for its own types, and `Ctx<keys::Channel>` reads as what it is at the use site.
-    pub use crate::context::{PubSubContext, keys};
-    pub use crate::{PARTITION_KEY_HEADER, RedisBroker, RedisPublishOptions, RedisPublishSteps};
+    pub use crate::context::{PipelineContext, PoolContext, PubSubContext, keys};
+    pub use crate::pipeline::{AtomicStep, Bindable, InRound};
+    pub use crate::{
+        AtomicPubSub, PARTITION_KEY_HEADER, PipelinedPubSub, RedisBroker, RedisPublishOptions,
+        RedisPublishSteps,
+    };
 
     #[cfg(any(
         feature = "tls-rustls",

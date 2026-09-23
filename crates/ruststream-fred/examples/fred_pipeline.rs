@@ -19,9 +19,6 @@
 //! ```
 
 // --8<-- [start:handler]
-use ruststream_fred::PipelinedStream;
-use ruststream_fred::context::keys;
-use ruststream_fred::pipeline::{Bindable, InRound};
 use ruststream_fred::stream::prelude::*;
 use serde::{Deserialize, Serialize};
 
