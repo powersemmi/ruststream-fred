@@ -14,6 +14,7 @@ use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::testing::TestApp;
 use ruststream_fred::prelude::*;
 use ruststream_fred::testing::RedisTestBroker;
+use ruststream_fred::{AtomicList, AtomicStream, PipelinedPubSub, PipelinedStream};
 use serde::{Deserialize, Serialize};
 
 const DELAY: Duration = Duration::from_secs(30);
@@ -304,3 +305,80 @@ async fn a_default_reply_reaches_a_list_this_service_reads() {
 
     tb.shutdown().await.expect("shutdown");
 }
+
+// The same with a window: a retry's settle rides the window, and the copy and the move leave
+// through the form's own publish.
+
+#[subscriber(PipelinedStream::new("orders").group("workers"))]
+async fn windowed_stream_once(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
+    let _ = order;
+    once(ctx.headers().get(RETRY_COUNT_HEADER).is_some())
+}
+
+#[subscriber(AtomicList::new("jobs").reliable())]
+async fn atomic_list_once(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
+    let _ = order;
+    once(ctx.headers().get(RETRY_COUNT_HEADER).is_some())
+}
+
+#[subscriber(PipelinedPubSub::new("events"))]
+async fn windowed_channel_once(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
+    let _ = order;
+    once(ctx.headers().get(RETRY_COUNT_HEADER).is_some())
+}
+
+comes_back_once!(
+    a_windowed_stream_delivery_comes_back_once,
+    windowed_stream_once,
+    "orders"
+);
+comes_back_once!(
+    an_atomic_list_delivery_comes_back_once,
+    atomic_list_once,
+    "jobs"
+);
+comes_back_once!(
+    a_windowed_channel_delivery_comes_back_once,
+    windowed_channel_once,
+    "events"
+);
+
+#[subscriber(AtomicStream::new("orders").group("workers"))]
+async fn atomic_stream_never(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::retry_after(DELAY)
+}
+
+#[subscriber(AtomicList::new("jobs").reliable())]
+async fn atomic_list_never(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::retry_after(DELAY)
+}
+
+#[subscriber(PipelinedPubSub::new("events"))]
+async fn windowed_channel_never(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::retry_after(DELAY)
+}
+
+moves_at_the_cap!(
+    an_atomic_stream_moves_at_the_cap,
+    atomic_stream_never,
+    "orders",
+    stream_dead,
+    "orders.dead"
+);
+moves_at_the_cap!(
+    an_atomic_list_moves_at_the_cap,
+    atomic_list_never,
+    "jobs",
+    reliable_dead,
+    "jobs.dead"
+);
+moves_at_the_cap!(
+    a_windowed_channel_moves_at_the_cap,
+    windowed_channel_never,
+    "events",
+    channel_dead,
+    "events.dead"
+);
