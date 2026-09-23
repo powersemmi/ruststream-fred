@@ -269,7 +269,7 @@ async fn republish(
     payload: &[u8],
     headers: &HeaderMap,
 ) -> Result<(), AckError> {
-    let fields = fields_for_publish(payload, headers);
+    let fields = fields_for_publish(payload.to_vec(), headers);
     let _: String = handle
         .pool
         .xadd(handle.key.as_str(), false, None::<()>, "*", fields)

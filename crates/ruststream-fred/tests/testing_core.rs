@@ -18,9 +18,9 @@ use ruststream::runtime::{AppInfo, HandlerOutcome, PublishExt, RustStream};
 use ruststream::subscriber;
 use ruststream::testing::TestApp;
 use ruststream::{
-    AckError, AddressedCopies, BatchSubscriber, Broker, ConnectedBroker, DescribeServer, HeaderMap,
-    IncomingMessage, NamedCopies, Outgoing, OutgoingMessage, OwnedTransactions, Partitioned,
-    Publisher, RawMessage, RedeliveryAddressed, Serialized, Subscribe, Subscriber,
+    AckError, AddressedCopies, BatchSubscriber, Broker, BytesMut, ConnectedBroker, DescribeServer,
+    HeaderMap, IncomingMessage, NamedCopies, Outgoing, OutgoingMessage, OwnedTransactions,
+    Partitioned, Publisher, RawMessage, RedeliveryAddressed, Serialized, Subscribe, Subscriber,
     SubscriptionSource, Transaction, TransactionalPublisher, nonzero, testing::expect_published,
 };
 use ruststream_fred::{
@@ -203,6 +203,28 @@ async fn expect_published_observes_publishes() {
     assert_eq!(observed.len(), 2);
     assert_eq!(observed[0].payload(), b"first");
     assert_eq!(observed[1].payload(), b"second");
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// The stream transport keeps the payload, so the buffer the framework wrote reaches the router
+/// rather than a copy of it. Content equality cannot tell the two apart; the address can.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn published_payload_is_the_buffer_the_framework_wrote() {
+    let broker = connected().await;
+    let publisher = broker.publisher();
+    let payload = BytesMut::from(&b"first"[..]);
+    let written_at = payload.as_ptr();
+    publisher
+        .publish(OutgoingMessage::produced("events", payload), None)
+        .await
+        .expect("publish");
+
+    let observed = expect_published(&broker, "events", 1, WAIT).await;
+    assert_eq!(
+        observed[0].payload().as_ptr(),
+        written_at,
+        "the transport keeps the payload, so it takes the buffer instead of copying it",
+    );
     broker.shutdown().await.expect("shutdown");
 }
 

@@ -7,8 +7,12 @@ default: check
 
 check:
     cargo fmt --all -- --check
-    cargo clippy --workspace --all-targets --all-features -- -D warnings
-    cargo check --workspace --all-targets --all-features
+    # The benchmark package is left out of the all-features legs on purpose: it is built with the
+    # feature set a service ships, and the framework's harness feature is a compile error in it.
+    # Its own leg follows.
+    cargo clippy --workspace --exclude ruststream-fred-bench --all-targets --all-features -- -D warnings
+    cargo clippy -p ruststream-fred-bench --all-targets -- -D warnings
+    cargo check --workspace --exclude ruststream-fred-bench --all-targets --all-features
     cargo check --workspace --no-default-features
 
 test:
@@ -35,6 +39,23 @@ test-brokers: brokers-up
     REDIS_SENTINEL_TEST_URL=127.0.0.1:26379 \
     RUSTSTREAM_REQUIRE_LIVE=1 \
         cargo test --workspace --all-features -- --test-threads=1
+
+# What this crate costs over the `fred` client it wraps: each scenario run as a RustStream service
+# and as a hand-written loop, against the standalone server in the compose stand. On demand only -
+# it takes minutes and it wants the machine to itself. The page it feeds is docs/benchmarks.md.
+bench *ARGS: brokers-up
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap 'just brokers-down' EXIT
+    mkdir -p target
+    # RUSTFLAGS is cleared so the numbers are not tied to this machine's CPU: a binary built with
+    # `-C target-cpu=native` cannot be reproduced anywhere else.
+    RUSTFLAGS="" REDIS_TEST_URL=redis://127.0.0.1:6379 \
+    REDIS_CLUSTER_TEST_URL=127.0.0.1:7000 \
+    REDIS_SENTINEL_TEST_URL=127.0.0.1:26379 \
+    RUSTSTREAM_BENCH_OUT="$PWD/target/bench-paired.json" \
+        cargo bench -p ruststream-fred-bench --bench paired {{ ARGS }}
+    python3 scripts/bench_results.py target/bench-paired.json docs/benchmarks/results.json
 
 fmt:
     cargo fmt --all

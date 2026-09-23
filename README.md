@@ -90,7 +90,7 @@
 
 ```toml
 [dependencies]
-ruststream = { version = ">=0.7.0-rc.7, <0.8.0", features = ["macros", "json"] }
+ruststream = { version = ">=0.7.0-rc.9, <0.8.0", features = ["macros", "json"] }
 ruststream-fred = "0.7"
 serde = { version = "1", features = ["derive"] }
 
@@ -118,7 +118,7 @@ cargo generate --git https://github.com/powersemmi/ruststream-fred templates/red
 use ruststream_fred::stream::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Order {
     id: u64,
 }

@@ -5,12 +5,13 @@ use std::fmt::{Debug, Formatter};
 use std::future::{Future, ready};
 use std::sync::{Arc, Mutex};
 
+use bytes::BytesMut;
 use fred::interfaces::{StreamsInterface, TransactionInterface};
 use fred::types::Value;
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::Bindings;
 use ruststream::{
-    DefaultPublish, OutgoingMessage, OwnedTransactions, PairError, PublishPolicy, Publisher,
+    DefaultPublish, OutgoingMessage, OwnedTransactions, PairError, PublishPolicy, Publisher, Take,
     Transaction, TransactionalPublisher,
 };
 use tracing::warn;
@@ -205,6 +206,10 @@ impl RedisPublisher {
 }
 
 impl Publisher for RedisPublisher {
+    /// `XADD` hands the body to the client as the value of a field, and the client keeps it, so
+    /// the buffer the framework wrote becomes that value.
+    type Payload = Take;
+
     type Error = RedisError;
     /// `XADD` takes the entry id and the trim threshold per command, and this publisher fixes
     /// both (`*` and no trim); the stream key is the message's name, not a setting. What is left
@@ -213,12 +218,13 @@ impl Publisher for RedisPublisher {
 
     async fn publish(
         &self,
-        msg: OutgoingMessage<'_>,
+        msg: OutgoingMessage<'_, BytesMut>,
         options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
+        let (key, payload, headers) = msg.into_parts();
         let entry: Buffered = (
-            msg.name().to_owned(),
-            fields_for_publish(msg.payload(), &resolved_headers(msg.headers(), options)),
+            key.to_owned(),
+            fields_for_publish(Vec::from(payload), &resolved_headers(headers, options)),
         );
         if self.buffer_if_in_txn(&entry) {
             return Ok(());
@@ -379,6 +385,9 @@ impl Drop for RedisTransaction {
 }
 
 impl Transaction for RedisTransaction {
+    /// The same as [`RedisPublisher`]'s: a buffered `XADD` hands the client the same value.
+    type Payload = Take;
+
     type Error = RedisError;
     /// The same as [`RedisPublisher`]'s: a buffered `XADD` is the same command, queued, so a
     /// staged message takes a partition key the way a direct one does.
@@ -387,12 +396,13 @@ impl Transaction for RedisTransaction {
     /// Buffers the `XADD` locally; nothing reaches the server before [`commit`](Self::commit).
     fn publish(
         &mut self,
-        msg: OutgoingMessage<'_>,
+        msg: OutgoingMessage<'_, BytesMut>,
         options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
+        let (key, payload, headers) = msg.into_parts();
         self.buffered.push((
-            msg.name().to_owned(),
-            fields_for_publish(msg.payload(), &resolved_headers(msg.headers(), options)),
+            key.to_owned(),
+            fields_for_publish(Vec::from(payload), &resolved_headers(headers, options)),
         ));
         ready(Ok(()))
     }

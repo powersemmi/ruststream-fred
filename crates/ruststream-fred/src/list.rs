@@ -38,7 +38,7 @@ use ruststream::asyncapi::Bindings;
 use ruststream::codec::Codec;
 use ruststream::{
     AckError, AddressedCopies, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage,
-    PairError, Partitioned, PublishPolicy, RedeliveryAddress, RedeliveryAddressed,
+    Lend, PairError, Partitioned, PublishPolicy, RedeliveryAddress, RedeliveryAddressed,
     SubscriptionSource,
 };
 
@@ -820,6 +820,10 @@ fn ttl_millis(ttl: Duration) -> i64 {
 }
 
 impl ruststream::Publisher for RedisListPublisher {
+    /// As on [`RedisPubSubPublisher`](crate::RedisPubSubPublisher): the entry the client is
+    /// handed is an envelope this crate builds, so the payload is only read.
+    type Payload = Lend;
+
     type Error = RedisError;
     /// `LPUSH` carries the key and the value and nothing else; the key TTL is a property of the
     /// queue, fixed by the policy and re-armed on every publish. What a call site still says is
@@ -832,27 +836,25 @@ impl ruststream::Publisher for RedisListPublisher {
         options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
         let pool = self.core.pool()?;
+        let (key, payload, headers) = msg.into_parts();
         let body = frame(
             self.codec.as_ref(),
-            msg.payload(),
-            &resolved_headers(msg.headers(), options),
+            payload,
+            &resolved_headers(headers, options),
         );
         let Some(ttl) = self.ttl else {
-            let _: i64 = pool
-                .lpush(msg.name(), body)
-                .await
-                .map_err(RedisError::publish)?;
+            let _: i64 = pool.lpush(key, body).await.map_err(RedisError::publish)?;
             return Ok(());
         };
         // Push the entry and re-arm the key TTL in one pipeline, so an actively used queue keeps
         // resetting its expiry and only an idle one is allowed to lapse.
         let pipeline = pool.next().pipeline();
         let _: () = pipeline
-            .lpush(msg.name(), body)
+            .lpush(key, body)
             .await
             .map_err(RedisError::publish)?;
         let _: () = pipeline
-            .pexpire(msg.name(), ttl_millis(ttl), None)
+            .pexpire(key, ttl_millis(ttl), None)
             .await
             .map_err(RedisError::publish)?;
         let _: Vec<fred::types::Value> = pipeline.all().await.map_err(RedisError::publish)?;

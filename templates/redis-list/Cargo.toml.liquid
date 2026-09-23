@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 # The lower bound names the pre-release so the 0.7 release candidate resolves: cargo skips
 # pre-releases for a range that does not mention one. Plain "0.7" once 0.7.0 is out.
-ruststream = { version = ">=0.7.0-rc.7, <0.8.0", features = ["macros", "json", "asyncapi", "logging"] }
+ruststream = { version = ">=0.7.0-rc.9, <0.8.0", features = ["macros", "json", "asyncapi", "logging"] }
 # The broker feature matching the core one above: it is what fills the redis extension the
 # generated AsyncAPI document carries for each channel.
 ruststream-fred = { version = "0.7", features = ["asyncapi"] }

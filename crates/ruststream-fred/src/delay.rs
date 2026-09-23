@@ -219,7 +219,7 @@ pub(crate) async fn sweep_due(
         let Some((payload, headers)) = decode_member(&member) else {
             continue;
         };
-        let fields = fields_for_publish(&payload, &headers);
+        let fields = fields_for_publish(payload.to_vec(), &headers);
         let _: String = pool
             .xadd(stream_key, false, None::<()>, "*", fields)
             .await

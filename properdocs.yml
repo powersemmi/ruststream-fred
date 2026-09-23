@@ -121,6 +121,7 @@ plugins:
           build: true
           nav_translations:
             Home: Главная
+            Benchmarks: Бенчмарки
             RustStream docs: Документация RustStream
             API reference: Справочник API
         - locale: zh
@@ -128,8 +129,14 @@ plugins:
           build: true
           nav_translations:
             Home: 首页
+            Benchmarks: 基准测试
             RustStream docs: RustStream 文档
             API reference: API 参考
+
+# The Benchmarks page renders its table from `benchmarks/results.json` in the reader's
+# browser, so a re-measurement rewrites one document and no page anywhere carries a figure.
+extra_javascript:
+  - assets/benchmarks.js
 
 extra:
   version:
@@ -140,5 +147,6 @@ extra:
 
 nav:
   - Home: index.md
+  - Benchmarks: benchmarks.md
   - RustStream docs: https://powersemmi.github.io/ruststream/
   - API reference: https://docs.rs/ruststream-fred

@@ -16,14 +16,17 @@ name: ruststream-fred-tests
 
 services:
   # ----- Standalone -------------------------------------------------------------------------------
+  # Every server runs on the host network and without persistence. A published port goes through
+  # docker's userland proxy, which copies every packet of every round trip; an append-only file and
+  # the periodic snapshot put a write and a fork under the command loop. Neither is what the tests
+  # or the benchmark measure, and the bind keeps the servers on the loopback as the port mappings did.
   redis:
     image: redis:7-alpine
     container_name: ruststream-redis
-    command: ["redis-server", "--appendonly", "yes"]
-    ports:
-      - "127.0.0.1:6379:6379"
+    network_mode: host
+    command: ["redis-server", "--port", "6379", "--bind", "127.0.0.1", "--save", "", "--appendonly", "no"]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
       interval: 2s
       timeout: 2s
       retries: 10
@@ -36,11 +39,10 @@ services:
   redis-84:
     image: redis:8.4
     container_name: ruststream-redis-84
-    command: ["redis-server", "--appendonly", "yes"]
-    ports:
-      - "127.0.0.1:6386:6379"
+    network_mode: host
+    command: ["redis-server", "--port", "6386", "--bind", "127.0.0.1", "--save", "", "--appendonly", "no"]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-p", "6386", "ping"]
       interval: 2s
       timeout: 2s
       retries: 10
@@ -53,10 +55,17 @@ services:
   redis-auth:
     image: redis:7-alpine
     container_name: ruststream-redis-auth
+    network_mode: host
     command:
       - redis-server
+      - --port
+      - "6385"
+      - --bind
+      - 127.0.0.1
+      - --save
+      - ""
       - --appendonly
-      - "yes"
+      - "no"
       - --requirepass
       - s3cr3t
       - --user
@@ -66,10 +75,8 @@ services:
       - "~*"
       - "&*"
       - "+@all"
-    ports:
-      - "127.0.0.1:6385:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "s3cr3t", "--no-auth-warning", "ping"]
+      test: ["CMD", "redis-cli", "-p", "6385", "-a", "s3cr3t", "--no-auth-warning", "ping"]
       interval: 2s
       timeout: 2s
       retries: 10
@@ -95,8 +102,10 @@ services:
       - "7000"
       - --cluster-announce-bus-port
       - "17000"
+      - --save
+      - ""
       - --appendonly
-      - "yes"
+      - "no"
     healthcheck:
       test: ["CMD", "redis-cli", "-p", "7000", "ping"]
       interval: 2s
@@ -122,8 +131,10 @@ services:
       - "7001"
       - --cluster-announce-bus-port
       - "17001"
+      - --save
+      - ""
       - --appendonly
-      - "yes"
+      - "no"
     healthcheck:
       test: ["CMD", "redis-cli", "-p", "7001", "ping"]
       interval: 2s
@@ -149,8 +160,10 @@ services:
       - "7002"
       - --cluster-announce-bus-port
       - "17002"
+      - --save
+      - ""
       - --appendonly
-      - "yes"
+      - "no"
     healthcheck:
       test: ["CMD", "redis-cli", "-p", "7002", "ping"]
       interval: 2s
@@ -176,8 +189,10 @@ services:
       - "7003"
       - --cluster-announce-bus-port
       - "17003"
+      - --save
+      - ""
       - --appendonly
-      - "yes"
+      - "no"
     healthcheck:
       test: ["CMD", "redis-cli", "-p", "7003", "ping"]
       interval: 2s
@@ -203,8 +218,10 @@ services:
       - "7004"
       - --cluster-announce-bus-port
       - "17004"
+      - --save
+      - ""
       - --appendonly
-      - "yes"
+      - "no"
     healthcheck:
       test: ["CMD", "redis-cli", "-p", "7004", "ping"]
       interval: 2s
@@ -230,8 +247,10 @@ services:
       - "7005"
       - --cluster-announce-bus-port
       - "17005"
+      - --save
+      - ""
       - --appendonly
-      - "yes"
+      - "no"
     healthcheck:
       test: ["CMD", "redis-cli", "-p", "7005", "ping"]
       interval: 2s
@@ -272,7 +291,7 @@ services:
   redis-sentinel-master:
     image: redis:7-alpine
     network_mode: host
-    command: ["redis-server", "--port", "6380", "--appendonly", "yes"]
+    command: ["redis-server", "--port", "6380", "--save", "", "--appendonly", "no"]
     healthcheck:
       test: ["CMD", "redis-cli", "-p", "6380", "ping"]
       interval: 2s
@@ -286,7 +305,16 @@ services:
     depends_on:
       redis-sentinel-master: { condition: service_healthy }
     command:
-      ["redis-server", "--port", "6381", "--replicaof", "127.0.0.1", "6380", "--appendonly", "yes"]
+      - redis-server
+      - --port
+      - "6381"
+      - --replicaof
+      - 127.0.0.1
+      - "6380"
+      - --save
+      - ""
+      - --appendonly
+      - "no"
     healthcheck:
       test: ["CMD", "redis-cli", "-p", "6381", "ping"]
       interval: 2s
