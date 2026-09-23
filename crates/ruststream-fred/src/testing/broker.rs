@@ -16,6 +16,7 @@ use ruststream::{
     testing::{Coordinator, TestableBroker},
 };
 
+use crate::broker::missing_default_group;
 use crate::route::{Recorded, Route, Routes};
 use crate::{
     error::RedisError,
@@ -114,12 +115,33 @@ impl std::fmt::Debug for TestBrokerState {
 #[must_use]
 pub struct RedisTestBroker {
     state: Arc<TestBrokerState>,
+    default_group: Option<Arc<str>>,
 }
 
 impl RedisTestBroker {
     /// Constructs a fresh, isolated test broker. Equivalent to [`Self::default`].
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Sets a broker-wide default consumer group, as
+    /// [`RedisBroker::default_group`](crate::RedisBroker::default_group) does: it is what a
+    /// bare-string `#[subscriber("key")]` reads through.
+    ///
+    /// Without it a bare-string subscription is refused with [`RedisError::InvalidOptions`], as it
+    /// is against a server.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream_fred::testing::RedisTestBroker;
+    ///
+    /// let broker = RedisTestBroker::new().default_group("workers");
+    /// # let _ = broker;
+    /// ```
+    pub fn default_group(mut self, group: impl Into<String>) -> Self {
+        self.default_group = Some(Arc::from(group.into()));
+        self
     }
 }
 
@@ -128,7 +150,10 @@ impl Broker for RedisTestBroker {
     type Connected = ConnectedRedisTestBroker;
 
     fn connect(self) -> impl Future<Output = Result<Self::Connected, Self::Error>> {
-        ready(Ok(ConnectedRedisTestBroker { state: self.state }))
+        ready(Ok(ConnectedRedisTestBroker {
+            state: self.state,
+            default_group: self.default_group,
+        }))
     }
 }
 
@@ -136,6 +161,8 @@ impl Broker for RedisTestBroker {
 #[derive(Clone, Debug)]
 pub struct ConnectedRedisTestBroker {
     state: Arc<TestBrokerState>,
+    /// The group a bare-string subscription reads through, as the real broker keeps it.
+    default_group: Option<Arc<str>>,
 }
 
 impl ConnectedRedisTestBroker {
@@ -408,7 +435,11 @@ impl Subscribe for ConnectedRedisTestBroker {
     /// opened under the same key, so the name is both ends.
     type Copies = AddressedCopies;
 
+    /// Refused without a default group, as the real broker refuses it.
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
+        if self.default_group.is_none() {
+            return Err(missing_default_group(name, "RedisTestBroker"));
+        }
         ConnectedRedisTestBroker::subscribe(self, name).await
     }
 }

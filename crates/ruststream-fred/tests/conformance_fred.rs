@@ -31,7 +31,8 @@ mod live;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redis_test_broker_passes_conformance_suite() {
-    harness::run_suite(RedisTestBroker::new).await;
+    // The suite subscribes by bare name, which reads through the broker-wide default group.
+    harness::run_suite(|| RedisTestBroker::new().default_group("conformance")).await;
 }
 
 // The in-process legs. Each names the descriptor and the publisher a service would, so the
