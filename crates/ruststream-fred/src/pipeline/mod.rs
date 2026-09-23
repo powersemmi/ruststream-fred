@@ -266,6 +266,35 @@ mod bindable {
 /// }
 /// # }
 /// ```
+///
+/// A publisher of another transport has no round to join, so binding one does not compile:
+///
+/// ```compile_fail,E0277
+/// use std::convert::Infallible;
+///
+/// use ruststream::{Lend, OutgoingMessage, Publisher};
+/// use ruststream_fred::pipeline::Bindable;
+///
+/// struct Elsewhere;
+///
+/// impl Publisher for Elsewhere {
+///     type Payload = Lend;
+///     type Error = Infallible;
+///     type Options = ();
+///
+///     async fn publish(
+///         &self,
+///         _msg: OutgoingMessage<'_, &[u8]>,
+///         _options: Option<&()>,
+///     ) -> Result<(), Infallible> {
+///         Ok(())
+///     }
+/// }
+///
+/// fn bindable<P: Bindable>() {}
+///
+/// bindable::<Elsewhere>();
+/// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a publisher of ruststream-fred, so it cannot join a delivery's round",
     label = "this slot publishes through another broker",
@@ -373,10 +402,10 @@ impl<C> PublishTransform<ForReply<C>, RedisPublishOptions> for InRound {
 /// The delivery's own buffer in the window: what a handler queues its Redis commands into.
 ///
 /// Reached as `Ctx<keys::Pipeline>` on a `.pipeline()` subscription. It carries `fred`'s command
-/// methods, each queueing the command and returning `()`: the command runs after the handler has
-/// returned, and only if the delivery is acknowledged, so its reply is not available inside the
-/// handler. A command queued before `ack` executes before that `ack`. The window sends it; there
-/// is no method here that sends. For a command whose answer the handler needs now, take
+/// methods, each queueing the command and returning `Ok(())` once it is queued: the command runs
+/// after the handler has returned, and only if the delivery is acknowledged, so its reply is not
+/// available inside the handler. A command queued before `ack` executes before that `ack`. The
+/// window sends it; there is no method here that sends. For a command whose answer the handler needs now, take
 /// `Ctx<keys::FredPool>`.
 ///
 /// The buffer is created on the first queued command, so a delivery whose handler queues nothing
