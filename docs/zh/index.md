@@ -52,6 +52,8 @@ docs.rs 上的参考文档以这个 crate 自己的教程开篇，一个主题�
   [延迟重新投递](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#delayed-retry)、
   [投递次数上限](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#capping-the-retries)
   和[消费者组重新定位](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#repositioning-a-group)。
+- [管道](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#pipelining)：订阅的窗口一次往返确认整批拉取的消息，
+  处理函数也可以把 Redis 命令排入这个窗口，只有投递被确认时这些命令才会执行。
 - [发布](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#publishing)：各个策略、
   [分区键](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#partition-keys)步骤和
   [事务](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#transactions)。

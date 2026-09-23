@@ -59,6 +59,9 @@ cargo generate --git https://github.com/powersemmi/ruststream-fred templates/red
   [предел доставок](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#capping-the-retries)
   и
   [перемотка группы](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#repositioning-a-group).
+- [Конвейер](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#pipelining): окно подписки,
+  которое подтверждает всю выборку за один обмен с сервером, и команды Redis, которые обработчик
+  ставит в это окно. Они выполняются, только если доставка подтверждена.
 - [Публикация](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#publishing):
   политики, шаг
   [ключа партиционирования](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#partition-keys)
