@@ -12,13 +12,17 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fred::interfaces::{KeysInterface, ListInterface, StreamsInterface};
-use ruststream::{Broker, ConnectedBroker, OutgoingMessage, Publisher};
+use futures::StreamExt;
+use ruststream::{
+    Broker, BuildContext, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
+    SubscriptionSource,
+};
 use ruststream_fred::context::{PipelineContext, keys};
 use ruststream_fred::pipeline::{Bindable, InRound, RedisPipeline};
 use ruststream_fred::prelude::*;
 use ruststream_fred::{
     AtomicList, AtomicStream, ConnectedRedisBroker, PipelinedList, PipelinedPubSub,
-    PipelinedStream, RedisListPublish, RedisPubSubPublish,
+    PipelinedStream, RedisError, RedisListPublish, RedisPubSubPublish,
 };
 use serde::{Deserialize, Serialize};
 
@@ -446,6 +450,83 @@ async fn bound_publishes_and_replies_in_the_round_follow_the_outcome() {
     running.shutdown().await.expect("shutdown");
     let _: i64 = pool
         .del(vec![stream.clone(), receipts, format!("{stream}.audit")])
+        .await
+        .expect("del");
+    watcher.shutdown().await.expect("shutdown watcher");
+}
+
+/// A flush that fails is reported once, on the delivery stream, and names the subscription.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_flush_is_reported_once_on_the_delivery_stream() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let stream = key("failing");
+    let watcher = connected(&url).await;
+    let pool = watcher.pool_handle().expect("pool");
+    // A list under the name the handler's command writes as a stream: the `XADD` fails with
+    // `WRONGTYPE` when the window sends it.
+    let wrong = format!("{stream}.wrong");
+    let _: i64 = pool.lpush(wrong.as_str(), "x").await.expect("lpush");
+
+    let mut subscription = SubscriptionSource::subscribe(
+        PipelinedStream::new(stream.as_str()).group("workers"),
+        &watcher,
+    )
+    .await
+    .expect("subscribe");
+    watcher
+        .publisher()
+        .publish(OutgoingMessage::new(stream.as_str(), b"{}"), None)
+        .await
+        .expect("publish");
+
+    let mut deliveries = Box::pin(subscription.stream());
+    let delivery = tokio::time::timeout(WAIT, deliveries.next())
+        .await
+        .expect("a delivery")
+        .expect("the stream goes on")
+        .expect("a delivery, not an error");
+    let pipeline = PipelineContext::build(&delivery).pipeline().clone();
+    pipeline
+        .xadd(
+            wrong.as_str(),
+            false,
+            None::<()>,
+            "*",
+            vec![("field", "value")],
+        )
+        .await
+        .expect("queued");
+    delivery.ack().await.expect("the acknowledgement is taken");
+
+    watcher
+        .publisher()
+        .publish(OutgoingMessage::new(stream.as_str(), b"{}"), None)
+        .await
+        .expect("publish");
+    let reported = tokio::time::timeout(WAIT, deliveries.next())
+        .await
+        .expect("the stream answers")
+        .expect("the stream goes on");
+    let Err(RedisError::Flush(message)) = reported else {
+        panic!("expected the failed flush, got {reported:?}");
+    };
+    assert!(
+        message.contains(stream.as_str()) && message.contains("failed"),
+        "the report names the subscription and the failure: {message}"
+    );
+    // Once: the next item is the next delivery.
+    let next = tokio::time::timeout(WAIT, deliveries.next())
+        .await
+        .expect("the stream answers")
+        .expect("the stream goes on");
+    assert!(next.is_ok(), "the failure is reported once: {next:?}");
+
+    drop(deliveries);
+    drop(subscription);
+    let _: i64 = pool
+        .del(vec![stream.as_str(), wrong.as_str()])
         .await
         .expect("del");
     watcher.shutdown().await.expect("shutdown watcher");
