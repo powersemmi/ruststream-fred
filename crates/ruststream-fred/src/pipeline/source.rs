@@ -1,7 +1,7 @@
 //! What a `.pipeline()` descriptor opens: the form's own subscription, with a window.
 
 use std::fmt::{Debug, Formatter};
-use std::future::Future;
+use std::future::{Future, ready};
 use std::sync::Arc;
 
 use futures::Stream;
@@ -12,11 +12,12 @@ use ruststream::{
     Subscriber, SubscriptionSource,
 };
 
-use super::forms::{PubSubForm, StreamForm};
+use super::forms::{ListForm, PubSubForm, StreamForm};
 use super::window::{Form, Window};
 use super::{Pipelined, RoundMessage, WindowMode};
 use crate::broker::ConnectedRedisBroker;
 use crate::error::RedisError;
+use crate::list::{ListReader, RedisList};
 use crate::pubsub::{PubSubWire, RedisPubSub};
 use crate::seek::RedisGroupSeeker;
 use crate::stream::RedisStream;
@@ -110,6 +111,22 @@ impl Subscriber for PipelinedSubscriber<ChannelReader, PubSubForm> {
     }
 }
 
+impl Subscriber for PipelinedSubscriber<ListReader, ListForm> {
+    type Message = RoundMessage<ListForm>;
+    type Error = RedisError;
+
+    /// Yields one delivery per entry, each with a slot in the window, claiming the read's `COUNT`
+    /// at a time.
+    ///
+    /// # Cancel safety
+    ///
+    /// As [`RedisListSubscriber`](crate::RedisListSubscriber)'s: on a reliable list an entry
+    /// claimed and not settled stays on the processing list.
+    fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
+        self.inner.round_stream(&self.window, prefetch())
+    }
+}
+
 /// The parts of `SubscriptionSource` every pipelined descriptor shares with the descriptor it
 /// wraps: its name, its retry declaration and its document.
 macro_rules! delegates {
@@ -193,7 +210,32 @@ impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker> for Pipelined<Re
     }
 }
 
+impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker> for Pipelined<RedisList, Mode> {
+    type Subscriber = PipelinedSubscriber<ListReader, ListForm>;
+    type Copies = AddressedCopies;
+
+    delegates!(ConnectedRedisBroker, key);
+
+    // Opening a list issues no command, so there is nothing to suspend on.
+    fn subscribe(
+        self,
+        connected: &ConnectedRedisBroker,
+    ) -> impl Future<Output = Result<Self::Subscriber, RedisError>> {
+        ready(connected.open_list(self.into_descriptor()).map(|wire| {
+            let window = Window::new(
+                wire.round_form(),
+                wire.round_client(),
+                Mode::ATOMIC,
+                wire.key(),
+                prefetch(),
+            );
+            PipelinedSubscriber::new(ListReader::new(wire), window)
+        }))
+    }
+}
+
 addressed!(ConnectedRedisBroker, RedisStream);
+addressed!(ConnectedRedisBroker, RedisList);
 addressed!(ConnectedRedisBroker, RedisPubSub);
 
 #[cfg(feature = "testing")]
@@ -210,6 +252,7 @@ mod testing {
 
     use super::{PipelinedSubscriber, prefetch};
     use crate::error::RedisError;
+    use crate::list::RedisList;
     use crate::pipeline::{Pipelined, RoundMessage, TestForm, Window, WindowMode};
     use crate::pubsub::RedisPubSub;
     use crate::stream::RedisStream;
@@ -262,5 +305,6 @@ mod testing {
     }
 
     stand_in!(RedisStream, key);
+    stand_in!(RedisList, key);
     stand_in!(RedisPubSub, channel);
 }

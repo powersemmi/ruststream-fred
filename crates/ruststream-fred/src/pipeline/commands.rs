@@ -36,7 +36,7 @@ impl RedisPipeline {
     /// Queued into this delivery's segment; it runs after the handler returns, when
     /// the delivery is acknowledged.
     pub async fn randomkey(&self) -> Result<(), Error> {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.randomkey::<()>().await,
             Segment::Atomic(segment) => segment.randomkey::<()>().await,
         }
@@ -57,7 +57,7 @@ impl RedisPipeline {
         S: Into<Key> + Send,
         D: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .copy::<(), S, D>(source, destination, db, replace)
@@ -79,7 +79,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.dump::<(), K>(key).await,
             Segment::Atomic(segment) => segment.dump::<(), K>(key).await,
         }
@@ -93,7 +93,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.r#type::<(), K>(key).await,
             Segment::Atomic(segment) => segment.r#type::<(), K>(key).await,
         }
@@ -116,7 +116,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .restore::<(), K>(key, ttl, serialized, replace, absttl, idletime, frequency)
@@ -147,7 +147,7 @@ impl RedisPipeline {
         V: TryInto<Value> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .set::<(), K, V>(key, value, expire, options, get)
@@ -171,7 +171,7 @@ impl RedisPipeline {
         V: TryInto<Value> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.setnx::<(), K, V>(key, value).await,
             Segment::Atomic(segment) => segment.setnx::<(), K, V>(key, value).await,
         }
@@ -185,7 +185,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.get::<(), K>(key).await,
             Segment::Atomic(segment) => segment.get::<(), K>(key).await,
         }
@@ -199,7 +199,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.getrange::<(), K>(key, start, end).await,
             Segment::Atomic(segment) => segment.getrange::<(), K>(key, start, end).await,
         }
@@ -215,7 +215,7 @@ impl RedisPipeline {
         V: TryInto<Value> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.setrange::<(), K, V>(key, offset, value).await,
             Segment::Atomic(segment) => segment.setrange::<(), K, V>(key, offset, value).await,
         }
@@ -231,7 +231,7 @@ impl RedisPipeline {
         V: TryInto<Value> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.getset::<(), K, V>(key, value).await,
             Segment::Atomic(segment) => segment.getset::<(), K, V>(key, value).await,
         }
@@ -245,7 +245,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.getdel::<(), K>(key).await,
             Segment::Atomic(segment) => segment.getdel::<(), K>(key).await,
         }
@@ -259,7 +259,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.strlen::<(), K>(key).await,
             Segment::Atomic(segment) => segment.strlen::<(), K>(key).await,
         }
@@ -273,7 +273,7 @@ impl RedisPipeline {
     where
         K: Into<MultipleKeys> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.del::<(), K>(keys).await,
             Segment::Atomic(segment) => segment.del::<(), K>(keys).await,
         }
@@ -287,7 +287,7 @@ impl RedisPipeline {
     where
         K: Into<MultipleKeys> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.unlink::<(), K>(keys).await,
             Segment::Atomic(segment) => segment.unlink::<(), K>(keys).await,
         }
@@ -302,7 +302,7 @@ impl RedisPipeline {
         S: Into<Key> + Send,
         D: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.rename::<(), S, D>(source, destination).await,
             Segment::Atomic(segment) => segment.rename::<(), S, D>(source, destination).await,
         }
@@ -317,7 +317,7 @@ impl RedisPipeline {
         S: Into<Key> + Send,
         D: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.renamenx::<(), S, D>(source, destination).await,
             Segment::Atomic(segment) => segment.renamenx::<(), S, D>(source, destination).await,
         }
@@ -333,7 +333,7 @@ impl RedisPipeline {
         V: TryInto<Value> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.append::<(), K, V>(key, value).await,
             Segment::Atomic(segment) => segment.append::<(), K, V>(key, value).await,
         }
@@ -347,7 +347,7 @@ impl RedisPipeline {
     where
         K: Into<MultipleKeys> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.mget::<(), K>(keys).await,
             Segment::Atomic(segment) => segment.mget::<(), K>(keys).await,
         }
@@ -362,7 +362,7 @@ impl RedisPipeline {
         V: TryInto<Map> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.mset(values).await,
             Segment::Atomic(segment) => segment.mset(values).await,
         }
@@ -377,7 +377,7 @@ impl RedisPipeline {
         V: TryInto<Map> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.msetnx::<(), V>(values).await,
             Segment::Atomic(segment) => segment.msetnx::<(), V>(values).await,
         }
@@ -391,7 +391,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.incr::<(), K>(key).await,
             Segment::Atomic(segment) => segment.incr::<(), K>(key).await,
         }
@@ -405,7 +405,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.incr_by::<(), K>(key, val).await,
             Segment::Atomic(segment) => segment.incr_by::<(), K>(key, val).await,
         }
@@ -419,7 +419,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.incr_by_float::<(), K>(key, val).await,
             Segment::Atomic(segment) => segment.incr_by_float::<(), K>(key, val).await,
         }
@@ -433,7 +433,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.decr::<(), K>(key).await,
             Segment::Atomic(segment) => segment.decr::<(), K>(key).await,
         }
@@ -447,7 +447,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.decr_by::<(), K>(key, val).await,
             Segment::Atomic(segment) => segment.decr_by::<(), K>(key, val).await,
         }
@@ -461,7 +461,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.ttl::<(), K>(key).await,
             Segment::Atomic(segment) => segment.ttl::<(), K>(key).await,
         }
@@ -475,7 +475,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.pttl::<(), K>(key).await,
             Segment::Atomic(segment) => segment.pttl::<(), K>(key).await,
         }
@@ -489,7 +489,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.persist::<(), K>(key).await,
             Segment::Atomic(segment) => segment.persist::<(), K>(key).await,
         }
@@ -508,7 +508,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.expire::<(), K>(key, seconds, options).await,
             Segment::Atomic(segment) => segment.expire::<(), K>(key, seconds, options).await,
         }
@@ -527,7 +527,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.expire_at::<(), K>(key, timestamp, options).await,
             Segment::Atomic(segment) => segment.expire_at::<(), K>(key, timestamp, options).await,
         }
@@ -541,7 +541,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.expire_time::<(), K>(key).await,
             Segment::Atomic(segment) => segment.expire_time::<(), K>(key).await,
         }
@@ -560,7 +560,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.pexpire::<(), K>(key, milliseconds, options).await,
             Segment::Atomic(segment) => segment.pexpire::<(), K>(key, milliseconds, options).await,
         }
@@ -579,7 +579,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.pexpire_at::<(), K>(key, timestamp, options).await,
             Segment::Atomic(segment) => segment.pexpire_at::<(), K>(key, timestamp, options).await,
         }
@@ -593,7 +593,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.pexpire_time::<(), K>(key).await,
             Segment::Atomic(segment) => segment.pexpire_time::<(), K>(key).await,
         }
@@ -607,7 +607,7 @@ impl RedisPipeline {
     where
         K: Into<MultipleKeys> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.exists::<(), K>(keys).await,
             Segment::Atomic(segment) => segment.exists::<(), K>(keys).await,
         }
@@ -621,7 +621,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.hgetall::<(), K>(key).await,
             Segment::Atomic(segment) => segment.hgetall::<(), K>(key).await,
         }
@@ -636,7 +636,7 @@ impl RedisPipeline {
         K: Into<Key> + Send,
         F: Into<MultipleKeys> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.hdel::<(), K, F>(key, fields).await,
             Segment::Atomic(segment) => segment.hdel::<(), K, F>(key, fields).await,
         }
@@ -651,7 +651,7 @@ impl RedisPipeline {
         K: Into<Key> + Send,
         F: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.hexists::<(), K, F>(key, field).await,
             Segment::Atomic(segment) => segment.hexists::<(), K, F>(key, field).await,
         }
@@ -666,7 +666,7 @@ impl RedisPipeline {
         K: Into<Key> + Send,
         F: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.hget::<(), K, F>(key, field).await,
             Segment::Atomic(segment) => segment.hget::<(), K, F>(key, field).await,
         }
@@ -681,7 +681,7 @@ impl RedisPipeline {
         K: Into<Key> + Send,
         F: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.hincrby::<(), K, F>(key, field, increment).await,
             Segment::Atomic(segment) => segment.hincrby::<(), K, F>(key, field, increment).await,
         }
@@ -696,7 +696,7 @@ impl RedisPipeline {
         K: Into<Key> + Send,
         F: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .hincrbyfloat::<(), K, F>(key, field, increment)
@@ -718,7 +718,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.hkeys::<(), K>(key).await,
             Segment::Atomic(segment) => segment.hkeys::<(), K>(key).await,
         }
@@ -732,7 +732,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.hlen::<(), K>(key).await,
             Segment::Atomic(segment) => segment.hlen::<(), K>(key).await,
         }
@@ -747,7 +747,7 @@ impl RedisPipeline {
         K: Into<Key> + Send,
         F: Into<MultipleKeys> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.hmget::<(), K, F>(key, fields).await,
             Segment::Atomic(segment) => segment.hmget::<(), K, F>(key, fields).await,
         }
@@ -763,7 +763,7 @@ impl RedisPipeline {
         V: TryInto<Map> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.hmset::<(), K, V>(key, values).await,
             Segment::Atomic(segment) => segment.hmset::<(), K, V>(key, values).await,
         }
@@ -779,7 +779,7 @@ impl RedisPipeline {
         V: TryInto<Map> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.hset::<(), K, V>(key, values).await,
             Segment::Atomic(segment) => segment.hset::<(), K, V>(key, values).await,
         }
@@ -796,7 +796,7 @@ impl RedisPipeline {
         V: TryInto<Value> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.hsetnx::<(), K, F, V>(key, field, value).await,
             Segment::Atomic(segment) => segment.hsetnx::<(), K, F, V>(key, field, value).await,
         }
@@ -810,7 +810,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.hrandfield::<(), K>(key, count).await,
             Segment::Atomic(segment) => segment.hrandfield::<(), K>(key, count).await,
         }
@@ -825,7 +825,7 @@ impl RedisPipeline {
         K: Into<Key> + Send,
         F: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.hstrlen::<(), K, F>(key, field).await,
             Segment::Atomic(segment) => segment.hstrlen::<(), K, F>(key, field).await,
         }
@@ -839,7 +839,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.hvals::<(), K>(key).await,
             Segment::Atomic(segment) => segment.hvals::<(), K>(key).await,
         }
@@ -858,7 +858,7 @@ impl RedisPipeline {
     where
         K: Into<MultipleKeys> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.lmpop::<(), K>(keys, direction, count).await,
             Segment::Atomic(segment) => segment.lmpop::<(), K>(keys, direction, count).await,
         }
@@ -872,7 +872,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.lindex::<(), K>(key, index).await,
             Segment::Atomic(segment) => segment.lindex::<(), K>(key, index).await,
         }
@@ -896,7 +896,7 @@ impl RedisPipeline {
         V: TryInto<Value> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .linsert::<(), K, P, V>(key, location, pivot, element)
@@ -918,7 +918,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.llen::<(), K>(key).await,
             Segment::Atomic(segment) => segment.llen::<(), K>(key).await,
         }
@@ -932,7 +932,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.lpop::<(), K>(key, count).await,
             Segment::Atomic(segment) => segment.lpop::<(), K>(key, count).await,
         }
@@ -955,7 +955,7 @@ impl RedisPipeline {
         V: TryInto<Value> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .lpos::<(), K, V>(key, element, rank, count, maxlen)
@@ -979,7 +979,7 @@ impl RedisPipeline {
         V: TryInto<MultipleValues> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.lpush::<(), K, V>(key, elements).await,
             Segment::Atomic(segment) => segment.lpush::<(), K, V>(key, elements).await,
         }
@@ -995,7 +995,7 @@ impl RedisPipeline {
         V: TryInto<MultipleValues> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.lpushx::<(), K, V>(key, elements).await,
             Segment::Atomic(segment) => segment.lpushx::<(), K, V>(key, elements).await,
         }
@@ -1009,7 +1009,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.lrange::<(), K>(key, start, stop).await,
             Segment::Atomic(segment) => segment.lrange::<(), K>(key, start, stop).await,
         }
@@ -1025,7 +1025,7 @@ impl RedisPipeline {
         V: TryInto<Value> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.lrem::<(), K, V>(key, count, element).await,
             Segment::Atomic(segment) => segment.lrem::<(), K, V>(key, count, element).await,
         }
@@ -1041,7 +1041,7 @@ impl RedisPipeline {
         V: TryInto<Value> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.lset::<(), K, V>(key, index, element).await,
             Segment::Atomic(segment) => segment.lset::<(), K, V>(key, index, element).await,
         }
@@ -1055,7 +1055,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.ltrim::<(), K>(key, start, stop).await,
             Segment::Atomic(segment) => segment.ltrim::<(), K>(key, start, stop).await,
         }
@@ -1069,7 +1069,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.rpop::<(), K>(key, count).await,
             Segment::Atomic(segment) => segment.rpop::<(), K>(key, count).await,
         }
@@ -1084,7 +1084,7 @@ impl RedisPipeline {
         S: Into<Key> + Send,
         D: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.rpoplpush::<(), S, D>(source, dest).await,
             Segment::Atomic(segment) => segment.rpoplpush::<(), S, D>(source, dest).await,
         }
@@ -1105,7 +1105,7 @@ impl RedisPipeline {
         S: Into<Key> + Send,
         D: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .lmove::<(), S, D>(source, dest, source_direction, dest_direction)
@@ -1129,7 +1129,7 @@ impl RedisPipeline {
         V: TryInto<MultipleValues> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.rpush::<(), K, V>(key, elements).await,
             Segment::Atomic(segment) => segment.rpush::<(), K, V>(key, elements).await,
         }
@@ -1145,7 +1145,7 @@ impl RedisPipeline {
         V: TryInto<MultipleValues> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.rpushx::<(), K, V>(key, elements).await,
             Segment::Atomic(segment) => segment.rpushx::<(), K, V>(key, elements).await,
         }
@@ -1169,7 +1169,7 @@ impl RedisPipeline {
         K: Into<Key> + Send,
         S: Into<MultipleStrings> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .sort::<(), K, S>(key, by, limit, get, order, alpha, store)
@@ -1200,7 +1200,7 @@ impl RedisPipeline {
         K: Into<Key> + Send,
         S: Into<MultipleStrings> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .sort_ro::<(), K, S>(key, by, limit, get, order, alpha)
@@ -1224,7 +1224,7 @@ impl RedisPipeline {
         V: TryInto<MultipleValues> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.sadd::<(), K, V>(key, members).await,
             Segment::Atomic(segment) => segment.sadd::<(), K, V>(key, members).await,
         }
@@ -1238,7 +1238,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.scard::<(), K>(key).await,
             Segment::Atomic(segment) => segment.scard::<(), K>(key).await,
         }
@@ -1252,7 +1252,7 @@ impl RedisPipeline {
     where
         K: Into<MultipleKeys> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.sdiff::<(), K>(keys).await,
             Segment::Atomic(segment) => segment.sdiff::<(), K>(keys).await,
         }
@@ -1267,7 +1267,7 @@ impl RedisPipeline {
         D: Into<Key> + Send,
         K: Into<MultipleKeys> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.sdiffstore::<(), D, K>(dest, keys).await,
             Segment::Atomic(segment) => segment.sdiffstore::<(), D, K>(dest, keys).await,
         }
@@ -1281,7 +1281,7 @@ impl RedisPipeline {
     where
         K: Into<MultipleKeys> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.sinter::<(), K>(keys).await,
             Segment::Atomic(segment) => segment.sinter::<(), K>(keys).await,
         }
@@ -1296,7 +1296,7 @@ impl RedisPipeline {
         D: Into<Key> + Send,
         K: Into<MultipleKeys> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.sinterstore::<(), D, K>(dest, keys).await,
             Segment::Atomic(segment) => segment.sinterstore::<(), D, K>(dest, keys).await,
         }
@@ -1312,7 +1312,7 @@ impl RedisPipeline {
         V: TryInto<Value> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.sismember::<(), K, V>(key, member).await,
             Segment::Atomic(segment) => segment.sismember::<(), K, V>(key, member).await,
         }
@@ -1328,7 +1328,7 @@ impl RedisPipeline {
         V: TryInto<MultipleValues> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.smismember::<(), K, V>(key, members).await,
             Segment::Atomic(segment) => segment.smismember::<(), K, V>(key, members).await,
         }
@@ -1342,7 +1342,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.smembers::<(), K>(key).await,
             Segment::Atomic(segment) => segment.smembers::<(), K>(key).await,
         }
@@ -1359,7 +1359,7 @@ impl RedisPipeline {
         V: TryInto<Value> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.smove::<(), S, D, V>(source, dest, member).await,
             Segment::Atomic(segment) => segment.smove::<(), S, D, V>(source, dest, member).await,
         }
@@ -1373,7 +1373,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.spop::<(), K>(key, count).await,
             Segment::Atomic(segment) => segment.spop::<(), K>(key, count).await,
         }
@@ -1387,7 +1387,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.srandmember::<(), K>(key, count).await,
             Segment::Atomic(segment) => segment.srandmember::<(), K>(key, count).await,
         }
@@ -1403,7 +1403,7 @@ impl RedisPipeline {
         V: TryInto<MultipleValues> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.srem::<(), K, V>(key, members).await,
             Segment::Atomic(segment) => segment.srem::<(), K, V>(key, members).await,
         }
@@ -1417,7 +1417,7 @@ impl RedisPipeline {
     where
         K: Into<MultipleKeys> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.sunion::<(), K>(keys).await,
             Segment::Atomic(segment) => segment.sunion::<(), K>(keys).await,
         }
@@ -1432,7 +1432,7 @@ impl RedisPipeline {
         D: Into<Key> + Send,
         K: Into<MultipleKeys> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.sunionstore::<(), D, K>(dest, keys).await,
             Segment::Atomic(segment) => segment.sunionstore::<(), D, K>(dest, keys).await,
         }
@@ -1456,7 +1456,7 @@ impl RedisPipeline {
         V: TryInto<MultipleZaddValues> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .zadd::<(), K, V>(key, options, ordering, changed, incr, values)
@@ -1478,7 +1478,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.zcard::<(), K>(key).await,
             Segment::Atomic(segment) => segment.zcard::<(), K>(key).await,
         }
@@ -1492,7 +1492,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.zcount::<(), K>(key, min, max).await,
             Segment::Atomic(segment) => segment.zcount::<(), K>(key, min, max).await,
         }
@@ -1506,7 +1506,7 @@ impl RedisPipeline {
     where
         K: Into<MultipleKeys> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.zdiff::<(), K>(keys, withscores).await,
             Segment::Atomic(segment) => segment.zdiff::<(), K>(keys, withscores).await,
         }
@@ -1521,7 +1521,7 @@ impl RedisPipeline {
         D: Into<Key> + Send,
         K: Into<MultipleKeys> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.zdiffstore::<(), D, K>(dest, keys).await,
             Segment::Atomic(segment) => segment.zdiffstore::<(), D, K>(dest, keys).await,
         }
@@ -1537,7 +1537,7 @@ impl RedisPipeline {
         V: TryInto<Value> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.zincrby::<(), K, V>(key, increment, member).await,
             Segment::Atomic(segment) => segment.zincrby::<(), K, V>(key, increment, member).await,
         }
@@ -1558,7 +1558,7 @@ impl RedisPipeline {
         K: Into<MultipleKeys> + Send,
         W: Into<MultipleWeights> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .zinter::<(), K, W>(keys, weights, aggregate, withscores)
@@ -1588,7 +1588,7 @@ impl RedisPipeline {
         K: Into<MultipleKeys> + Send,
         W: Into<MultipleWeights> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .zinterstore::<(), D, K, W>(dest, keys, weights, aggregate)
@@ -1614,7 +1614,7 @@ impl RedisPipeline {
         N: TryInto<ZRange> + Send,
         N::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.zlexcount::<(), K, M, N>(key, min, max).await,
             Segment::Atomic(segment) => segment.zlexcount::<(), K, M, N>(key, min, max).await,
         }
@@ -1628,7 +1628,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.zpopmax::<(), K>(key, count).await,
             Segment::Atomic(segment) => segment.zpopmax::<(), K>(key, count).await,
         }
@@ -1642,7 +1642,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.zpopmin::<(), K>(key, count).await,
             Segment::Atomic(segment) => segment.zpopmin::<(), K>(key, count).await,
         }
@@ -1656,7 +1656,7 @@ impl RedisPipeline {
     where
         K: Into<MultipleKeys> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.zmpop::<(), K>(keys, sort, count).await,
             Segment::Atomic(segment) => segment.zmpop::<(), K>(keys, sort, count).await,
         }
@@ -1670,7 +1670,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.zrandmember::<(), K>(key, count).await,
             Segment::Atomic(segment) => segment.zrandmember::<(), K>(key, count).await,
         }
@@ -1698,7 +1698,7 @@ impl RedisPipeline {
         N: TryInto<ZRange> + Send,
         N::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .zrangestore::<(), D, S, M, N>(dest, source, min, max, sort, rev, limit)
@@ -1733,7 +1733,7 @@ impl RedisPipeline {
         N: TryInto<ZRange> + Send,
         N::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .zrange::<(), K, M, N>(key, min, max, sort, rev, limit, withscores)
@@ -1765,7 +1765,7 @@ impl RedisPipeline {
         N: TryInto<ZRange> + Send,
         N::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .zrangebylex::<(), K, M, N>(key, min, max, limit)
@@ -1797,7 +1797,7 @@ impl RedisPipeline {
         N: TryInto<ZRange> + Send,
         N::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .zrevrangebylex::<(), K, M, N>(key, max, min, limit)
@@ -1830,7 +1830,7 @@ impl RedisPipeline {
         N: TryInto<ZRange> + Send,
         N::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .zrangebyscore::<(), K, M, N>(key, min, max, withscores, limit)
@@ -1863,7 +1863,7 @@ impl RedisPipeline {
         N: TryInto<ZRange> + Send,
         N::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .zrevrangebyscore::<(), K, M, N>(key, max, min, withscores, limit)
@@ -1887,7 +1887,7 @@ impl RedisPipeline {
         V: TryInto<Value> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.zrank::<(), K, V>(key, member, withscore).await,
             Segment::Atomic(segment) => segment.zrank::<(), K, V>(key, member, withscore).await,
         }
@@ -1903,7 +1903,7 @@ impl RedisPipeline {
         V: TryInto<MultipleValues> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.zrem::<(), K, V>(key, members).await,
             Segment::Atomic(segment) => segment.zrem::<(), K, V>(key, members).await,
         }
@@ -1921,7 +1921,7 @@ impl RedisPipeline {
         N: TryInto<ZRange> + Send,
         N::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.zremrangebylex::<(), K, M, N>(key, min, max).await,
             Segment::Atomic(segment) => segment.zremrangebylex::<(), K, M, N>(key, min, max).await,
         }
@@ -1935,7 +1935,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.zremrangebyrank::<(), K>(key, start, stop).await,
             Segment::Atomic(segment) => segment.zremrangebyrank::<(), K>(key, start, stop).await,
         }
@@ -1953,7 +1953,7 @@ impl RedisPipeline {
         N: TryInto<ZRange> + Send,
         N::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.zremrangebyscore::<(), K, M, N>(key, min, max).await,
             Segment::Atomic(segment) => {
                 segment.zremrangebyscore::<(), K, M, N>(key, min, max).await
@@ -1975,7 +1975,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .zrevrange::<(), K>(key, start, stop, withscores)
@@ -1999,7 +1999,7 @@ impl RedisPipeline {
         V: TryInto<Value> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.zrevrank::<(), K, V>(key, member, withscore).await,
             Segment::Atomic(segment) => segment.zrevrank::<(), K, V>(key, member, withscore).await,
         }
@@ -2015,7 +2015,7 @@ impl RedisPipeline {
         V: TryInto<Value> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.zscore::<(), K, V>(key, member).await,
             Segment::Atomic(segment) => segment.zscore::<(), K, V>(key, member).await,
         }
@@ -2036,7 +2036,7 @@ impl RedisPipeline {
         K: Into<MultipleKeys> + Send,
         W: Into<MultipleWeights> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .zunion::<(), K, W>(keys, weights, aggregate, withscores)
@@ -2066,7 +2066,7 @@ impl RedisPipeline {
         K: Into<MultipleKeys> + Send,
         W: Into<MultipleWeights> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .zunionstore::<(), D, K, W>(dest, keys, weights, aggregate)
@@ -2090,7 +2090,7 @@ impl RedisPipeline {
         V: TryInto<MultipleValues> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.zmscore::<(), K, V>(key, members).await,
             Segment::Atomic(segment) => segment.zmscore::<(), K, V>(key, members).await,
         }
@@ -2105,7 +2105,7 @@ impl RedisPipeline {
         K: Into<Key> + Send,
         S: Into<Str> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.xinfo_consumers::<(), K, S>(key, groupname).await,
             Segment::Atomic(segment) => segment.xinfo_consumers::<(), K, S>(key, groupname).await,
         }
@@ -2119,7 +2119,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.xinfo_groups::<(), K>(key).await,
             Segment::Atomic(segment) => segment.xinfo_groups::<(), K>(key).await,
         }
@@ -2133,7 +2133,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.xinfo_stream::<(), K>(key, full, count).await,
             Segment::Atomic(segment) => segment.xinfo_stream::<(), K>(key, full, count).await,
         }
@@ -2159,7 +2159,7 @@ impl RedisPipeline {
         C: TryInto<XCap> + Send,
         C::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .xadd::<(), K, C, I, F>(key, nomkstream, cap, id, fields)
@@ -2183,7 +2183,7 @@ impl RedisPipeline {
         C: TryInto<XCap> + Send,
         C::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.xtrim::<(), K, C>(key, cap).await,
             Segment::Atomic(segment) => segment.xtrim::<(), K, C>(key, cap).await,
         }
@@ -2198,7 +2198,7 @@ impl RedisPipeline {
         K: Into<Key> + Send,
         S: Into<MultipleStrings> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.xdel::<(), K, S>(key, ids).await,
             Segment::Atomic(segment) => segment.xdel::<(), K, S>(key, ids).await,
         }
@@ -2222,7 +2222,7 @@ impl RedisPipeline {
         E: TryInto<Value> + Send,
         E::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.xrange::<(), K, S, E>(key, start, end, count).await,
             Segment::Atomic(segment) => segment.xrange::<(), K, S, E>(key, start, end, count).await,
         }
@@ -2246,7 +2246,7 @@ impl RedisPipeline {
         E: TryInto<Value> + Send,
         E::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .xrevrange::<(), K, S, E>(key, end, start, count)
@@ -2268,7 +2268,7 @@ impl RedisPipeline {
     where
         K: Into<Key> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.xlen::<(), K>(key).await,
             Segment::Atomic(segment) => segment.xlen::<(), K>(key).await,
         }
@@ -2290,7 +2290,7 @@ impl RedisPipeline {
         S: Into<Str> + Send,
         I: Into<XID> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .xgroup_create::<(), K, S, I>(key, groupname, id, mkstream)
@@ -2319,7 +2319,7 @@ impl RedisPipeline {
         G: Into<Str> + Send,
         C: Into<Str> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .xgroup_createconsumer::<(), K, G, C>(key, groupname, consumername)
@@ -2348,7 +2348,7 @@ impl RedisPipeline {
         G: Into<Str> + Send,
         C: Into<Str> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .xgroup_delconsumer::<(), K, G, C>(key, groupname, consumername)
@@ -2371,7 +2371,7 @@ impl RedisPipeline {
         K: Into<Key> + Send,
         S: Into<Str> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.xgroup_destroy::<(), K, S>(key, groupname).await,
             Segment::Atomic(segment) => segment.xgroup_destroy::<(), K, S>(key, groupname).await,
         }
@@ -2387,7 +2387,7 @@ impl RedisPipeline {
         S: Into<Str> + Send,
         I: Into<XID> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .xgroup_setid::<(), K, S, I>(key, groupname, id)
@@ -2411,7 +2411,7 @@ impl RedisPipeline {
         G: Into<Str> + Send,
         I: Into<MultipleIDs> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.xack::<(), K, G, I>(key, group, ids).await,
             Segment::Atomic(segment) => segment.xack::<(), K, G, I>(key, group, ids).await,
         }
@@ -2440,7 +2440,7 @@ impl RedisPipeline {
         C: Into<Str> + Send,
         I: Into<MultipleIDs> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .xclaim::<(), K, G, C, I>(
@@ -2496,7 +2496,7 @@ impl RedisPipeline {
         C: Into<Str> + Send,
         I: Into<XID> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .xautoclaim::<(), K, G, C, I>(
@@ -2536,7 +2536,7 @@ impl RedisPipeline {
         G: Into<Str> + Send,
         A: Into<XPendingArgs> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.xpending::<(), K, G, A>(key, group, args).await,
             Segment::Atomic(segment) => segment.xpending::<(), K, G, A>(key, group, args).await,
         }
@@ -2553,7 +2553,7 @@ impl RedisPipeline {
         V: TryInto<MultipleValues> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.fcall::<(), F, K, V>(func, keys, args).await,
             Segment::Atomic(segment) => segment.fcall::<(), F, K, V>(func, keys, args).await,
         }
@@ -2570,7 +2570,7 @@ impl RedisPipeline {
         V: TryInto<MultipleValues> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.fcall_ro::<(), F, K, V>(func, keys, args).await,
             Segment::Atomic(segment) => segment.fcall_ro::<(), F, K, V>(func, keys, args).await,
         }
@@ -2584,7 +2584,7 @@ impl RedisPipeline {
     where
         S: Into<Str> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.function_delete::<(), S>(library_name).await,
             Segment::Atomic(segment) => segment.function_delete::<(), S>(library_name).await,
         }
@@ -2595,7 +2595,7 @@ impl RedisPipeline {
     /// Queued into this delivery's segment; it runs after the handler returns, when
     /// the delivery is acknowledged.
     pub async fn function_dump(&self) -> Result<(), Error> {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.function_dump::<()>().await,
             Segment::Atomic(segment) => segment.function_dump::<()>().await,
         }
@@ -2606,7 +2606,7 @@ impl RedisPipeline {
     /// Queued into this delivery's segment; it runs after the handler returns, when
     /// the delivery is acknowledged.
     pub async fn function_flush(&self, r#async: bool) -> Result<(), Error> {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.function_flush::<()>(r#async).await,
             Segment::Atomic(segment) => segment.function_flush::<()>(r#async).await,
         }
@@ -2624,7 +2624,7 @@ impl RedisPipeline {
     where
         S: Into<Str> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.function_list::<(), S>(library_name, withcode).await,
             Segment::Atomic(segment) => {
                 segment.function_list::<(), S>(library_name, withcode).await
@@ -2640,7 +2640,7 @@ impl RedisPipeline {
     where
         S: Into<Str> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.function_load::<(), S>(replace, code).await,
             Segment::Atomic(segment) => segment.function_load::<(), S>(replace, code).await,
         }
@@ -2656,7 +2656,7 @@ impl RedisPipeline {
         P: TryInto<FnPolicy> + Send,
         P::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => {
                 segment
                     .function_restore::<(), B, P>(serialized, policy)
@@ -2675,7 +2675,7 @@ impl RedisPipeline {
     /// Queued into this delivery's segment; it runs after the handler returns, when
     /// the delivery is acknowledged.
     pub async fn function_stats(&self) -> Result<(), Error> {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.function_stats::<()>().await,
             Segment::Atomic(segment) => segment.function_stats::<()>().await,
         }
@@ -2691,7 +2691,7 @@ impl RedisPipeline {
         V: TryInto<Value> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.publish::<(), S, V>(channel, message).await,
             Segment::Atomic(segment) => segment.publish::<(), S, V>(channel, message).await,
         }
@@ -2707,7 +2707,7 @@ impl RedisPipeline {
         V: TryInto<Value> + Send,
         V::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.spublish::<(), S, V>(channel, message).await,
             Segment::Atomic(segment) => segment.spublish::<(), S, V>(channel, message).await,
         }
@@ -2721,7 +2721,7 @@ impl RedisPipeline {
     where
         S: Into<Str> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.pubsub_channels::<(), S>(pattern).await,
             Segment::Atomic(segment) => segment.pubsub_channels::<(), S>(pattern).await,
         }
@@ -2732,7 +2732,7 @@ impl RedisPipeline {
     /// Queued into this delivery's segment; it runs after the handler returns, when
     /// the delivery is acknowledged.
     pub async fn pubsub_numpat(&self) -> Result<(), Error> {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.pubsub_numpat::<()>().await,
             Segment::Atomic(segment) => segment.pubsub_numpat::<()>().await,
         }
@@ -2746,7 +2746,7 @@ impl RedisPipeline {
     where
         S: Into<MultipleStrings> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.pubsub_numsub::<(), S>(channels).await,
             Segment::Atomic(segment) => segment.pubsub_numsub::<(), S>(channels).await,
         }
@@ -2760,7 +2760,7 @@ impl RedisPipeline {
     where
         S: Into<Str> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.pubsub_shardchannels::<(), S>(pattern).await,
             Segment::Atomic(segment) => segment.pubsub_shardchannels::<(), S>(pattern).await,
         }
@@ -2774,7 +2774,7 @@ impl RedisPipeline {
     where
         S: Into<MultipleStrings> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.pubsub_shardnumsub::<(), S>(channels).await,
             Segment::Atomic(segment) => segment.pubsub_shardnumsub::<(), S>(channels).await,
         }

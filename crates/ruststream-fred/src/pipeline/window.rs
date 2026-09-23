@@ -21,7 +21,7 @@ use fred::types::{ClusterHash, CustomCommand, Value};
 use futures::future::join_all;
 use ruststream::{AckError, IncomingMessage};
 
-use super::{pipeline_on, queued};
+use super::pipeline_on;
 use crate::error::RedisError;
 
 /// One delivery's buffer: a `fred` pipeline, pinned to the subscription's slot and opened with
@@ -94,15 +94,10 @@ impl Segments {
         segment
     }
 
-    fn segment(&self, slot: u32) -> Result<Segment, Error> {
-        let mut slots = self.lock();
-        let entry = slots
-            .segments
-            .get_mut(slot as usize)
-            .expect("a round names a slot of its own window");
-        if let Some(segment) = entry {
-            let segment = segment.clone();
-            drop(slots);
+    /// The slot's segment, created on first use: a pipeline on the window's client, opened with
+    /// `MULTI` under `.atomic()`.
+    async fn segment(&self, slot: u32) -> Result<Segment, Error> {
+        if let Some(segment) = self.existing(slot) {
             return Ok(segment);
         }
         let pipeline = pipeline_on(&self.client);
@@ -115,16 +110,33 @@ impl Segments {
                 max_redirections: Some(0),
                 ..Options::default()
             });
-            queued(
-                pinned.custom::<(), Value>(transaction_edge("MULTI", self.hash_slot), Vec::new()),
-            )?;
+            pinned
+                .custom::<(), Value>(transaction_edge("MULTI", self.hash_slot), Vec::new())
+                .await?;
             Segment::Atomic(pinned)
         } else {
             Segment::Plain(pipeline)
         };
-        *entry = Some(segment.clone());
+        let mut slots = self.lock();
+        let entry = slots
+            .segments
+            .get_mut(slot as usize)
+            .expect("a round names a slot of its own window");
+        // One handler queues into one slot, so a segment created here meanwhile is its own.
+        let segment = entry.get_or_insert(segment).clone();
         drop(slots);
         Ok(segment)
+    }
+
+    fn existing(&self, slot: u32) -> Option<Segment> {
+        let slots = self.lock();
+        let segment = slots
+            .segments
+            .get(slot as usize)
+            .expect("a round names a slot of its own window")
+            .clone();
+        drop(slots);
+        segment
     }
 }
 
@@ -136,8 +148,8 @@ pub(crate) struct Round {
 }
 
 impl Round {
-    pub(crate) fn segment(&self) -> Result<Segment, Error> {
-        self.segments.segment(self.slot)
+    pub(crate) async fn segment(&self) -> Result<Segment, Error> {
+        self.segments.segment(self.slot).await
     }
 }
 
@@ -191,7 +203,11 @@ pub trait Form: Send + Sync + 'static {
     /// # Errors
     ///
     /// `fred`'s error when a command cannot be queued.
-    fn close_atomic(&self, segment: &Segment, ops: &mut Vec<Self::Op>) -> Result<(), Error>;
+    fn close_atomic(
+        &self,
+        segment: &Segment,
+        ops: &mut Vec<Self::Op>,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
 
     /// Sends the settles of one flush, after its segments.
     fn send_ops(
@@ -349,43 +365,52 @@ impl<F: Form> Window<F> {
         settle: impl FnOnce(&F, &mut Vec<F::Op>) -> Result<(), AckError>,
     ) -> Result<(), AckError> {
         let segment = self.segments.close(round.slot);
-        let flush = {
+        let (mut result, closing) = {
             let mut guard = self.owed();
             let owed = &mut *guard;
-            let result = match segment {
+            match segment {
                 Some(segment) if commit => {
                     let mut scratch = std::mem::take(&mut owed.scratch);
-                    let mut result = settle(&self.form, &mut scratch);
-                    // A form that settles nothing answers `Unsupported` to an `ack`, and its
-                    // segment is committed all the same: what the handler queued still follows
-                    // the outcome.
-                    let mut keep = matches!(result, Ok(()) | Err(AckError::Unsupported));
-                    if keep
-                        && self.segments.atomic
-                        && let Err(err) = self.close_atomic(&segment, &mut scratch)
-                    {
-                        keep = false;
-                        result = Err(AckError::Broker(Box::new(err)));
-                    }
-                    if keep {
-                        owed.committed.push(segment);
-                    }
-                    owed.ops.append(&mut scratch);
-                    owed.scratch = scratch;
-                    result
+                    let result = settle(&self.form, &mut scratch);
+                    drop(guard);
+                    (result, Some((segment, scratch)))
                 }
                 // An outcome other than `ack` drops the segment: what the handler queued never
                 // leaves.
-                _ => settle(&self.form, &mut owed.ops),
-            };
+                _ => (settle(&self.form, &mut owed.ops), None),
+            }
+        };
+        let mut kept = None;
+        if let Some((segment, mut scratch)) = closing {
+            // A form that settles nothing answers `Unsupported` to an `ack`, and its segment is
+            // committed all the same: what the handler queued still follows the outcome.
+            let mut keep = matches!(result, Ok(()) | Err(AckError::Unsupported));
+            if keep
+                && self.segments.atomic
+                && let Err(err) = self.close_atomic(&segment, &mut scratch).await
+            {
+                keep = false;
+                result = Err(AckError::Broker(Box::new(err)));
+            }
+            kept = Some((keep.then_some(segment), scratch));
+        }
+        let flush = {
+            let mut guard = self.owed();
+            let owed = &mut *guard;
+            if let Some((segment, mut scratch)) = kept {
+                if let Some(segment) = segment {
+                    owed.committed.push(segment);
+                }
+                owed.ops.append(&mut scratch);
+                owed.scratch = scratch;
+            }
             owed.outstanding = owed.outstanding.saturating_sub(1);
             owed.settled += 1;
             let due = (owed.outstanding == 0 && owed.waiting == 0) || owed.settled >= self.capacity;
             let flush = due.then(|| Self::take(owed));
             drop(guard);
-            (flush, result)
+            flush
         };
-        let (flush, result) = flush;
         if let Some(flush) = flush {
             self.send(flush).await;
         }
@@ -406,12 +431,15 @@ impl<F: Form> Window<F> {
         async move { self.send(flush).await }
     }
 
-    fn close_atomic(&self, segment: &Segment, ops: &mut Vec<F::Op>) -> Result<(), Error> {
-        self.form.close_atomic(segment, ops)?;
-        queued(segment.pipeline().custom::<(), Value>(
-            transaction_edge("EXEC", self.segments.hash_slot),
-            Vec::new(),
-        ))
+    async fn close_atomic(&self, segment: &Segment, ops: &mut Vec<F::Op>) -> Result<(), Error> {
+        self.form.close_atomic(segment, ops).await?;
+        segment
+            .pipeline()
+            .custom::<(), Value>(
+                transaction_edge("EXEC", self.segments.hash_slot),
+                Vec::new(),
+            )
+            .await
     }
 
     fn take(owed: &mut Owed<F::Op>) -> Flush<F::Op> {

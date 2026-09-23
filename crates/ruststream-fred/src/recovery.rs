@@ -90,6 +90,18 @@ fn broker_err(err: fred::error::Error) -> AckError {
     AckError::Broker(Box::new(err))
 }
 
+/// The ZSET member and score a claim is tracked by, for a claim recorded inside a pipeline.
+pub(crate) fn tracked(value: &[u8]) -> (f64, Vec<u8>) {
+    (as_score(now_ms()), claim_member(value))
+}
+
+impl RecoveryConfig {
+    /// The expiry re-armed on the recovery ZSET with every claim, in milliseconds.
+    pub(crate) fn ttl_millis(&self) -> Option<i64> {
+        self.ttl.map(ttl_millis)
+    }
+}
+
 /// Records a freshly claimed entry in the recovery ZSET (score = now), refreshing the optional TTL.
 ///
 /// Returns the ZSET member to stash on the ack handle, so settlement removes exactly this claim.
