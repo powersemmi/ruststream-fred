@@ -8,8 +8,8 @@ site serves at `benchmarks/results.json`.
 
 The schema is the core's, declared at
 https://powersemmi.github.io/ruststream/latest/benchmarks/#publishing-results. This crate
-publishes the throughput table alone, each loop as its best and worst round, so the document
-declares schema 3.
+publishes the throughput table alone, each loop as its best, median and worst round, so the
+document declares schema 3.
 
 A field the machine does not publish is written as `unknown` rather than guessed: memory speed
 comes from the DMI tables, which most systems only let root read.
