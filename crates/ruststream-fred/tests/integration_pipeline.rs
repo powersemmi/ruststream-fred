@@ -17,7 +17,8 @@ use ruststream_fred::context::keys;
 use ruststream_fred::pipeline::RedisPipeline;
 use ruststream_fred::prelude::*;
 use ruststream_fred::{
-    AtomicStream, ConnectedRedisBroker, PipelinedPubSub, PipelinedStream, RedisPubSubPublish,
+    AtomicList, AtomicStream, ConnectedRedisBroker, PipelinedList, PipelinedPubSub,
+    PipelinedStream, RedisListPublish, RedisPubSubPublish,
 };
 use serde::{Deserialize, Serialize};
 
@@ -109,6 +110,21 @@ async fn channel(order: &Order, Ctx(pipeline): Ctx<keys::Pipeline>) -> HandlerOu
     queue_and_settle(order, &pipeline, format!("{}.audit", key("channel"))).await
 }
 
+#[subscriber(PipelinedList::new(key("reliable")).reliable())]
+async fn reliable(order: &Order, Ctx(pipeline): Ctx<keys::Pipeline>) -> HandlerOutcome {
+    queue_and_settle(order, &pipeline, format!("{}.audit", key("reliable"))).await
+}
+
+#[subscriber(AtomicList::new(key("atomic-list")).reliable())]
+async fn atomic_list(order: &Order, Ctx(pipeline): Ctx<keys::Pipeline>) -> HandlerOutcome {
+    queue_and_settle(order, &pipeline, format!("{}.audit", key("atomic-list"))).await
+}
+
+#[subscriber(PipelinedList::new(key("simple")))]
+async fn simple(order: &Order, Ctx(pipeline): Ctx<keys::Pipeline>) -> HandlerOutcome {
+    queue_and_settle(order, &pipeline, format!("{}.audit", key("simple"))).await
+}
+
 async fn connected(url: &str) -> ConnectedRedisBroker {
     RedisBroker::standalone(url)
         .connect()
@@ -127,7 +143,9 @@ async fn run_window(url: &str, base: &'static str, app: RustStream) {
 
     let stream_publisher = watcher.publisher();
     let channel_publisher = watcher.pubsub_publisher(RedisPubSubPublish::new());
+    let list_publisher = watcher.list_publisher(RedisListPublish::new());
     let on_channel = base == "channel";
+    let on_list = matches!(base, "reliable" | "atomic-list" | "simple");
     let mut acknowledged = 0;
     for id in 0..DELIVERIES {
         let outcome = if id % 3 == 0 { "drop" } else { "ack" };
@@ -137,7 +155,12 @@ async fn run_window(url: &str, base: &'static str, app: RustStream) {
             outcome: outcome.to_owned(),
         })
         .expect("encode");
-        if on_channel {
+        if on_list {
+            list_publisher
+                .publish(OutgoingMessage::new(stream.as_str(), &body), None)
+                .await
+                .expect("publish");
+        } else if on_channel {
             channel_publisher
                 .publish(OutgoingMessage::new(stream.as_str(), &body), None)
                 .await
@@ -172,8 +195,28 @@ async fn run_window(url: &str, base: &'static str, app: RustStream) {
         "a dropped delivery's command reached Redis: {seen:?}"
     );
 
+    // The settles ride the same flush: the processing list holds nothing once the window has
+    // left, and neither does the queue.
+    if on_list {
+        let processing = format!("{stream}.processing");
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            let claimed: i64 = pool.llen(processing.as_str()).await.expect("llen");
+            let queued: i64 = pool.llen(stream.as_str()).await.expect("llen");
+            if claimed == 0 && queued == 0 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{claimed} entries still claimed, {queued} still queued"
+            );
+            tokio::task::yield_now().await;
+        }
+        let _: i64 = pool.del(processing.as_str()).await.expect("del");
+    }
+
     // The settles ride the same flush: the group owes nothing once the window has left.
-    if !on_channel {
+    if !on_channel && !on_list {
         let deadline = tokio::time::Instant::now() + WAIT;
         loop {
             let pending: PendingSummary = pool
@@ -241,3 +284,33 @@ async fn a_channel_window_sends_what_acknowledged_handlers_queued() {
     );
     run_window(&url, "channel", app).await;
 }
+
+macro_rules! list_case {
+    ($test:ident, $handler:ident, $base:literal) => {
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn $test() {
+            let Some(url) = redis_url() else {
+                return;
+            };
+            let app = RustStream::new(AppInfo::new("pipeline", "0.1.0")).with_broker(
+                RedisBroker::standalone(url.clone()),
+                |b| {
+                    b.include($handler);
+                },
+            );
+            run_window(&url, $base, app).await;
+        }
+    };
+}
+
+list_case!(
+    a_reliable_list_window_claims_in_batches_and_settles_with_lrem,
+    reliable,
+    "reliable"
+);
+list_case!(
+    an_atomic_reliable_list_window_settles_inside_each_segment,
+    atomic_list,
+    "atomic-list"
+);
+list_case!(a_simple_list_window_pops_in_batches, simple, "simple");

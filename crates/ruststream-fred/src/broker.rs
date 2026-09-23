@@ -26,7 +26,7 @@ use ruststream::{AddressedCopies, Broker, ConnectedBroker, DescribeServer, Serve
 
 use crate::{
     error::RedisError,
-    list::{RedisList, RedisListPublish, RedisListPublisher, RedisListSubscriber},
+    list::{ListWire, RedisList, RedisListPublish, RedisListPublisher, RedisListSubscriber},
     publisher::{RedisDefaultPublisher, RedisPublisher},
     pubsub::{
         PubSubMode, PubSubWire, RedisPubSub, RedisPubSubPattern, RedisPubSubPublish,
@@ -739,32 +739,24 @@ impl ConnectedRedisBroker {
         &self,
         def: RedisList,
     ) -> impl Future<Output = Result<RedisListSubscriber, RedisError>> {
-        let pool = match self.core.pool() {
-            Ok(pool) => pool,
-            Err(err) => return ready(Err(err)),
-        };
-        let recovery = match def.recovery_config() {
-            Ok(recovery) => recovery,
-            Err(err) => return ready(Err(err)),
-        };
+        ready(self.open_list(def).map(RedisListSubscriber::new))
+    }
+
+    /// Validates `def` against this connection and hands back its wire.
+    pub(crate) fn open_list(&self, def: RedisList) -> Result<ListWire, RedisError> {
+        let pool = self.core.pool()?;
+        let recovery = def.recovery_config()?;
         let reliable = def.is_reliable();
         let processing = def.processing_or_default();
-        if reliable
-            && self.core.clustered()
-            && let Err(err) = require_one_slot(def.key(), &processing)
-        {
-            return ready(Err(err));
+        if reliable && self.core.clustered() {
+            require_one_slot(def.key(), &processing)?;
         }
-        match self
-            .core
-            .record_routes(def.key(), def.dead_letter(), &def.route())
-        {
-            Ok(recorded) => recorded.keep(),
-            Err(err) => return ready(Err(err)),
-        }
+        self.core
+            .record_routes(def.key(), def.dead_letter(), &def.route())?
+            .keep();
         let block = def.block_or_default();
         let codec = def.codec_handle();
-        ready(Ok(RedisListSubscriber::new(
+        Ok(ListWire::new(
             pool,
             def.into_key(),
             reliable,
@@ -772,7 +764,7 @@ impl ConnectedRedisBroker {
             block,
             codec,
             recovery,
-        )))
+        ))
     }
 
     /// Returns a stream publisher (`XADD`) bound to this connection.

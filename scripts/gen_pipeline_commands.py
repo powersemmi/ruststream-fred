@@ -224,7 +224,7 @@ def render(doc, signature):
     call = f"{name}{turbofish}(" + ", ".join(args) + ")"
     discard = "" if reply in generics or reply == "()" else ".map(|_| ())"
     lines.append("    {")
-    lines.append("        match self.segment()? {")
+    lines.append("        match self.segment().await? {")
     lines.append(f"            Segment::Plain(segment) => segment.{call}.await{discard},")
     lines.append(f"            Segment::Atomic(segment) => segment.{call}.await{discard},")
     lines.append("        }")

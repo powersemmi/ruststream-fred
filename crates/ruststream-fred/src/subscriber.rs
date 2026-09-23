@@ -66,6 +66,9 @@ fn duration_to_millis(d: Duration) -> u64 {
 /// descriptor. The read mode (fresh tail, reclaim, or claim-and-read) is fixed at construction.
 pub struct RedisSubscriber {
     pool: Pool,
+    /// The connection every read goes out on. A blocking read holds its connection until it
+    /// returns, so the reads keep to one, and a window flushes on another.
+    reader: Client,
     key: String,
     group: String,
     consumer: String,
@@ -122,6 +125,7 @@ impl RedisSubscriber {
             Arc::clone(&generation),
         ));
         Self {
+            reader: pool.next().clone(),
             pool,
             key,
             group,
@@ -192,9 +196,9 @@ impl RedisSubscriber {
         )
     }
 
-    /// The window's client: a connection of the pool the flushes go out on.
+    /// The window's client: a connection of the pool other than the one the reads block on.
     pub(crate) fn round_client(&self) -> Client {
-        self.pool.next().clone()
+        other_than(&self.pool, &self.reader)
     }
 
     /// Yields one delivery per entry, each with a slot in `window`, and reports a failed flush of
@@ -259,7 +263,7 @@ impl RedisSubscriber {
 
     async fn fetch_fresh(&self, count: u64) -> Result<Vec<Entry>, RedisError> {
         let resp: RawStreams = self
-            .pool
+            .reader
             .xreadgroup(
                 self.group.as_str(),
                 self.consumer.as_str(),
@@ -323,7 +327,7 @@ impl RedisSubscriber {
         .collect();
 
         let frame = self
-            .pool
+            .reader
             .custom_raw(command, args)
             .await
             .map_err(RedisError::stream)?;
@@ -360,7 +364,7 @@ impl RedisSubscriber {
         count: u64,
     ) -> Result<Vec<Entry>, RedisError> {
         let (cursor, entries): (String, Vec<XReadValue<String, String, Vec<u8>>>) = self
-            .pool
+            .reader
             .xautoclaim_values(
                 self.key.as_str(),
                 self.group.as_str(),
@@ -410,7 +414,7 @@ impl RedisSubscriber {
     /// extended `XPENDING`, which - unlike `XAUTOCLAIM` - reports the native delivery count.
     async fn pending_meta(&self, limit: u64) -> Result<HashMap<String, (u64, u64)>, RedisError> {
         let rows: Vec<(String, String, u64, u64)> = self
-            .pool
+            .reader
             .xpending(
                 self.key.as_str(),
                 self.group.as_str(),
@@ -423,6 +427,15 @@ impl RedisSubscriber {
             .map(|(id, _consumer, idle, count)| (id, (idle, count)))
             .collect())
     }
+}
+
+/// A connection of `pool` other than `reader`, or `reader` itself on a pool of one.
+pub(crate) fn other_than(pool: &Pool, reader: &Client) -> Client {
+    pool.clients()
+        .iter()
+        .find(|client| client.id() != reader.id())
+        .unwrap_or(reader)
+        .clone()
 }
 
 /// Injects a `u64`-valued well-known header into an entry's raw field map (under the `h:` prefix),

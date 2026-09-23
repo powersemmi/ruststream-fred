@@ -21,16 +21,16 @@ use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 
 use fred::clients::{Client, Pipeline};
-use fred::error::{Error, ErrorKind};
+use fred::error::Error;
 use fred::interfaces::ClientLike;
-use fred::types::{CustomCommand, FromValue, Value};
+use fred::types::{CustomCommand, Value};
 
 pub use descriptors::{
     AtomicList, AtomicPubSub, AtomicStream, PipelinedList, PipelinedPubSub, PipelinedStream,
 };
 #[cfg(feature = "testing")]
 pub(crate) use forms::testing::TestForm;
-pub(crate) use forms::{PubSubForm, StreamForm};
+pub(crate) use forms::{ListForm, PubSubForm, StreamForm};
 pub use message::RoundMessage;
 pub use source::PipelinedSubscriber;
 pub(crate) use window::{Form, Round, Segment, Window};
@@ -292,8 +292,8 @@ impl RedisPipeline {
     }
 
     /// The delivery's segment, created on first use.
-    fn segment(&self) -> Result<Segment, Error> {
-        self.round.segment()
+    async fn segment(&self) -> Result<Segment, Error> {
+        self.round.segment().await
     }
 
     /// Queues a command this facade does not name, by its name and its arguments.
@@ -323,26 +323,11 @@ impl RedisPipeline {
         T: TryInto<Value> + Send,
         T::Error: Into<Error> + Send,
     {
-        match self.segment()? {
+        match self.segment().await? {
             Segment::Plain(segment) => segment.custom::<(), T>(command, args).await,
             Segment::Atomic(segment) => segment.custom::<(), T>(command, args).await,
         }
     }
-}
-
-/// Queues `command` into a `fred` buffer and reads the reply it answers with at once: a pipeline
-/// or a transaction answers `QUEUED` as the command lands in its buffer, so the future is ready on
-/// its first poll and the window can queue its own commands while it holds its lock.
-pub(crate) fn queued<R: FromValue>(
-    command: impl Future<Output = Result<R, Error>>,
-) -> Result<R, Error> {
-    use futures::FutureExt;
-    command.now_or_never().unwrap_or_else(|| {
-        Err(Error::new(
-            ErrorKind::Unknown,
-            "a queued command did not answer at once",
-        ))
-    })
 }
 
 /// A fresh `fred` pipeline on `client`, for one segment or one flush's settles.
