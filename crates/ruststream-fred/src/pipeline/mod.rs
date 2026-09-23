@@ -22,10 +22,11 @@ use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use std::ops::Deref;
 
+use fred::bytes_utils::Str;
 use fred::clients::{Client, Pipeline};
 use fred::error::Error;
 use fred::interfaces::ClientLike;
-use fred::types::{CustomCommand, Value};
+use fred::types::{ClusterHash, CustomCommand, MultipleKeys, MultipleValues, Value};
 use ruststream::runtime::{ForReply, Outgoing, PublishContext, PublishTransform, Reads};
 
 use crate::partition::RedisPublishOptions;
@@ -483,6 +484,95 @@ impl RedisPipeline {
     {
         self.round.bind(bindable::Named::round_name(&**out));
         out
+    }
+
+    /// Queues a Lua script run by its SHA1 digest (`EVALSHA`), with its keys and arguments.
+    ///
+    /// Queued into this delivery's segment; it runs after the handler returns, when the delivery
+    /// is acknowledged. On a cluster the command goes to the node of the first key.
+    ///
+    /// # Errors
+    ///
+    /// Returns `fred`'s error when the arguments do not convert, or when the delivery has already
+    /// settled.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream_fred::pipeline::RedisPipeline;
+    ///
+    /// async fn run(pipeline: &RedisPipeline, sha: &str) -> Result<(), fred::error::Error> {
+    ///     pipeline.evalsha(sha, vec!["orders:seen"], vec!["1"]).await
+    /// }
+    /// # let _ = run;
+    /// ```
+    pub async fn evalsha<S, K, V>(&self, hash: S, keys: K, args: V) -> Result<(), Error>
+    where
+        S: Into<Str> + Send,
+        K: Into<MultipleKeys> + Send,
+        V: TryInto<MultipleValues> + Send,
+        V::Error: Into<Error> + Send,
+    {
+        let args = args.try_into().map_err(Into::into)?;
+        self.script("EVALSHA", hash.into(), keys.into(), args).await
+    }
+
+    /// Queues a Lua script run by its source (`EVAL`), with its keys and arguments.
+    ///
+    /// Queued into this delivery's segment; it runs after the handler returns, when the delivery
+    /// is acknowledged. On a cluster the command goes to the node of the first key.
+    ///
+    /// # Errors
+    ///
+    /// Returns `fred`'s error when the arguments do not convert, or when the delivery has already
+    /// settled.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream_fred::pipeline::RedisPipeline;
+    ///
+    /// async fn run(pipeline: &RedisPipeline) -> Result<(), fred::error::Error> {
+    ///     let script = "return redis.call('INCR', KEYS[1])";
+    ///     pipeline.eval(script, vec!["orders:seen"], Vec::<String>::new()).await
+    /// }
+    /// # let _ = run;
+    /// ```
+    pub async fn eval<S, K, V>(&self, script: S, keys: K, args: V) -> Result<(), Error>
+    where
+        S: Into<Str> + Send,
+        K: Into<MultipleKeys> + Send,
+        V: TryInto<MultipleValues> + Send,
+        V::Error: Into<Error> + Send,
+    {
+        let args = args.try_into().map_err(Into::into)?;
+        self.script("EVAL", script.into(), keys.into(), args).await
+    }
+
+    /// A script run as `fred` sends one: the script or its digest, the key count, the keys and
+    /// the arguments, routed by the first key.
+    async fn script(
+        &self,
+        command: &'static str,
+        body: Str,
+        keys: MultipleKeys,
+        args: Value,
+    ) -> Result<(), Error> {
+        let keys = keys.inner();
+        let hash = keys.first().map_or(ClusterHash::Random, |key| {
+            ClusterHash::Custom(key.cluster_hash())
+        });
+        let mut values = Vec::with_capacity(2 + keys.len());
+        values.push(Value::from(body));
+        values.push(Value::from(i64::try_from(keys.len()).unwrap_or(i64::MAX)));
+        values.extend(keys.into_iter().map(Value::from));
+        match args {
+            Value::Array(args) => values.extend(args),
+            Value::Null => {}
+            arg => values.push(arg),
+        }
+        self.custom(CustomCommand::new_static(command, hash, false), values)
+            .await
     }
 
     /// Queues a command this facade does not name, by its name and its arguments.
