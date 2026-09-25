@@ -4,7 +4,7 @@ use std::future::{Future, ready};
 use std::sync::Arc;
 use std::time::Duration;
 
-use fred::clients::{Client, Pool};
+use fred::clients::{Client, Pipeline, Pool};
 use fred::error::Error;
 use fred::interfaces::{KeysInterface, ListInterface, SortedSetsInterface, StreamsInterface};
 use fred::types::Value;
@@ -48,6 +48,20 @@ impl StreamForm {
             group: group.into(),
             delay,
             requeue,
+        }
+    }
+
+    /// How many commands [`queue`](Self::queue) sends for `op`.
+    fn commands(&self, op: &StreamOp) -> usize {
+        match op {
+            StreamOp::Ack(_) | StreamOp::Republish(_) => 1,
+            StreamOp::Schedule { .. } => {
+                1 + usize::from(
+                    self.delay
+                        .as_ref()
+                        .is_some_and(|cfg| cfg.ttl_millis().is_some()),
+                )
+            }
         }
     }
 
@@ -152,23 +166,28 @@ impl Form for StreamForm {
         if ops.is_empty() {
             return sent;
         }
-        let settles = client.pipeline();
-        // Every acknowledgement of the flush goes out as one `XACK`, after the copies and
-        // schedules the retries owe.
+        // An entry that retries is acknowledged only once the copy or the schedule carrying it
+        // forward has succeeded, as on the direct path: the writes go out first, and a failed
+        // one leaves its entry pending, a duplicate rather than a loss. A flush with no retry
+        // sends its acknowledgements alone.
+        let mut writes = Writes::default();
         let mut acked = Vec::new();
         for op in ops.drain(..) {
-            let result = match op {
+            match op {
                 StreamOp::Ack(id) => {
-                    acked.push(id);
-                    Ok(())
+                    if let Some(id) = writes.close(id) {
+                        acked.push(id);
+                    }
                 }
-                op => self.queue(&settles, op).await,
-            };
-            if let Err(err) = result {
-                sent.failed += 1;
-                sent.first_error.get_or_insert(err);
+                op => {
+                    let commands = self.commands(&op);
+                    let queued = self.queue(writes.pipeline(client), op).await;
+                    writes.queued(commands, queued, &mut sent);
+                }
             }
         }
+        writes.send(&mut acked, &mut sent).await;
+        let settles = client.pipeline();
         if !acked.is_empty()
             && let Err(err) = settles
                 .xack::<(), _, _, _>(&*self.key, &*self.group, acked)
@@ -231,9 +250,24 @@ impl ListForm {
         // Back onto the queue before it leaves the processing list, so a failure between the
         // two leaves a duplicate rather than a loss.
         if op.requeue {
-            sink.lpush::<(), _, _>(&*self.main, op.value.clone())
-                .await?;
+            self.queue_requeue(sink, &op).await?;
         }
+        self.queue_release(sink, op).await
+    }
+
+    /// The `LPUSH` that puts a requeued value back onto the queue.
+    async fn queue_requeue<Sink>(&self, sink: &Sink, op: &ListOp) -> Result<(), Error>
+    where
+        Sink: ListInterface + Sync,
+    {
+        sink.lpush::<(), _, _>(&*self.main, op.value.clone()).await
+    }
+
+    /// The `LREM` off the processing list, and the end of the value's tracking.
+    async fn queue_release<Sink>(&self, sink: &Sink, op: ListOp) -> Result<(), Error>
+    where
+        Sink: ListInterface + SortedSetsInterface + Sync,
+    {
         sink.lrem::<(), _, _>(&*self.processing, 1, op.value)
             .await?;
         if let (Some(zset), Some(member)) = (&self.recovery_zset, op.member) {
@@ -290,15 +324,116 @@ impl Form for ListForm {
         if ops.is_empty() {
             return sent;
         }
-        let settles = client.pipeline();
+        // A requeued value leaves the processing list only once its `LPUSH` has succeeded, as
+        // on the direct path: a failed one leaves it where recovery finds it, a duplicate rather
+        // than a loss. A flush with no requeue sends its releases alone.
+        let mut writes = Writes::default();
+        let mut released = Vec::new();
         for op in ops.drain(..) {
-            if let Err(err) = self.queue(&settles, op).await {
+            if op.requeue {
+                let queued = self.queue_requeue(writes.pipeline(client), &op).await;
+                writes.queued(1, queued, &mut sent);
+            }
+            if let Some(op) = writes.close(op) {
+                released.push(op);
+            }
+        }
+        writes.send(&mut released, &mut sent).await;
+        let settles = client.pipeline();
+        for op in released {
+            if let Err(err) = self.queue_release(&settles, op).await {
                 sent.failed += 1;
                 sent.first_error.get_or_insert(err);
             }
         }
         sent.record(settles.try_all::<Value>().await);
         sent
+    }
+}
+
+/// The writes that carry retried deliveries forward within one flush, sent before the
+/// settlements that release those deliveries, and which of the deliveries they cleared.
+struct Writes<Settle> {
+    pipeline: Option<Pipeline<Client>>,
+    /// The delivery being assembled: commands queued, whether it wrote, whether one was refused.
+    commands: usize,
+    wrote: bool,
+    refused: bool,
+    /// Per delivery with writes, in order: how many commands it queued, whether one was
+    /// refused, and the settlement it owes once they succeed.
+    owed: Vec<(usize, bool, Settle)>,
+}
+
+impl<Settle> Default for Writes<Settle> {
+    fn default() -> Self {
+        Self {
+            pipeline: None,
+            commands: 0,
+            wrote: false,
+            refused: false,
+            owed: Vec::new(),
+        }
+    }
+}
+
+impl<Settle> Writes<Settle> {
+    /// The pipeline the writes go into, opened on the first one.
+    fn pipeline(&mut self, client: &Client) -> &Pipeline<Client> {
+        self.pipeline.get_or_insert_with(|| client.pipeline())
+    }
+
+    /// Accounts for `commands` queued for the delivery being assembled.
+    fn queued(&mut self, commands: usize, queued: Result<(), Error>, sent: &mut Sent) {
+        self.wrote = true;
+        match queued {
+            Ok(()) => self.commands += commands,
+            Err(err) => {
+                self.refused = true;
+                sent.failed += 1;
+                sent.first_error.get_or_insert(err);
+            }
+        }
+    }
+
+    /// Closes the delivery being assembled: its settlement is due now when it wrote nothing,
+    /// and waits for its writes otherwise.
+    fn close(&mut self, settle: Settle) -> Option<Settle> {
+        if !std::mem::take(&mut self.wrote) {
+            return Some(settle);
+        }
+        let commands = std::mem::take(&mut self.commands);
+        let refused = std::mem::take(&mut self.refused);
+        self.owed.push((commands, refused, settle));
+        None
+    }
+
+    /// Sends the writes and moves into `due` the settlements whose writes all succeeded.
+    async fn send(self, due: &mut Vec<Settle>, sent: &mut Sent) {
+        let Some(pipeline) = self.pipeline else {
+            return;
+        };
+        let results = pipeline.try_all::<Value>().await;
+        let expected: usize = self.owed.iter().map(|(commands, _, _)| commands).sum();
+        if results.len() != expected {
+            // The answers cannot be matched to their deliveries: no write is taken as done.
+            sent.record(results);
+            return;
+        }
+        sent.commands += results.len();
+        let mut results = results.into_iter();
+        for (commands, refused, settle) in self.owed {
+            let mut done = !refused;
+            for result in results.by_ref().take(commands) {
+                if let Err(err) = result {
+                    done = false;
+                    sent.failed += 1;
+                    sent.first_error.get_or_insert(err);
+                }
+            }
+            if done {
+                due.push(settle);
+            }
+        }
     }
 }
 
