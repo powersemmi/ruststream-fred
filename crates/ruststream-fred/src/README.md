@@ -922,9 +922,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 # }
 ```
 
-A bare-string `#[subscriber("key")]` reads through the broker-wide default group on the stand-in
-as it does on a server, so it mounts on `RedisTestBroker::new().default_group("workers")` and a
-stand-in without one refuses it at startup, naming the setting.
+A bare-string `#[subscriber("key")]` needs a broker-wide default group on the stand-in, as it does
+on a server: it mounts on `RedisTestBroker::new().default_group("workers")`, and a stand-in without
+one refuses it at startup, naming the setting. The setting decides whether the subscription opens;
+the stand-in routes by stream key and does not model how a consumer group shares deliveries.
 
 Settlement follows the transport: a stream and a reliable list acknowledge and redeliver a
 requeue, while Pub/Sub and a simple list report `AckError::Unsupported` and refuse one, here
