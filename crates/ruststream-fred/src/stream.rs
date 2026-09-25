@@ -489,9 +489,9 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisStrea
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> Result<Self::Subscriber, RedisError> {
         self.group_or_err()?;
-        connected.record_routes(self.key(), self.dead_letter(), &Route::Stream)?;
+        let recorded = connected.record_routes(self.key(), self.dead_letter(), &Route::Stream)?;
         let delayed = self.delayed_retry.is_some();
-        match self.mode {
+        let subscriber = match self.mode {
             ReadMode::Reclaim { .. } => Err(RedisError::InvalidOptions(format!(
                 "reclaim subscription on `{}` cannot mount on the in-process test broker: it \
                  keeps no pending list, so the subscription would read fresh entries instead of \
@@ -508,7 +508,9 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisStrea
                     .subscribe_stream(self.key(), StreamRetry::fresh(delayed))
                     .await
             }
-        }
+        }?;
+        recorded.keep();
+        Ok(subscriber)
     }
 
     /// The same body the real broker's descriptor writes, so a document built in a test is the

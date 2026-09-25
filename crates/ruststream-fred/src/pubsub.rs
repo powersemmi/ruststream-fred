@@ -382,8 +382,11 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisPubSu
         self,
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> Result<Self::Subscriber, RedisError> {
-        connected.record_routes(self.channel(), self.dead_letter(), &self.route())?;
-        connected.subscribe_channel(self.channel()).await
+        let recorded =
+            connected.record_routes(self.channel(), self.dead_letter(), &self.route())?;
+        let subscriber = connected.subscribe_channel(self.channel()).await?;
+        recorded.keep();
+        Ok(subscriber)
     }
 
     /// The same body the real broker's descriptor writes, so a document built in a test is the
