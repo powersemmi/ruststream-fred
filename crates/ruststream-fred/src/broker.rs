@@ -1142,12 +1142,17 @@ impl TestableBroker for ConnectedRedisBroker {
     }
 
     /// Writes the message the way the default publisher writes its name: an `XADD`, or the
-    /// `LPUSH` or `PUBLISH` of the subscription that reads it, in that subscription's framing.
+    /// `LPUSH` or `PUBLISH` of the subscription that reads it, in that subscription's framing. A
+    /// name only pattern subscriptions read goes out with a raw `PUBLISH`, as the producers they
+    /// listen to publish it: an `XADD` would reach none of them.
     fn inject(&self, message: OutgoingMessage<'_>) {
         let server = self.in_process("inject");
         let name = message.name();
         let (payload, headers) = (message.payload(), message.headers());
         let written = match self.core.routes().route(name) {
+            Route::Stream if self.read_by_patterns_alone(name) => {
+                server.inject_publish(name, frame(None, payload, headers), false)
+            }
             Route::Stream => {
                 server.inject_stream(name, fields_for_publish(payload.to_vec(), headers))
             }
@@ -1261,6 +1266,24 @@ impl TestableBroker for ConnectedRedisBroker {
 
 #[cfg(feature = "testing")]
 impl ConnectedRedisBroker {
+    /// Whether `name` is read by a pattern subscription and by no stream group: what the harness
+    /// then publishes to the channel instead of adding to a stream.
+    fn read_by_patterns_alone(&self, name: &str) -> bool {
+        let opened = self
+            .core
+            .opened
+            .lock()
+            .expect("redis subscription record poisoned");
+        let grouped = opened
+            .iter()
+            .any(|sub| matches!(sub, Opened::Stream { key, .. } if key == name));
+        !grouped
+            && opened.iter().any(|sub| {
+                matches!(sub, Opened::Pattern { glob }
+                    if in_process::glob_matches(glob.as_bytes(), name.as_bytes()))
+            })
+    }
+
     /// The in-process server, which is all the harness injects into and reads.
     fn in_process(&self, what: &str) -> &Arc<in_process::Server> {
         self.core.loopback().server().unwrap_or_else(|| {
