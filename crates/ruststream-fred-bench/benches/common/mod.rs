@@ -66,8 +66,8 @@ use serde::Deserialize;
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::Notify;
 
-// A benchmark measures what ships. The framework's harness feature swaps the broker for an
-// in-process stand-in, so a count taken with it on is not this crate's transport at all.
+// A benchmark measures what ships. The `testing` feature adds the in-process mode's hooks to the
+// transport, so a count taken with it on is not what a service runs.
 #[cfg(feature = "testing")]
 compile_error!(
     "benchmarks must be built without the `testing` feature; run them through `just bench-code`"
