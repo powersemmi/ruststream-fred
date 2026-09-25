@@ -32,7 +32,7 @@ use crate::{
         PubSubMode, RedisPubSub, RedisPubSubPattern, RedisPubSubPublish, RedisPubSubPublisher,
         RedisPubSubSubscriber,
     },
-    route::{Route, Routes},
+    route::{Recorded, Route, Routes},
     stream::{ReadMode, RedisStream},
     subscriber::RedisSubscriber,
 };
@@ -574,7 +574,7 @@ impl RedisCore {
         name: &str,
         dead_letter: Option<&str>,
         route: &Route,
-    ) -> Result<(), RedisError> {
+    ) -> Result<Recorded<'_>, RedisError> {
         self.routes.record_subscription(name, dead_letter, route)
     }
 
@@ -634,9 +634,11 @@ impl ConnectedRedisBroker {
         if let ReadMode::Claiming { .. } = def.mode() {
             require_claim_support(pool.server_version().as_ref(), def.key())?;
         }
-        self.core
+        let recorded = self
+            .core
             .record_routes(def.key(), def.dead_letter(), &Route::Stream)?;
         ensure_group(&pool, def.key(), &group, def.start().as_id()).await?;
+        recorded.keep();
         Ok(RedisSubscriber::new(
             pool,
             def.key().to_owned(),
@@ -660,7 +662,8 @@ impl ConnectedRedisBroker {
         def: RedisPubSub,
     ) -> Result<RedisPubSubSubscriber, RedisError> {
         let codec = def.codec_handle();
-        self.core
+        let recorded = self
+            .core
             .record_routes(def.channel(), def.dead_letter(), &def.route())?;
         let client = self.new_client().await?;
         // Opened before the subscribe, because the messages arrive over a broadcast channel whose
@@ -685,6 +688,7 @@ impl ConnectedRedisBroker {
                     .map_err(RedisError::subscribe)?;
             }
         }
+        recorded.keep();
         Ok(RedisPubSubSubscriber::new(client, rx, codec))
     }
 
@@ -732,12 +736,6 @@ impl ConnectedRedisBroker {
             Ok(recovery) => recovery,
             Err(err) => return ready(Err(err)),
         };
-        if let Err(err) = self
-            .core
-            .record_routes(def.key(), def.dead_letter(), &def.route())
-        {
-            return ready(Err(err));
-        }
         let reliable = def.is_reliable();
         let processing = def.processing_or_default();
         if reliable
@@ -745,6 +743,13 @@ impl ConnectedRedisBroker {
             && let Err(err) = require_one_slot(def.key(), &processing)
         {
             return ready(Err(err));
+        }
+        match self
+            .core
+            .record_routes(def.key(), def.dead_letter(), &def.route())
+        {
+            Ok(recorded) => recorded.keep(),
+            Err(err) => return ready(Err(err)),
         }
         let block = def.block_or_default();
         let codec = def.codec_handle();

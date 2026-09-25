@@ -16,7 +16,7 @@ use ruststream::{
     testing::{Coordinator, TestableBroker},
 };
 
-use crate::route::{Route, Routes};
+use crate::route::{Recorded, Route, Routes};
 use crate::{
     error::RedisError,
     testing::{
@@ -270,7 +270,7 @@ impl ConnectedRedisTestBroker {
         name: &str,
         dead_letter: Option<&str>,
         route: &Route,
-    ) -> Result<(), RedisError> {
+    ) -> Result<Recorded<'_>, RedisError> {
         self.state
             .routes
             .record_subscription(name, dead_letter, route)

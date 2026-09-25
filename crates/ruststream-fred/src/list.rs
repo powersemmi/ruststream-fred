@@ -391,10 +391,12 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisList 
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> Result<Self::Subscriber, RedisError> {
         self.recovery_config()?;
-        connected.record_routes(self.key(), self.dead_letter(), &self.route())?;
-        connected
+        let recorded = connected.record_routes(self.key(), self.dead_letter(), &self.route())?;
+        let subscriber = connected
             .subscribe_list(self.key(), self.is_reliable())
-            .await
+            .await?;
+        recorded.keep();
+        Ok(subscriber)
     }
 
     /// The same body the real broker's descriptor writes, so a document built in a test is the

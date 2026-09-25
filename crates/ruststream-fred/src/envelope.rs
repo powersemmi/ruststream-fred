@@ -18,6 +18,7 @@
 //! envelope is tried as a binary frame. A value that is neither (one a raw external client
 //! published) is delivered as the payload with empty headers.
 
+use std::any::type_name;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -34,12 +35,19 @@ pub(crate) type SharedEnvelope = Arc<dyn EnvelopeCodec>;
 pub(crate) trait EnvelopeCodec: Send + Sync {
     fn encode(&self, payload: &[u8], headers: &HeaderMap) -> Vec<u8>;
     fn decode(&self, bytes: &[u8]) -> (Bytes, HeaderMap);
+    /// The codec's type, which says how a value is framed: two subscriptions on one name must
+    /// frame it the same way.
+    fn framing(&self) -> &'static str;
     /// The media type of the framed value, for the generated `AsyncAPI` document.
     #[cfg(feature = "asyncapi")]
     fn content_type(&self) -> &'static str;
 }
 
 impl<C: Codec> EnvelopeCodec for C {
+    fn framing(&self) -> &'static str {
+        type_name::<C>()
+    }
+
     #[cfg(feature = "asyncapi")]
     fn content_type(&self) -> &'static str {
         C::CONTENT_TYPE
