@@ -15,6 +15,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use fred::interfaces::{KeysInterface, ListInterface, SortedSetsInterface};
+use fred::types::Expiration;
+use fred::types::sorted_sets::Ordering as ZOrdering;
 use futures::{Stream, StreamExt};
 use ruststream::runtime::{App, AppInfo, HandlerOutcome, PublishExt, RustStream};
 use ruststream::subscriber;
@@ -917,6 +920,71 @@ async fn a_write_of_the_wrong_type_is_refused() {
     assert!(format!("{err}").contains("WRONGTYPE"), "got {err}");
 }
 
+/// `SET` replaces a key of any type, as the server does; its `GET` reads only a string, and an
+/// expiry that is not positive is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn set_replaces_any_key_and_refuses_a_bad_expiry() {
+    let broker = connected().await;
+    let pool = broker.pool_handle().expect("pool");
+    let _: i64 = pool.lpush("held", "x").await.expect("lpush");
+    let err = pool
+        .set::<Option<String>, _, _>("held", "y", None, None, true)
+        .await
+        .expect_err("SET GET on a list");
+    assert!(err.to_string().contains("WRONGTYPE"), "got {err}");
+    let (): () = pool
+        .set("held", "y", None, None, false)
+        .await
+        .expect("SET replaces a list");
+    let value: String = pool.get("held").await.expect("get");
+    assert_eq!(value, "y");
+
+    for expiry in [Expiration::EX(0), Expiration::PX(-5)] {
+        let err = pool
+            .set::<(), _, _>("ttl", "v", Some(expiry), None, false)
+            .await
+            .expect_err("an expiry that is not positive");
+        assert!(err.to_string().contains("invalid expire time"), "got {err}");
+    }
+    let exists: i64 = pool.exists("ttl").await.expect("exists");
+    assert_eq!(exists, 0);
+}
+
+/// `ZADD GT` and `LT` move an existing member's score only in their direction, and still add a
+/// new member.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn zadd_moves_a_score_only_in_the_direction_it_names() {
+    let broker = connected().await;
+    let pool = broker.pool_handle().expect("pool");
+    let _: i64 = pool
+        .zadd("scores", None, None, false, false, (5.0, "m"))
+        .await
+        .expect("zadd");
+    let zadd = async |ordering, score: f64, member: &str| -> i64 {
+        pool.zadd("scores", None, Some(ordering), true, false, (score, member))
+            .await
+            .expect("zadd")
+    };
+    assert_eq!(
+        zadd(ZOrdering::GreaterThan, 3.0, "m").await,
+        0,
+        "GT keeps a higher score"
+    );
+    assert_eq!(
+        zadd(ZOrdering::LessThan, 7.0, "m").await,
+        0,
+        "LT keeps a lower score"
+    );
+    assert_eq!(zadd(ZOrdering::GreaterThan, 9.0, "m").await, 1);
+    assert_eq!(
+        zadd(ZOrdering::LessThan, 1.0, "new").await,
+        1,
+        "a new member is added"
+    );
+    let score: f64 = pool.zscore("scores", "m").await.expect("zscore");
+    assert!((score - 9.0).abs() < f64::EPSILON, "got {score}");
+}
+
 /// A sharded publish reaches the sharded subscriptions only, and a classic one the classic.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_sharded_publish_reaches_the_sharded_subscriptions_only() {
@@ -1280,6 +1348,25 @@ fn app() -> impl App {
                 .out_retry(RedisPubSubPublish::new())
                 .to("events.retry");
         })
+}
+
+// A name only a pattern subscription reads reaches it: the harness publishes it to the channel,
+// where an `XADD` would reach no pattern at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_name_only_a_pattern_reads_reaches_the_pattern() {
+    let tb = TestApp::start(app()).await.expect("start");
+
+    tb.broker::<RedisBroker>()
+        .publish("events.us", &Announced { id: 5 })
+        .await
+        .expect("publish");
+
+    tb.broker::<RedisBroker>()
+        .subscriber("events.*")
+        .assert_called_once()
+        .with(&Announced { id: 5 });
+
+    tb.shutdown().await.expect("shutdown");
 }
 
 // The harness installs its coordinator into the in-process server, so `publish` drives the

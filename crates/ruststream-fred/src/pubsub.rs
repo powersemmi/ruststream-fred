@@ -567,6 +567,23 @@ impl PubSubWire {
 
 impl Drop for PubSubWire {
     fn drop(&mut self) {
+        // What reached the subscription and was never read leaves with it: the in-process server
+        // counted each message in flight when it sent it.
+        #[cfg(feature = "testing")]
+        {
+            let mut unread = 0_usize;
+            loop {
+                match self.rx.try_recv() {
+                    Ok(_) => unread += 1,
+                    Err(TryRecvError::Lagged(skipped)) => {
+                        unread =
+                            unread.saturating_add(usize::try_from(skipped).unwrap_or(usize::MAX));
+                    }
+                    Err(_) => break,
+                }
+            }
+            self.tap.discard(unread);
+        }
         // The dedicated client owns a background connection task; close it on a detached task since
         // `drop` cannot await.
         let client = self.client.clone();

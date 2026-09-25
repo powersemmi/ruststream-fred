@@ -407,7 +407,7 @@ impl State {
                     .string(&key, now)?
                     .map_or(Value::Null, |value| bulk(value.clone())))
             }
-            "SET" => self.set(args, now),
+            "SET" => self.set(server, args, now),
             "INCR" | "DECR" | "INCRBY" | "DECRBY" => {
                 let key = args.bytes()?;
                 let by = match name {
@@ -691,14 +691,28 @@ impl State {
         if millis <= 0 {
             return self.delete(server, key);
         }
-        let at = now + Duration::from_millis(millis.unsigned_abs());
-        self.keys.expires_mut(key, now).is_some_and(|expires| {
+        let wait = Duration::from_millis(millis.unsigned_abs());
+        let at = now + wait;
+        let armed = self.keys.expires_mut(key, now).is_some_and(|expires| {
             *expires = Some(at);
             true
-        })
+        });
+        // A delay queue or a recovery set that expires takes its due members with it: what the
+        // sweep owed for them is released when it does, as nothing is left to move back.
+        if armed && self.links.contains_key(key) {
+            let key = key.clone();
+            server.schedule(wait, move |server| {
+                {
+                    let mut state = server.lock();
+                    state.prune_link(server, &key);
+                }
+                server.changed.notify_waiters();
+            });
+        }
+        armed
     }
 
-    fn set(&mut self, args: &mut Args<'_>, now: Instant) -> Result<Value, Error> {
+    fn set(&mut self, server: &Server, args: &mut Args<'_>, now: Instant) -> Result<Value, Error> {
         let key = args.bytes()?;
         let value = args.bytes()?;
         let (mut only_new, mut only_old, mut get) = (false, false, false);
@@ -714,33 +728,59 @@ impl State {
             } else if args.word("KEEPTTL") {
                 keep_ttl = true;
             } else if args.word("EX") {
-                expires = Some(now + Duration::from_secs(args.int()?.unsigned_abs()));
+                expires = Some(now + Duration::from_secs(positive_expiry(args.int()?)?));
             } else if args.word("PX") {
-                expires = Some(now + Duration::from_millis(args.int()?.unsigned_abs()));
+                expires = Some(now + Duration::from_millis(positive_expiry(args.int()?)?));
             } else {
                 return Err(syntax());
             }
         }
-        let old = self.keys.string(&key, now)?.cloned();
-        let exists = self.keys.exists(&key, now);
+        // `SET` replaces a key of any type; only `GET` reads the old value, and refuses one that
+        // is not a string.
         let reply = if get {
-            old.map_or(Value::Null, bulk)
+            self.keys
+                .string(&key, now)?
+                .cloned()
+                .map_or(Value::Null, bulk)
         } else {
             ok()
         };
+        let exists = self.keys.exists(&key, now);
         if (only_new && exists) || (only_old && !exists) {
             return Ok(if get { reply } else { Value::Null });
         }
         if keep_ttl {
             expires = self.keys.expires_mut(&key, now).and_then(|at| *at);
         }
+        if exists && self.keys.string(&key, now).is_err() {
+            self.delete(server, &key);
+        }
         self.keys.set_string(key, value, expires);
         Ok(reply)
+    }
+
+    /// Forgets the due members of a linked set that are no longer in it (the set expired), and
+    /// releases the counts held for them.
+    fn prune_link(&mut self, server: &Server, zset: &Bytes) {
+        let now = Server::now();
+        let keys = &self.keys;
+        let Some(link) = self.links.get_mut(zset) else {
+            return;
+        };
+        let gone = |member: &Bytes| keys.zscore(zset, member, now).is_none();
+        link.due.retain(|member| !gone(member));
+        let held = link.held.len();
+        link.held.retain(|member| !gone(member));
+        let released = held - link.held.len();
+        if released > 0 {
+            server.released(released);
+        }
     }
 
     fn zadd(&mut self, server: &Server, args: &mut Args<'_>, now: Instant) -> Result<Value, Error> {
         let key = args.bytes()?;
         let (mut only_new, mut only_old, mut changed) = (false, false, false);
+        let (mut greater, mut less) = (false, false);
         loop {
             if args.word("NX") {
                 only_new = true;
@@ -748,8 +788,10 @@ impl State {
                 only_old = true;
             } else if args.word("CH") {
                 changed = true;
-            } else if args.word("GT") || args.word("LT") {
-                // Neither changes what a member added here scores.
+            } else if args.word("GT") {
+                greater = true;
+            } else if args.word("LT") {
+                less = true;
             } else if args.word("INCR") {
                 return Err(server_error(
                     "ERR ZADD INCR is not available in process; use ZINCRBY",
@@ -757,6 +799,11 @@ impl State {
             } else {
                 break;
             }
+        }
+        if (greater && less) || ((greater || less) && only_new) {
+            return Err(server_error(
+                "ERR GT, LT, and/or NX options at the same time are not compatible",
+            ));
         }
         let mut pairs = Vec::new();
         while args.left() > 0 {
@@ -779,7 +826,12 @@ impl State {
                     written.push((member, score));
                 }
                 #[allow(clippy::float_cmp, reason = "an unchanged score is no update")]
-                Some(held) if !only_new && held != score => {
+                Some(held)
+                    if !only_new
+                        && held != score
+                        && (!greater || score > held)
+                        && (!less || score < held) =>
+                {
                     zset.insert(member.clone(), score);
                     updated += 1;
                     written.push((member, score));
@@ -950,4 +1002,12 @@ pub(crate) fn check_transaction_slot(commands: &[MockCommand]) -> Result<(), Err
         }
     }
     Ok(())
+}
+
+/// An `EX` or `PX` argument, which a server refuses unless it is positive.
+fn positive_expiry(value: i64) -> Result<u64, Error> {
+    u64::try_from(value)
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| server_error("ERR invalid expire time in 'set' command"))
 }
