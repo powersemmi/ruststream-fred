@@ -34,8 +34,6 @@ use crate::partition::RedisPublishOptions;
 pub use descriptors::{
     AtomicList, AtomicPubSub, AtomicStream, PipelinedList, PipelinedPubSub, PipelinedStream,
 };
-#[cfg(feature = "testing")]
-pub(crate) use forms::testing::TestForm;
 pub(crate) use forms::{ListForm, PubSubForm, StreamForm};
 pub use message::RoundMessage;
 pub(crate) use rounds::Rounds;
@@ -324,20 +322,6 @@ impl bindable::Named for crate::RedisPubSubPublisher {
 }
 
 impl bindable::Named for crate::RedisDefaultPublisher {
-    fn round_name(&self) -> u64 {
-        self.round_name()
-    }
-}
-
-#[cfg(feature = "testing")]
-impl bindable::Named for crate::testing::RedisTestPublisher {
-    fn round_name(&self) -> u64 {
-        self.round_name()
-    }
-}
-
-#[cfg(feature = "testing")]
-impl bindable::Named for crate::testing::RedisTestPlainPublisher {
     fn round_name(&self) -> u64 {
         self.round_name()
     }

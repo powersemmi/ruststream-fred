@@ -10,8 +10,10 @@ use ruststream_fred::PipelinedStream;
 use ruststream_fred::context::keys;
 use ruststream_fred::pipeline::{Bindable, InRound};
 use ruststream_fred::prelude::*;
-use ruststream_fred::testing::RedisTestBroker;
 use serde::{Deserialize, Serialize};
+
+/// The address the service's broker is built with; the in-process mode dials nothing.
+const URL: &str = "redis://localhost:6379";
 
 #[derive(Debug, Deserialize, Outgoing, PartialEq, Serialize)]
 struct Order {
@@ -65,7 +67,7 @@ macro_rules! case {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn $test() {
             let app = RustStream::new(AppInfo::new("pipeline", "0.1.0")).with_broker(
-                RedisTestBroker::new(),
+                RedisBroker::standalone(URL),
                 |b| {
                     b.include($handler)
                         .out(DefaultSlot, stream::Publish)
@@ -74,17 +76,17 @@ macro_rules! case {
             );
             let tb = TestApp::start(app).await.expect("start");
 
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .message(&Order { id: 1, keep: $keep })
                 .to("orders")
                 .publish()
                 .await
                 .expect("publish");
 
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .subscriber("orders")
                 .assert_called_once();
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .published::<Audit>("audit")
                 .assert_called($expected);
 
@@ -120,7 +122,7 @@ async fn replies(order: &Order, Ctx(pipeline): Ctx<keys::Pipeline>) -> Audit {
 
 /// What reached the audit stream, in the order it arrived.
 fn audit_order(tb: &TestApp<()>) -> Vec<String> {
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .published::<Audit>("audit")
         .messages()
         .iter()
@@ -135,7 +137,7 @@ fn audit_order(tb: &TestApp<()>) -> Vec<String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reply_in_the_round_leaves_after_what_the_handler_queued() {
     let app = RustStream::new(AppInfo::new("pipeline", "0.1.0")).with_broker(
-        RedisTestBroker::new(),
+        RedisBroker::standalone(URL),
         |b| {
             b.include(replies)
                 .out_reply(stream::Publish)
@@ -144,7 +146,7 @@ async fn a_reply_in_the_round_leaves_after_what_the_handler_queued() {
     );
     let tb = TestApp::start(app).await.expect("start");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .message(&Order { id: 2, keep: true })
         .to("orders")
         .publish()
@@ -161,14 +163,14 @@ async fn a_reply_in_the_round_leaves_after_what_the_handler_queued() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reply_outside_the_round_leaves_before_the_window() {
     let app = RustStream::new(AppInfo::new("pipeline", "0.1.0")).with_broker(
-        RedisTestBroker::new(),
+        RedisBroker::standalone(URL),
         |b| {
             b.include(replies).out_reply(stream::Publish);
         },
     );
     let tb = TestApp::start(app).await.expect("start");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .message(&Order { id: 3, keep: true })
         .to("orders")
         .publish()

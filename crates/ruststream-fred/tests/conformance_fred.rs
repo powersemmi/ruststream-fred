@@ -1,12 +1,11 @@
-//! Conformance suites for the Redis broker, run twice wherever the transport allows it: once
-//! against the in-process `RedisTestBroker`, which needs no server and runs everywhere, and once
-//! against the real `RedisBroker` behind `REDIS_TEST_URL`.
+//! Conformance suites for the Redis broker, run twice: once in process, with the production
+//! `RedisBroker` connected to its in-process server through `InProcessBroker`, and once against the
+//! real server behind `REDIS_TEST_URL`.
 //!
 //! Both legs matter. The in-process leg applies the framework's own definition of correct broker
-//! behaviour to the stand-in, which is what keeps a passing handler test meaningful; the live leg
-//! is what proves the stand-in is not lying about the contract it reproduces.
-//!
-//! One suite is live-only, and the reason is written above `passes_seeking`.
+//! behaviour to the transport the test harness runs an app on, which is what keeps a passing
+//! handler test meaningful; the live leg is what proves that transport is not lying about the
+//! contract it reproduces.
 //!
 //! Run locally with a running Redis server:
 //!
@@ -14,25 +13,31 @@
 //! just brokers-up
 //! REDIS_TEST_URL=redis://127.0.0.1:6379 cargo test -p ruststream-fred --features testing --test conformance_fred
 //! ```
-//!
-//! In CI, the `broker-integration` job provides a Redis service first.
 
 #![cfg(feature = "testing")]
 
 use std::time::Duration;
 
+use ruststream::conformance::harness::InProcessBroker;
 use ruststream::conformance::{capabilities, harness};
-use ruststream_fred::testing::RedisTestBroker;
 use ruststream_fred::{
     RedisBroker, RedisList, RedisListPublish, RedisPubSub, RedisPubSubPublish, RedisStream,
 };
 
 mod live;
 
+/// The address the service's broker is built with; the in-process mode dials nothing.
+const URL: &str = "redis://localhost:6379";
+
+/// The production broker a service builds, run in process.
+fn in_process() -> InProcessBroker<RedisBroker> {
+    InProcessBroker::new(RedisBroker::standalone(URL))
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn redis_test_broker_passes_conformance_suite() {
+async fn in_process_passes_conformance_suite() {
     // The suite subscribes by bare name, which reads through the broker-wide default group.
-    harness::run_suite(|| RedisTestBroker::new().default_group("conformance")).await;
+    harness::run_suite(|| RedisBroker::standalone(URL).default_group("conformance")).await;
 }
 
 // The in-process legs. Each names the descriptor and the publisher a service would, so the
@@ -40,119 +45,9 @@ async fn redis_test_broker_passes_conformance_suite() {
 
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_broker_passes_lifecycle() {
-    harness::lifecycle(
-        RedisTestBroker::new,
-        |key| RedisStream::new(key).group("conformance"),
-        |connected| connected.publisher(),
-    )
-    .await;
-}
-
-// The other two forms through the same ladder.
-
-#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_broker_passes_list_lifecycle() {
-    harness::lifecycle(
-        RedisTestBroker::new,
-        |key| RedisList::new(key).reliable(),
-        |connected| connected.list_publisher(),
-    )
-    .await;
-}
-
-#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_broker_passes_pubsub_lifecycle() {
-    harness::lifecycle(
-        RedisTestBroker::new,
-        |channel| RedisPubSub::new(channel),
-        |connected| connected.pubsub_publisher(),
-    )
-    .await;
-}
-
-// What a descriptor addressing its own copies promises: publish to the address it reports and the
-// subscription that reported it gets the message. Every descriptor of this crate but the pattern
-// one answers, so each gets a leg; a reclaim subscription is the exception among the read modes,
-// because it takes only entries already pending on another consumer, and its copy is read by the
-// group's tail reader instead. That topology is a live-server matter, so it is checked there.
-
-#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_broker_addresses_stream_copies() {
-    harness::redelivery_address(
-        RedisTestBroker::new,
-        |key| RedisStream::new(key).group("conformance"),
-        |connected| connected.publisher(),
-    )
-    .await;
-}
-
-#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_broker_addresses_list_copies() {
-    harness::redelivery_address(
-        RedisTestBroker::new,
-        |key| RedisList::new(key).reliable(),
-        |connected| connected.list_publisher(),
-    )
-    .await;
-}
-
-#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_broker_addresses_pubsub_copies() {
-    harness::redelivery_address(
-        RedisTestBroker::new,
-        |channel| RedisPubSub::new(channel),
-        |connected| connected.pubsub_publisher(),
-    )
-    .await;
-}
-
-#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_broker_passes_batches() {
-    capabilities::batches(
-        RedisTestBroker::new,
-        |key| RedisStream::new(key).group("conformance"),
-        |connected| connected.publisher(),
-    )
-    .await;
-}
-
-// The two forms whose real deliveries cannot settle. The suite accepts an unsupported ack and
-// rejects any other ack error, so these legs prove the batching contract holds on a subscription
-// that refuses settlement; that the refusal happens at all is asserted in `testing_core`.
-#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_broker_passes_pubsub_batches() {
-    capabilities::batches(
-        RedisTestBroker::new,
-        |channel| RedisPubSub::new(channel),
-        |connected| connected.pubsub_publisher(),
-    )
-    .await;
-}
-
-#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_broker_passes_list_batches() {
-    capabilities::batches(
-        RedisTestBroker::new,
-        |key| RedisList::new(key),
-        |connected| connected.list_publisher(),
-    )
-    .await;
-}
-
-#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_broker_passes_transactions() {
-    Box::pin(capabilities::transactions(
-        RedisTestBroker::new,
+async fn in_process_passes_lifecycle() {
+    Box::pin(harness::lifecycle(
+        in_process,
         |key| RedisStream::new(key).group("conformance"),
         |connected| connected.publisher(),
     ))
@@ -161,12 +56,134 @@ async fn test_broker_passes_transactions() {
 
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_broker_passes_owned_transactions() {
-    capabilities::owned_transactions(
-        RedisTestBroker::new,
+async fn in_process_passes_list_lifecycle() {
+    harness::lifecycle(
+        in_process,
+        |key| RedisList::new(key).reliable(),
+        |connected| connected.list_publisher(RedisListPublish::new()),
+    )
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_passes_pubsub_lifecycle() {
+    harness::lifecycle(
+        in_process,
+        |channel| RedisPubSub::new(channel),
+        |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
+    )
+    .await;
+}
+
+// What a descriptor addressing its own copies promises: publish to the address it reports and the
+// subscription that reported it gets the message.
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_addresses_stream_copies() {
+    Box::pin(harness::redelivery_address(
+        in_process,
+        |key| RedisStream::new(key).group("conformance"),
+        |connected| connected.publisher(),
+    ))
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_addresses_list_copies() {
+    harness::redelivery_address(
+        in_process,
+        |key| RedisList::new(key).reliable(),
+        |connected| connected.list_publisher(RedisListPublish::new()),
+    )
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_addresses_pubsub_copies() {
+    harness::redelivery_address(
+        in_process,
+        |channel| RedisPubSub::new(channel),
+        |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
+    )
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_passes_batches() {
+    capabilities::batches(
+        in_process,
         |key| RedisStream::new(key).group("conformance"),
         |connected| connected.publisher(),
     )
+    .await;
+}
+
+// The two forms whose real deliveries cannot settle. The suite accepts an unsupported ack and
+// rejects any other ack error, so these legs prove the batching contract holds on a subscription
+// that refuses settlement.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_passes_pubsub_batches() {
+    capabilities::batches(
+        in_process,
+        |channel| RedisPubSub::new(channel),
+        |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
+    )
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_passes_list_batches() {
+    capabilities::batches(
+        in_process,
+        |key| RedisList::new(key),
+        |connected| connected.list_publisher(RedisListPublish::new()),
+    )
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_passes_transactions() {
+    Box::pin(capabilities::transactions(
+        in_process,
+        |key| RedisStream::new(key).group("conformance"),
+        |connected| connected.publisher(),
+    ))
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_passes_owned_transactions() {
+    capabilities::owned_transactions(
+        in_process,
+        |key| RedisStream::new(key).group("conformance"),
+        |connected| connected.publisher(),
+    )
+    .await;
+}
+
+// The in-process server keeps a consumer group's cursor, so repositioning it is checked here as
+// against a server.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_passes_seeking() {
+    Box::pin(capabilities::seeking(
+        in_process,
+        |key| {
+            RedisStream::new(key)
+                .group("conformance")
+                .block(Duration::from_millis(50))
+        },
+        |connected| connected.publisher(),
+    ))
     .await;
 }
 
@@ -332,14 +349,6 @@ async fn passes_owned_transactions() {
 // Repositioning is a single-key operation (`XGROUP SETID`), so it works on every topology; the
 // suite runs on standalone like the others, and the cluster leg is covered by
 // `cluster_seek_replays_history` in the integration tests, where the stream key's slot matters.
-//
-// This is the one suite with no in-process leg, and the reason is a capability the stand-in does
-// not claim rather than an assertion it fails: `seeking` requires `Src::Subscriber: Seekable` with
-// positions that round-trip through `Positioned`, and `RedisTestSubscriber` implements neither, so
-// the leg would not compile. Claiming it would mean giving the stand-in a replayable cursor over
-// its per-key log - a consumer-group cursor in all but name, and the one Redis behaviour the
-// stand-in states outright that it does not simulate. Seeking is proven here against a real server
-// and, on the cluster topology, in the integration tests.
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn passes_seeking() {

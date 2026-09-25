@@ -1,10 +1,10 @@
-//! The in-process broker keeps Redis's three namespaces apart, the way a server does.
+//! The in-process server keeps Redis's three namespaces apart, the way a server does.
 //!
 //! A stream and a list are keys of a type: `XADD` on a list, or `LPUSH` on a stream, is a
-//! `WRONGTYPE` error. A Pub/Sub channel is no key at all: a stream or a list written under a
-//! channel's name is a key nobody subscribed to reads, and a `PUBLISH` reaches no stream or list.
-//! The stand-in refuses each of these publishes, so a test cannot pass on a delivery the server
-//! would refuse or leave where nobody reads it.
+//! `WRONGTYPE` error, and a read of the other type fails the same way. A Pub/Sub channel is no key
+//! at all: a stream or a list written under a channel's name is a key its subscribers never see,
+//! and a `PUBLISH` reaches no stream or list. The server takes both and delivers nothing, and so
+//! does the in-process server.
 
 #![cfg(feature = "testing")]
 
@@ -12,33 +12,53 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use futures::future::BoxFuture;
+use ruststream::testing::InProcess;
 use ruststream::{
-    Broker, IncomingMessage, OutgoingMessage, PublishPolicy, Publisher, Subscriber,
-    SubscriptionSource,
+    IncomingMessage, OutgoingMessage, PublishPolicy, Publisher, Subscriber, SubscriptionSource,
 };
-use ruststream_fred::testing::{ConnectedRedisTestBroker, RedisTestBroker};
-use ruststream_fred::{RedisList, RedisListPublish, RedisPubSub, RedisPubSubPublish, RedisStream};
+use ruststream_fred::{
+    ConnectedRedisBroker, RedisBroker, RedisList, RedisListPublish, RedisPubSub,
+    RedisPubSubPublish, RedisStream,
+};
+
+/// The address the service's broker is built with; the in-process mode dials nothing.
+const URL: &str = "redis://localhost:6379";
 
 const WAIT: Duration = Duration::from_secs(1);
 
-async fn connected() -> ConnectedRedisTestBroker {
-    RedisTestBroker::new().connect().await.expect("connect")
+/// How long a case waits to be sure nothing arrives.
+const QUIET: Duration = Duration::from_millis(50);
+
+async fn connected() -> ConnectedRedisBroker {
+    RedisBroker::standalone(URL)
+        .connect_in_process()
+        .await
+        .expect("connect")
 }
 
+/// A key nobody wrote yet takes the type of its first write: an `XADD` to the name a list reads
+/// makes it a stream, and the list's next pop fails as it fails on a server.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_stream_publish_to_a_key_a_list_reads_is_refused() {
+async fn a_stream_publish_to_a_key_a_list_reads_breaks_the_list_read() {
     let broker = connected().await;
-    let _jobs = RedisList::new("jobs")
+    let mut jobs = RedisList::new("jobs")
         .reliable()
         .subscribe(&broker)
         .await
         .expect("subscribe");
 
-    let err = broker
+    broker
         .publisher()
         .publish(OutgoingMessage::new("jobs", b"x"), None)
         .await
-        .expect_err("XADD on a list key is WRONGTYPE on a server");
+        .expect("XADD creates a stream under a name nothing holds yet");
+
+    let mut stream = Box::pin(jobs.stream());
+    let err = tokio::time::timeout(WAIT, stream.next())
+        .await
+        .expect("the read answers within the wait")
+        .expect("the stream has a next item")
+        .expect_err("a pop on a stream key fails");
     assert!(err.to_string().contains("WRONGTYPE"), "got {err}");
 }
 
@@ -59,36 +79,48 @@ async fn a_list_publish_to_a_key_a_stream_reads_is_refused() {
     assert!(err.to_string().contains("WRONGTYPE"), "got {err}");
 }
 
+/// A channel is no key: an `XADD` under its name writes a stream its subscribers never see.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_stream_publish_to_a_name_a_channel_reads_is_refused() {
+async fn a_stream_publish_to_a_name_a_channel_reads_reaches_no_subscriber() {
     let broker = connected().await;
-    let _events = RedisPubSub::new("events")
+    let mut events = RedisPubSub::new("events")
         .subscribe(&broker)
         .await
         .expect("subscribe");
 
-    let err = broker
+    broker
         .publisher()
         .publish(OutgoingMessage::new("events", b"x"), None)
         .await
-        .expect_err("an XADD under a channel's name is read by no subscriber of that channel");
-    assert!(err.to_string().contains("channel"), "got {err}");
+        .expect("an XADD under a channel's name is a stream write");
+
+    let mut stream = Box::pin(events.stream());
+    assert!(
+        tokio::time::timeout(QUIET, stream.next()).await.is_err(),
+        "a stream write is not a channel message"
+    );
 }
 
+/// A `PUBLISH` reaches subscribers only: the list under the same name stays empty.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_channel_publish_to_a_key_a_list_reads_is_refused() {
+async fn a_channel_publish_to_a_key_a_list_reads_reaches_no_list() {
     let broker = connected().await;
-    let _jobs = RedisList::new("jobs")
+    let mut jobs = RedisList::new("jobs")
         .subscribe(&broker)
         .await
         .expect("subscribe");
 
     let channels = RedisPubSubPublish::new().pair(&broker).await.expect("pair");
-    let err = channels
+    channels
         .publish(OutgoingMessage::new("jobs", b"x"), None)
         .await
-        .expect_err("a PUBLISH reaches no list");
-    assert!(err.to_string().contains("list"), "got {err}");
+        .expect("a PUBLISH with no subscriber is taken and delivered to nobody");
+
+    let mut stream = Box::pin(jobs.stream());
+    assert!(
+        tokio::time::timeout(QUIET, stream.next()).await.is_err(),
+        "a channel message is not a list element"
+    );
 }
 
 /// A key a stream publish created is a stream from then on, with nobody subscribed to it.

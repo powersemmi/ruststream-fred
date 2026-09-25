@@ -45,7 +45,7 @@ git clone https://github.com/powersemmi/ruststream-fred.git
 
 ```bash
 just check          # rustfmt, clippy, cargo check with all features and with none
-just test           # the handler-stub suite
+just test           # the suite in process, with the live tests skipped
 just test-brokers   # the live suite against every Redis topology
 just ci             # check and test, plus codespell, cargo deny and zizmor
 ```

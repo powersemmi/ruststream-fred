@@ -98,8 +98,8 @@ use tokio::sync::Notify;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::{sleep, timeout};
 
-// A benchmark measures what ships. The framework's harness feature swaps the broker for an
-// in-process stand-in, so a number taken with it on is not this crate's transport at all. The
+// A benchmark measures what ships. The `testing` feature adds the in-process mode's hooks to the
+// transport, so a number taken with it on is not what a service runs. The
 // benchmark lives in a package of its own for the same reason: `ruststream-fred`'s
 // dev-dependencies enable that feature through the conformance harness, and a benchmark inside
 // that package would link it.

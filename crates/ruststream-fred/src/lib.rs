@@ -9,6 +9,9 @@ mod convert;
 mod delay;
 mod envelope;
 mod error;
+#[cfg(feature = "testing")]
+mod in_process;
+mod loopback;
 mod message;
 mod partition;
 mod publisher;
@@ -64,6 +67,3 @@ pub use fred::types::config::CredentialProvider;
     feature = "tls-native-tls"
 ))]
 pub use fred::types::config::{TlsConfig, TlsConnector};
-
-#[cfg(feature = "testing")]
-pub mod testing;

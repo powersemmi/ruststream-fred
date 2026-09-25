@@ -10,7 +10,8 @@ use fred::interfaces::StreamsInterface;
 use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned, Positioned};
 
 use crate::convert::fields_for_publish;
-use crate::delay::{self, DelayConfig};
+use crate::delay::DelayConfig;
+use crate::loopback::InFlight;
 use crate::seek::{EntryId, RedisGroupPosition, RedisGroupSeeker};
 use crate::stream::RequeueMode;
 
@@ -73,6 +74,15 @@ pub struct RedisMessage {
     seeker: Arc<RedisGroupSeeker>,
     /// What `nack(requeue = true)` does here, which the subscription's read mode decides.
     requeue: RequeueMode,
+    /// The test harness's count of this delivery; empty outside the in-process mode.
+    #[cfg_attr(
+        not(feature = "testing"),
+        allow(
+            dead_code,
+            reason = "held for its release on drop, which only `testing` gives"
+        )
+    )]
+    flight: InFlight,
 }
 
 impl Debug for RedisMessage {
@@ -103,6 +113,7 @@ impl RedisMessage {
         delivered: Option<u64>,
         seeker: Arc<RedisGroupSeeker>,
         requeue: RequeueMode,
+        flight: InFlight,
     ) -> Self {
         Self {
             payload,
@@ -118,6 +129,7 @@ impl RedisMessage {
             delivered,
             seeker,
             requeue,
+            flight,
         }
     }
 
@@ -142,6 +154,12 @@ impl RedisMessage {
     /// The subscription's reposition handle, for the per-delivery context to carry.
     pub(crate) fn seeker(&self) -> &RedisGroupSeeker {
         &self.seeker
+    }
+
+    /// Takes the harness's count of this delivery, for a window to hold until its flush.
+    #[cfg(feature = "testing")]
+    pub(crate) fn take_flight(&mut self) -> InFlight {
+        std::mem::take(&mut self.flight)
     }
 
     /// Takes what a window settles this delivery with: its entry id, and the body and headers a
@@ -256,9 +274,8 @@ impl IncomingMessage for RedisMessage {
         };
         // ZADD the delayed copy before XACK-ing the original, so a crash in between leaves a
         // duplicate (the scheduled copy plus the still-pending original) rather than a loss.
-        delay::schedule(
+        cfg.schedule(
             &handle.pool,
-            cfg,
             &handle.id,
             &self.payload,
             &self.headers,
@@ -338,6 +355,7 @@ mod tests {
             None,
             seeker,
             RequeueMode::Republish,
+            InFlight::default(),
         )
     }
 

@@ -2,8 +2,8 @@
 
 `ruststream-fred` запускает сервис [RustStream](https://powersemmi.github.io/ruststream/) на Redis.
 Redis Streams - это журнал, как Kafka: подписка читает его через группу потребителей и подтверждает
-каждую обработанную запись. Списки и Pub/Sub тоже здесь, а фича `testing` поставляет
-внутрипроцессный тестовый брокер, поэтому тесты идут без сервера Redis.
+каждую обработанную запись. Списки и Pub/Sub тоже здесь. С фичей `testing` тест запускает
+собственное приложение сервиса на модели Redis внутри процесса, поэтому тестам не нужен сервер.
 
 ```toml
 ruststream = { version = ">=0.7.0-rc.9, <0.8.0", features = ["macros"] }
@@ -69,8 +69,9 @@ cargo generate --git https://github.com/powersemmi/ruststream-fred templates/red
   [транзакции](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#transactions).
 - [Сгенерированный документ](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#the-generated-document):
   что документ AsyncAPI говорит о канале Redis и что в него намеренно не попадает.
-- [Тестирование](https://docs.rs/ruststream-fred/latest/ruststream_fred/testing/index.html):
-  внутрипроцессный транспорт, что он воспроизводит и что стоит проверять на настоящем сервере.
+- [Тестирование](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#testing):
+  собственное приложение сервиса на Redis внутри процесса, что сохраняет модель и что стоит
+  проверять на настоящем сервере.
 - [Эксплуатация](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#operations):
   топологии, учётные данные, TLS и известные ограничения.
 

@@ -2,8 +2,8 @@
 
 `ruststream-fred` 让 [RustStream](https://powersemmi.github.io/ruststream/) 服务跑在 Redis 上。
 Redis Streams 是一个日志，和 Kafka 一样：订阅通过消费者组读取它，并对处理过的每个条目做 ack。
-列表和 Pub/Sub 也在这个 crate 里，`testing` feature 还提供一个进程内的测试 Broker，测试因此不需要
-Redis 服务器。
+列表和 Pub/Sub 也在这个 crate 里。开启 `testing` feature 后，测试在进程内模拟的 Redis 上运行服务
+自己的应用，因此不需要 Redis 服务器。
 
 ```toml
 ruststream = { version = ">=0.7.0-rc.9, <0.8.0", features = ["macros"] }
@@ -59,8 +59,8 @@ docs.rs 上的参考文档以这个 crate 自己的教程开篇，一个主题�
   [事务](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#transactions)。
 - [生成的文档](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#the-generated-document)：
   AsyncAPI 文档关于 Redis 频道说了什么，又刻意不说什么。
-- [测试](https://docs.rs/ruststream-fred/latest/ruststream_fred/testing/index.html)：进程内传输，
-  它能重现什么，以及什么该留给真实服务器上的测试。
+- [测试](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#testing)：在进程内的
+  Redis 上运行服务自己的应用，模型保留了什么，以及什么该留给真实服务器上的测试。
 - [运维](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#operations)：拓扑、凭据、
   TLS 和已知限制。
 

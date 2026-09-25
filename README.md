@@ -1,7 +1,7 @@
 <h1 align="center">ruststream-fred</h1>
 
 <p align="center">
-  <i>The Redis and Valkey broker for the <a href="https://github.com/powersemmi/ruststream">RustStream</a> messaging framework: Streams with consumer groups, lists, Pub/Sub, standalone / cluster / sentinel topologies, and an in-process test broker.</i>
+  <i>The Redis and Valkey broker for the <a href="https://github.com/powersemmi/ruststream">RustStream</a> messaging framework: Streams with consumer groups, lists, Pub/Sub, standalone / cluster / sentinel topologies, and an in-process mode that runs a service's own app in its tests.</i>
 </p>
 
 <p align="center">
@@ -84,11 +84,10 @@
   carries the group's seeker under a `SeekHandle` key, so a handler moves the cursor while the
   service runs. A Redis cursor belongs to the consumer group, so a seek repositions every consumer
   of that group, a scope the `RedisGroupPosition` / `RedisGroupSeeker` names carry.
-- **In-process test broker.** The `testing` feature ships `RedisTestBroker`, an in-process transport
-  whose connected form implements `ruststream::testing::TestableBroker`, so it drives the `TestApp`
-  harness and passes the framework's conformance suite without a server. Every descriptor and every
-  publish policy mounts on it, so a test wires what the service ships rather than a bare key string
-  and a test-only policy.
+- **Tests on the production app.** With the `testing` feature, `TestApp` runs the service's own
+  app with its `RedisBroker` connected to a Redis modelled in process: consumer groups, pending
+  entries, lists, Pub/Sub channels and patterns, delay queues. No server, no docker, no network,
+  and the same test body runs against a server with `TestApp::start_live`.
 
 ## Install
 
@@ -165,46 +164,40 @@ Runnable examples live in `crates/ruststream-fred/examples/`, one per subject: `
 
 ## Test it
 
-`RedisTestBroker` runs the handler in process - no server, no docker, no network. The `TestApp`
-harness performs the app's real startup and drives each publish to a standstill before returning,
-so the assertions need no waiting. `Order` derives `Serialize` here as well, so the harness can
-inject one:
+The test hands the harness the same `app()`, and `TestApp::start` connects its `RedisBroker` to a
+Redis modelled in process: no server, no docker, no network. The harness performs the app's real
+startup and drives each publish to a standstill before returning, so the assertions need no
+waiting. `Order` derives `Outgoing` and `Serialize` here as well, so the harness can publish one:
 
 ```rust
 use ruststream::testing::TestApp;
-use ruststream_fred::testing::RedisTestBroker;
 
-let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-    RedisTestBroker::new(),
-    |b| {
-        // The same handler, the same mount and the same policy: only the broker is the
-        // in-process one. This crate ships no test-only policy type.
-        b.include(confirm).out_reply(Publish);
-    },
-);
+let tb = TestApp::start(app()).await?;
 
-let tb = TestApp::start(app).await?;
-
-tb.broker::<RedisTestBroker>()
-    .publish("orders", &Order { id: 7 })
+tb.broker::<RedisBroker>()
+    .message(&Order { id: 7 })
+    .to("orders")
+    .publish()
     .await?;
 
-tb.broker::<RedisTestBroker>()
+tb.broker::<RedisBroker>()
     .subscriber("orders")
     .assert_called_once()
     .settled(HandlerOutcome::ack());
-tb.broker::<RedisTestBroker>()
+tb.broker::<RedisBroker>()
     .published::<Confirmation>("confirmations")
     .assert_called_once();
 
 tb.shutdown().await?;
 ```
 
-Full compiling example: `crates/ruststream-fred/examples/fred_testing.rs`. Consumer-group cursors,
-`XAUTOCLAIM` redelivery, idle reclaim and `MAXLEN` trimming are deliberately not simulated;
-exercise those against a real server with `just test-brokers`. A `RedisStream::claiming`
-subscription does mount here, pending entries list and delivery count included, so a retry cap is
-testable in process, and so is the ZSET delay queue.
+The in-process Redis keeps the server's semantics: a stream entry reaches each consumer group
+once, through one of its consumers, a list element reaches one consumer, and a channel message
+reaches every subscription and every matching pattern. Pending entries, claims, delay queues and
+key types behave as on Redis, and the model's time is the test's clock. `TestApp::start_live(app())`
+runs the same body against a server. Full compiling example:
+`crates/ruststream-fred/examples/fred_testing.rs`; what the model covers is in the crate's testing
+overview on docs.rs.
 
 ## Contributing
 

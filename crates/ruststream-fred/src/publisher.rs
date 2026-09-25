@@ -276,53 +276,6 @@ async fn append(
     Ok(())
 }
 
-/// Pairs the default policy against the in-process stand-in, which records the same routes the
-/// real connection does, so a copy that leaves the wrong way on a server is refused here too.
-#[cfg(feature = "testing")]
-impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisDefaultPublish {
-    type Live = crate::testing::RedisTestPlainPublisher;
-
-    fn pair(
-        self,
-        connected: &crate::testing::ConnectedRedisTestBroker,
-    ) -> impl Future<Output = Result<Self::Live, PairError>> {
-        ready(Ok(connected.default_publisher()))
-    }
-
-    /// The same body the real broker's policy writes, so a document built in a test is the
-    /// document the service publishes.
-    #[cfg(feature = "asyncapi")]
-    fn channel_bindings(&self, channel: &str) -> Bindings {
-        crate::asyncapi::channel(&crate::asyncapi::Publish::stream(channel))
-    }
-}
-
-/// Pairs the production policy against the in-process stand-in, so a routes file's
-/// `.out_reply(Publish)` mounts on both without naming a second type.
-///
-/// The policy carries nothing to honour (`XADD` takes its key from each message), and the
-/// stand-in's publisher offers the same surface the live one does, both transaction kinds
-/// included, so this form loses nothing in process.
-#[cfg(feature = "testing")]
-impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisPublish {
-    type Live = crate::testing::RedisTestPublisher;
-
-    fn pair(
-        self,
-        connected: &crate::testing::ConnectedRedisTestBroker,
-    ) -> impl Future<Output = Result<Self::Live, PairError>> {
-        ready(Ok(connected.publisher()))
-    }
-
-    /// An `XADD` carries its headers as entry fields and the policy has no settings of its own, so
-    /// what the document learns from here is which Redis structure the channel is and which stream
-    /// key the entries are appended to.
-    #[cfg(feature = "asyncapi")]
-    fn channel_bindings(&self, channel: &str) -> Bindings {
-        crate::asyncapi::channel(&crate::asyncapi::Publish::stream(channel))
-    }
-}
-
 /// The live stream publisher: [`RedisPublish`] paired with a connection. Cheap to clone.
 ///
 /// [`Publisher::publish`] appends the message to the stream named by

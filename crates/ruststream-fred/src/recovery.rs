@@ -29,6 +29,7 @@ use fred::interfaces::{KeysInterface, ListInterface, SortedSetsInterface};
 use ruststream::AckError;
 
 use crate::error::RedisError;
+use crate::loopback::Loopback;
 
 /// How many orphaned entries one sweep pass recovers before yielding back to the read loop.
 const SWEEP_BATCH: i64 = 128;
@@ -41,9 +42,15 @@ pub(crate) struct RecoveryConfig {
     pub(crate) zset_key: String,
     pub(crate) min_idle: Duration,
     pub(crate) ttl: Option<Duration>,
+    /// The connection the set lives on, whose clock the scores are read off in process.
+    pub(crate) loopback: Loopback,
 }
 
 /// Current wall-clock time as epoch milliseconds (the ZSET score space).
+#[cfg_attr(
+    feature = "testing",
+    allow(dead_code, reason = "the loopback reads the clock under `testing`")
+)]
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -91,11 +98,32 @@ fn broker_err(err: fred::error::Error) -> AckError {
 }
 
 /// The ZSET member and score a claim is tracked by, for a claim recorded inside a pipeline.
-pub(crate) fn tracked(value: &[u8]) -> (f64, Vec<u8>) {
-    (as_score(now_ms()), claim_member(value))
-}
-
 impl RecoveryConfig {
+    /// The same set on the connection `loopback` names.
+    pub(crate) fn on(mut self, loopback: &Loopback) -> Self {
+        self.loopback.clone_from(loopback);
+        self
+    }
+
+    /// The wall clock the claims are scored and swept against, in epoch milliseconds: the
+    /// system's, or in process the in-process server's.
+    fn now_ms(&self) -> u64 {
+        #[cfg(feature = "testing")]
+        {
+            self.loopback.now_ms()
+        }
+        #[cfg(not(feature = "testing"))]
+        {
+            let _ = &self.loopback;
+            now_ms()
+        }
+    }
+
+    /// The score and the member a fresh claim of `value` is tracked by.
+    pub(crate) fn tracked(&self, value: &[u8]) -> (f64, Vec<u8>) {
+        (as_score(self.now_ms()), claim_member(value))
+    }
+
     /// The expiry re-armed on the recovery ZSET with every claim, in milliseconds.
     pub(crate) fn ttl_millis(&self) -> Option<i64> {
         self.ttl.map(ttl_millis)
@@ -118,7 +146,7 @@ pub(crate) async fn record_claim(
             None,
             false,
             false,
-            (as_score(now_ms()), member.clone()),
+            (as_score(cfg.now_ms()), member.clone()),
         )
         .await
         .map_err(RedisError::stream)?;
@@ -152,7 +180,7 @@ pub(crate) async fn sweep_orphans(
     main_key: &str,
     processing_key: &str,
 ) -> Result<(), RedisError> {
-    let cutoff = as_score(now_ms().saturating_sub(millis(cfg.min_idle)));
+    let cutoff = as_score(cfg.now_ms().saturating_sub(millis(cfg.min_idle)));
     let due: Vec<Bytes> = pool
         .zrangebyscore(
             cfg.zset_key.as_str(),

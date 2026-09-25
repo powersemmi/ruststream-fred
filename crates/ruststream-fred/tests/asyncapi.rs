@@ -15,13 +15,15 @@ use ruststream::asyncapi::build_spec;
 use ruststream::conformance::harness;
 use ruststream::prelude::*;
 use ruststream::{DescribeServer, SubscriptionSource};
-use ruststream_fred::testing::RedisTestBroker;
 use ruststream_fred::{
     ConnectedRedisBroker, PubSubMode, RedisBroker, RedisList, RedisListPublish, RedisPubSub,
     RedisPubSubPattern, RedisPubSubPublish, RedisPublish, RedisStream,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// The address the service's broker is built with; the in-process mode dials nothing.
+const URL: &str = "redis://localhost:6379";
 
 /// How long the claiming subscription below leaves a retried entry pending.
 const MIN_IDLE: Duration = Duration::from_secs(30);
@@ -68,15 +70,17 @@ async fn handle_batch(order: &Order) -> Receipt {
 
 /// The document a service on all three forms publishes.
 fn document() -> Value {
-    let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+        RedisBroker::standalone(URL),
+        |b| {
             b.include(handle_order).out_reply(RedisPubSubPublish::new());
             b.include(handle_job);
             b.include(handle_event);
             b.include(handle_audit).out_reply(RedisPublish);
             b.include(handle_batch)
                 .out_reply(RedisListPublish::new().ttl(BATCH_TTL));
-        });
+        },
+    );
     let json = build_spec(&app).to_json().expect("the document serializes");
     serde_json::from_str(&json).expect("the document is JSON")
 }
