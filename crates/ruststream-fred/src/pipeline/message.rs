@@ -112,18 +112,29 @@ where
     }
 }
 
+impl<F: Form> RoundMessage<F> {
+    /// Records the delivery's round against the task reading it, once: the runtime decodes a
+    /// delivery in the task that handles it, before the handler runs, and a reply marked to join
+    /// the round finds it there.
+    fn enter(&self) {
+        // The load keeps every read after the first to a plain one.
+        if !self.entered.load(Ordering::Relaxed) && !self.entered.swap(true, Ordering::Relaxed) {
+            self.round.enter();
+        }
+    }
+}
+
 impl<F: Form> IncomingMessage for RoundMessage<F> {
+    /// Also enters the round: the payload is what the runtime reads to decode the input, and it
+    /// reads the headers only when something asks for them.
     fn payload(&self) -> &[u8] {
+        self.enter();
         self.inner().payload()
     }
 
-    /// Also records the delivery's round against the task reading them: the runtime reads a
-    /// delivery's headers in the task that handles it, before the handler runs, and a reply
-    /// marked to join the round finds it there.
+    /// Also enters the round, for a handler that reads the headers alone.
     fn headers(&self) -> &HeaderMap {
-        if !self.entered.swap(true, Ordering::Relaxed) {
-            self.round.enter();
-        }
+        self.enter();
         self.inner().headers()
     }
 
