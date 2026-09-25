@@ -68,7 +68,7 @@ use crate::seek::{EntryId, RedisGroupPosition, RedisGroupSeeker};
 /// Per-delivery context for a Redis Streams delivery ([`RedisMessage`]).
 ///
 /// Built once per delivery from the message. Read its fields by [`keys`] key off a
-/// [`Context`](ruststream::runtime::Context), or bind one as a handler parameter with the core
+/// [`Context`], or bind one as a handler parameter with the core
 /// `Ctx<K>` extractor. A body that repositions its group names this type as its context and needs
 /// nothing else: the [`keys::SeekHandle`] key carries the live handle.
 ///
