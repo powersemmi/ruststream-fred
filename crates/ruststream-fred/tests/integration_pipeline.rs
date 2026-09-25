@@ -7,11 +7,12 @@
 //!     cargo test -p ruststream-fred --all-features --test integration_pipeline
 //! ```
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use fred::interfaces::{KeysInterface, ListInterface, StreamsInterface};
+use fred::interfaces::{ClientLike, KeysInterface, ListInterface, StreamsInterface};
 use fred::types::{ClusterHash, CustomCommand};
 use futures::StreamExt;
 use ruststream::{
@@ -22,7 +23,7 @@ use ruststream_fred::context::{PipelineContext, keys};
 use ruststream_fred::pipeline::{Bindable, InRound, RedisPipeline};
 use ruststream_fred::prelude::*;
 use ruststream_fred::{
-    AtomicList, AtomicStream, ConnectedRedisBroker, PipelinedList, PipelinedPubSub,
+    AtomicList, AtomicStream, ConnectedRedisBroker, DelayedRetry, PipelinedList, PipelinedPubSub,
     PipelinedStream, RedisError, RedisListPublish, RedisPubSubPublish,
 };
 use serde::{Deserialize, Serialize};
@@ -321,6 +322,112 @@ async fn run_window(url: &str, base: &'static str, app: RustStream) {
         .del(vec![stream.as_str(), audit.as_str()])
         .await
         .expect("del");
+    watcher.shutdown().await.expect("shutdown watcher");
+}
+
+#[subscriber(
+    PipelinedStream::new(key("retry-refused"))
+        .group("workers")
+        .delayed_retry(DelayedRetry::DurableZset {
+            key: format!("{}.delayed", key("retry-refused")),
+            ttl: None,
+        }),
+    start_at(RedisGroupPosition::beginning())
+)]
+async fn retried(_order: &Order) -> HandlerOutcome {
+    HandlerOutcome::retry_after(Duration::from_secs(60))
+}
+
+// A windowed retry whose schedule Redis refuses leaves its entry pending: the `XACK` goes out
+// only once the write carrying the entry forward has succeeded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_retry_whose_write_fails_is_not_acknowledged() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let stream = key("retry-refused");
+    let delayed = format!("{stream}.delayed");
+    let watcher = connected(&url).await;
+    let pool = watcher.pool_handle().expect("pool");
+    // The service connects as a user Redis refuses `ZADD`: every schedule onto the delay queue
+    // fails, while reading, polling and acknowledging succeed.
+    let user = format!("no-zadd-{}", stream.len());
+    let _: fred::types::Value = pool
+        .next()
+        .custom(
+            CustomCommand::new_static("ACL", ClusterHash::FirstKey, false),
+            vec![
+                "SETUSER",
+                user.as_str(),
+                "on",
+                ">limited",
+                "~*",
+                "&*",
+                "+@all",
+                "-zadd",
+            ],
+        )
+        .await
+        .expect("acl setuser");
+    let limited = url.replacen("redis://", &format!("redis://{user}:limited@"), 1);
+    let app = RustStream::new(AppInfo::new("pipeline", "0.1.0")).with_broker(
+        RedisBroker::standalone(limited),
+        |b| {
+            b.include(retried);
+        },
+    );
+    let running = app.start().await.expect("start");
+    let body = serde_json::to_vec(&Order {
+        id: 1,
+        outcome: "retry".to_owned(),
+    })
+    .expect("encode");
+    watcher
+        .publisher()
+        .publish(OutgoingMessage::new(stream.as_str(), &body), None)
+        .await
+        .expect("publish");
+
+    // The delivery is read and handled; its schedule fails, and the entry stays owed to the group.
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let groups: Vec<HashMap<String, fred::types::Value>> = pool
+            .xinfo_groups(stream.as_str())
+            .await
+            .expect("xinfo groups");
+        let read = groups.iter().any(|group| {
+            group
+                .get("last-delivered-id")
+                .and_then(fred::types::Value::as_str)
+                .is_some_and(|id| id != "0-0")
+        });
+        if read {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the delivery was never read"
+        );
+        tokio::task::yield_now().await;
+    }
+    running.shutdown().await.expect("shutdown");
+    let pending: PendingSummary = pool
+        .xpending(stream.as_str(), "workers", ())
+        .await
+        .expect("xpending");
+    assert_eq!(pending.0, 1, "the entry was acknowledged without its retry");
+    let _: i64 = pool
+        .del(vec![stream.as_str(), delayed.as_str()])
+        .await
+        .expect("del");
+    let _: fred::types::Value = pool
+        .next()
+        .custom(
+            CustomCommand::new_static("ACL", ClusterHash::FirstKey, false),
+            vec!["DELUSER", user.as_str()],
+        )
+        .await
+        .expect("acl deluser");
     watcher.shutdown().await.expect("shutdown watcher");
 }
 

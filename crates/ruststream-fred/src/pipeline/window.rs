@@ -14,7 +14,7 @@ use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use fred::clients::{Client, Pipeline, WithOptions};
-use fred::error::Error;
+use fred::error::{Error, ErrorKind};
 use fred::interfaces::{
     ClientLike, KeysInterface, ListInterface, PubsubInterface, StreamsInterface,
 };
@@ -77,6 +77,9 @@ struct Slots {
     members: Vec<u32>,
     /// Whether every member settled so far acknowledged.
     clean: Vec<bool>,
+    /// How many times each slot was opened: a round of an earlier delivery on the slot names
+    /// an older one, and reaches nothing.
+    generations: Vec<u32>,
     free: Vec<u32>,
 }
 
@@ -92,18 +95,21 @@ impl Segments {
         self.slots.lock().expect("pipeline slots poisoned")
     }
 
-    fn open(&self, members: u32) -> u32 {
+    fn open(&self, members: u32) -> (u32, u32) {
         let mut slots = self.lock();
         let slot = slots.free.pop().unwrap_or_else(|| {
             slots.segments.push(None);
             slots.members.push(0);
             slots.clean.push(true);
+            slots.generations.push(0);
             u32::try_from(slots.segments.len() - 1).expect("fewer than 2^32 deliveries in flight")
         });
         slots.members[slot as usize] = members;
         slots.clean[slot as usize] = true;
+        let generation = slots.generations[slot as usize].wrapping_add(1);
+        slots.generations[slot as usize] = generation;
         drop(slots);
-        slot
+        (slot, generation)
     }
 
     /// Settles one member of the slot. The last one takes the segment and gives the slot back;
@@ -127,8 +133,13 @@ impl Segments {
 
     /// The slot's segment, created on first use: a pipeline on the window's client, opened with
     /// `MULTI` under `.atomic()`.
-    async fn segment(&self, slot: u32) -> Result<Segment, Error> {
-        if let Some(segment) = self.existing(slot) {
+    ///
+    /// # Errors
+    ///
+    /// Refuses a round whose delivery has settled: a handle kept past it must not queue into
+    /// the segment of a later delivery on the slot.
+    async fn segment(&self, slot: u32, generation: u32) -> Result<Segment, Error> {
+        if let Some(segment) = self.existing(slot, generation)? {
             return Ok(segment);
         }
         let pipeline = pipeline_on(&self.client);
@@ -149,6 +160,9 @@ impl Segments {
             Segment::Plain(pipeline)
         };
         let mut slots = self.lock();
+        if slots.generations[slot as usize] != generation {
+            return Err(settled_round());
+        }
         let entry = slots
             .segments
             .get_mut(slot as usize)
@@ -159,16 +173,27 @@ impl Segments {
         Ok(segment)
     }
 
-    fn existing(&self, slot: u32) -> Option<Segment> {
+    fn existing(&self, slot: u32, generation: u32) -> Result<Option<Segment>, Error> {
         let slots = self.lock();
+        if slots.generations[slot as usize] != generation {
+            return Err(settled_round());
+        }
         let segment = slots
             .segments
             .get(slot as usize)
             .expect("a round names a slot of its own window")
             .clone();
         drop(slots);
-        segment
+        Ok(segment)
     }
+}
+
+/// The refusal a handle gets once its delivery has settled.
+fn settled_round() -> Error {
+    Error::new(
+        ErrorKind::InvalidCommand,
+        "the delivery this pipeline belongs to has settled, so a command can no longer join it",
+    )
 }
 
 /// A delivery's handle on its slot: what the facade and the settle reach the window through.
@@ -176,16 +201,19 @@ impl Segments {
 pub(crate) struct Round {
     segments: Arc<Segments>,
     slot: u32,
+    generation: u32,
 }
 
 impl Round {
     pub(crate) async fn segment(&self) -> Result<Segment, Error> {
-        self.segments.segment(self.slot).await
+        self.segments.segment(self.slot, self.generation).await
     }
 
     /// Whether `other` is this very slot of this very window.
     pub(crate) fn same(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.segments, &other.segments) && self.slot == other.slot
+        Arc::ptr_eq(&self.segments, &other.segments)
+            && self.slot == other.slot
+            && self.generation == other.generation
     }
 
     /// Records that the delivery of this round is handled in the current task.
@@ -465,9 +493,11 @@ impl<F: Form> Window<F> {
 
     /// One slot for a batch of `members` deliveries: the batch's segment.
     pub(crate) fn open_batch(&self, members: u32) -> Round {
+        let (slot, generation) = self.segments.open(members);
         Round {
             segments: Arc::clone(&self.segments),
-            slot: self.segments.open(members),
+            slot,
+            generation,
         }
     }
 
@@ -560,8 +590,9 @@ impl<F: Form> Window<F> {
     }
 
     /// Gives a delivery's slot back without settling it: the delivery was dropped unsettled, so
-    /// its segment is dropped and the entry stays with the broker.
-    pub(crate) fn abandon(&self, round: &Round) {
+    /// its segment is dropped and the entry stays with the broker. When it was the last one
+    /// outstanding, what the others settled is flushed on the runtime, as a settle would flush it.
+    pub(crate) fn abandon(self: &Arc<Self>, round: &Round) {
         let closed = self.segments.close(round.slot, false);
         if closed.is_some() {
             self.segments.rounds.leave(round);
@@ -575,7 +606,29 @@ impl<F: Form> Window<F> {
             owed.ops.append(staged);
         }
         owed.outstanding = owed.outstanding.saturating_sub(1);
+        let pending = !owed.committed.is_empty() || !owed.ops.is_empty();
+        let due = pending && owed.outstanding == 0 && owed.waiting == 0;
+        let flush = due.then(|| Self::take(owed));
         drop(guard);
+        // A destructor cannot wait: the flush runs on the runtime, and where there is none it
+        // runs when the subscription stops.
+        if let Some(flush) = flush {
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                let window = Arc::clone(self);
+                runtime.spawn(async move { window.send(flush).await });
+            } else {
+                self.give_back_owed(flush);
+            }
+        }
+    }
+
+    /// Puts a flush that could not be sent back into what the window owes.
+    fn give_back_owed(&self, mut flush: Flush<F::Op>) {
+        let mut owed = self.owed();
+        flush.committed.append(&mut owed.committed);
+        flush.ops.append(&mut owed.ops);
+        owed.committed = flush.committed;
+        owed.ops = flush.ops;
     }
 
     /// Takes what the window owes, for a flush on stop.
@@ -647,5 +700,72 @@ impl<F: Form> Window<F> {
         if owed.ops.capacity() < flush.ops.capacity() && owed.ops.is_empty() {
             owed.ops = flush.ops;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use fred::clients::Client;
+    use ruststream::AckError;
+
+    use super::*;
+    use crate::pipeline::forms::PubSubForm;
+
+    fn window() -> Arc<Window<PubSubForm>> {
+        Arc::new(Window::new(
+            PubSubForm,
+            Client::default(),
+            Arc::new(Rounds::default()),
+            false,
+            "orders",
+            8,
+        ))
+    }
+
+    #[tokio::test]
+    async fn a_round_kept_past_its_delivery_joins_no_later_one() {
+        let window = window();
+        window.yielded(0);
+        let first = window.open();
+        first.segment().await.expect("the first delivery's segment");
+        window.abandon(&first);
+
+        window.yielded(0);
+        let second = window.open();
+        assert_eq!(first.slot, second.slot, "the slot is reused");
+        assert!(
+            first.segment().await.is_err(),
+            "a stale round reached the next delivery's segment"
+        );
+        assert!(!first.same(&second));
+        second
+            .segment()
+            .await
+            .expect("the new delivery's own segment");
+    }
+
+    #[tokio::test]
+    async fn the_last_delivery_abandoned_flushes_what_the_others_settled() {
+        let window = window();
+        window.yielded(1);
+        let settled = window.open();
+        window.yielded(0);
+        let dropped = window.open();
+        settled.segment().await.expect("segment");
+        let answer = window
+            .settle(&settled, true, |_, _| Err(AckError::Unsupported))
+            .await;
+        assert!(matches!(answer, Err(AckError::Unsupported)));
+        assert_eq!(
+            window.owed().committed.len(),
+            1,
+            "waits for the other delivery"
+        );
+
+        window.abandon(&dropped);
+        assert!(
+            window.owed().committed.is_empty(),
+            "the acknowledged delivery's commands stayed buffered"
+        );
     }
 }
