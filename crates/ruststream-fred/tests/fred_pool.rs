@@ -9,8 +9,10 @@ use fred::interfaces::ListInterface;
 use ruststream::testing::TestApp;
 use ruststream_fred::context::keys;
 use ruststream_fred::prelude::*;
-use ruststream_fred::testing::RedisTestBroker;
 use serde::{Deserialize, Serialize};
+
+/// The address the service's broker is built with; the in-process mode dials nothing.
+const URL: &str = "redis://localhost:6379";
 
 #[derive(Debug, Deserialize, Outgoing, PartialEq, Serialize)]
 struct Order {
@@ -52,25 +54,25 @@ macro_rules! writes_through_the_pool {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn $test() {
             let app = RustStream::new(AppInfo::new("pool", "0.1.0")).with_broker(
-                RedisTestBroker::new(),
+                RedisBroker::standalone(URL),
                 |b| {
                     b.include($handler);
                 },
             );
             let tb = TestApp::start(app).await.expect("start");
 
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .message(&Order { id: 5 })
                 .to($name)
                 .publish()
                 .await
                 .expect("publish");
 
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .subscriber($name)
                 .assert_called_once()
                 .settled(HandlerOutcome::ack());
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .published::<Order>("audit")
                 .assert_called_once()
                 .with(&Order { id: 5 });

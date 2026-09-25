@@ -25,6 +25,8 @@ use ruststream::{AckError, IncomingMessage};
 
 use super::{Rounds, pipeline_on};
 use crate::error::RedisError;
+#[cfg(feature = "testing")]
+use crate::loopback::InFlight;
 
 /// One delivery's buffer: a `fred` pipeline, pinned to the subscription's slot and opened with
 /// `MULTI` under `.atomic()`.
@@ -295,6 +297,10 @@ pub trait Form: Send + Sync + 'static {
     type Message: IncomingMessage + Send + Sync + 'static;
     /// The broker's connection pool, which a delivery's context hands out.
     fn pool(msg: &Self::Message) -> &fred::clients::Pool;
+    /// Takes the test harness's count of the delivery, which the window holds until the flush
+    /// that carries its settle.
+    #[cfg(feature = "testing")]
+    fn take_flight(msg: &mut Self::Message) -> InFlight;
     /// One settle command, owed until the window flushes.
     type Op: Send + 'static;
 
@@ -398,6 +404,10 @@ struct Owed<Op> {
     staged: Vec<Vec<Op>>,
     /// A flush that failed, reported once on the delivery stream.
     failure: Option<RedisError>,
+    /// The harness's counts of the deliveries settled into the window, released once everything
+    /// the window owed has been sent.
+    #[cfg(feature = "testing")]
+    held: Vec<InFlight>,
 }
 
 /// The window of one pipelined subscription.
@@ -454,6 +464,8 @@ impl<F: Form> Window<F> {
                 scratch: Vec::new(),
                 staged: Vec::new(),
                 failure: None,
+                #[cfg(feature = "testing")]
+                held: Vec::new(),
             }),
         }
     }
@@ -611,15 +623,42 @@ impl<F: Form> Window<F> {
         let flush = due.then(|| Self::take(owed));
         drop(guard);
         // A destructor cannot wait: the flush runs on the runtime, and where there is none it
-        // runs when the subscription stops.
+        // runs when the subscription stops. A flush sent releases the held counts once it lands.
         if let Some(flush) = flush {
             if let Ok(runtime) = tokio::runtime::Handle::try_current() {
                 let window = Arc::clone(self);
                 runtime.spawn(async move { window.send(flush).await });
-            } else {
-                self.give_back_owed(flush);
+                return;
             }
+            self.give_back_owed(flush);
         }
+        #[cfg(feature = "testing")]
+        self.release_if_sent();
+    }
+
+    /// Holds the harness's count of a delivery settling into the window.
+    #[cfg(feature = "testing")]
+    pub(crate) fn hold(&self, flight: InFlight) {
+        self.owed().held.push(flight);
+    }
+
+    /// Releases the held counts once nothing is outstanding and nothing is left to send: the
+    /// settles and the commands they carried have all reached the server.
+    #[cfg(feature = "testing")]
+    fn release_if_sent(&self) {
+        let released = {
+            let mut owed = self.owed();
+            let sent = owed.outstanding == 0
+                && owed.ops.is_empty()
+                && owed.committed.is_empty()
+                && owed.staged.iter().all(Vec::is_empty);
+            if sent {
+                std::mem::take(&mut owed.held)
+            } else {
+                Vec::new()
+            }
+        };
+        drop(released);
     }
 
     /// Puts a flush that could not be sent back into what the window owes.
@@ -659,6 +698,8 @@ impl<F: Form> Window<F> {
     async fn send(&self, mut flush: Flush<F::Op>) {
         if flush.committed.is_empty() && flush.ops.is_empty() {
             self.give_back(flush);
+            #[cfg(feature = "testing")]
+            self.release_if_sent();
             return;
         }
         // The segments are submitted first, in commit order, and the settles after them: the
@@ -687,6 +728,8 @@ impl<F: Form> Window<F> {
             self.owed().failure.get_or_insert(failure);
         }
         self.give_back(flush);
+        #[cfg(feature = "testing")]
+        self.release_if_sent();
     }
 
     /// Returns a flush's buffers to the window, so the next flush reuses what they grew to.

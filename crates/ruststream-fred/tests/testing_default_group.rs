@@ -1,15 +1,17 @@
-//! The in-process broker takes the real broker's `default_group` setting and refuses a bare-name
-//! stream subscription without it, as the real broker does: Redis Streams always read through a
-//! consumer group, and a bare name names none.
+//! The in-process mode reads the production broker's `default_group` setting and refuses a
+//! bare-name stream subscription without it, as the real broker does: Redis Streams always read
+//! through a consumer group, and a bare name names none.
 
 #![cfg(feature = "testing")]
 
-use ruststream::testing::TestApp;
-use ruststream::{Broker, Subscribe};
+use ruststream::Subscribe;
+use ruststream::testing::{InProcess, TestApp};
 use ruststream_fred::RedisError;
 use ruststream_fred::stream::prelude::*;
-use ruststream_fred::testing::RedisTestBroker;
 use serde::{Deserialize, Serialize};
+
+/// The address the service's broker is built with; the in-process mode dials nothing.
+const URL: &str = "redis://localhost:6379";
 
 #[derive(Debug, Deserialize, Outgoing, PartialEq, Serialize)]
 struct Order {
@@ -22,9 +24,19 @@ async fn by_name(order: &Order) -> HandlerOutcome {
     HandlerOutcome::ack()
 }
 
+/// The service's app, on the broker `main` builds.
+fn app(broker: RedisBroker) -> RustStream {
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+        b.include(by_name);
+    })
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_bare_name_without_a_default_group_is_refused() {
-    let connected = RedisTestBroker::new().connect().await.expect("connect");
+    let connected = RedisBroker::standalone(URL)
+        .connect_in_process()
+        .await
+        .expect("connect");
     let err = Subscribe::subscribe(&connected, "orders")
         .await
         .expect_err("a bare name names no consumer group");
@@ -39,9 +51,9 @@ async fn a_bare_name_without_a_default_group_is_refused() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_bare_name_with_a_default_group_opens() {
-    let connected = RedisTestBroker::new()
+    let connected = RedisBroker::standalone(URL)
         .default_group("workers")
-        .connect()
+        .connect_in_process()
         .await
         .expect("connect");
     Subscribe::subscribe(&connected, "orders")
@@ -51,11 +63,7 @@ async fn a_bare_name_with_a_default_group_opens() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_service_mounting_a_bare_name_without_a_default_group_does_not_start() {
-    let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
-            b.include(by_name);
-        });
-    let err = TestApp::start(app)
+    let err = TestApp::start(app(RedisBroker::standalone(URL)))
         .await
         .expect_err("the service does not start");
     assert!(
@@ -66,23 +74,20 @@ async fn a_service_mounting_a_bare_name_without_a_default_group_does_not_start()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_service_mounting_a_bare_name_with_a_default_group_delivers() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        RedisTestBroker::new().default_group("workers"),
-        |b| {
-            b.include(by_name);
-        },
-    );
-    let tb = TestApp::start(app).await.expect("start");
+    let tb = TestApp::start(app(RedisBroker::standalone(URL).default_group("workers")))
+        .await
+        .expect("start");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .message(&Order { id: 1 })
         .to("orders")
         .publish()
         .await
         .expect("publish");
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .subscriber("orders")
         .assert_called_once()
+        .with(&Order { id: 1 })
         .settled(HandlerOutcome::ack());
 
     tb.shutdown().await.expect("shutdown");

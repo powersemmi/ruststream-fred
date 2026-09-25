@@ -18,7 +18,8 @@ use ruststream::{BatchSubscriber, Seekable, Subscriber};
 
 use crate::claim::{self, ClaimedEntry};
 use crate::convert::{HEADER_PREFIX, parts_from_fields};
-use crate::delay::{self, DelayConfig};
+use crate::delay::DelayConfig;
+use crate::loopback::Tap;
 use crate::message::{DELIVERY_COUNT_HEADER, IDLE_MS_HEADER, RedisMessage};
 use crate::pipeline::{RoundMessage, StreamForm, Window};
 use crate::seek::{EntryId, RedisGroupSeeker};
@@ -90,6 +91,8 @@ pub struct RedisSubscriber {
     /// Minted once, when the subscription opens, and handed to every delivery so its context can
     /// carry the handle without building one per message.
     seeker: Arc<RedisGroupSeeker>,
+    /// The subscription's registration with the in-process server; empty on a real connection.
+    tap: Tap,
 }
 
 impl Debug for RedisSubscriber {
@@ -116,6 +119,7 @@ impl RedisSubscriber {
         block: Duration,
         mode: ReadMode,
         delay: Option<DelayConfig>,
+        tap: Tap,
     ) -> Self {
         let generation = Arc::new(AtomicU64::new(0));
         let seeker = Arc::new(RedisGroupSeeker::new(
@@ -138,6 +142,7 @@ impl RedisSubscriber {
             generation,
             buffer_generation: 0,
             seeker,
+            tap,
         }
     }
 
@@ -164,6 +169,7 @@ impl RedisSubscriber {
             entry.delivered,
             Arc::clone(&self.seeker),
             self.mode.requeue(),
+            self.tap.delivered(),
         ))
     }
 
@@ -178,6 +184,8 @@ impl RedisSubscriber {
         let dropped = self.buffer.len();
         self.buffer.clear();
         self.buffer_generation = current;
+        #[cfg(feature = "testing")]
+        self.tap.discard(dropped);
         dropped
     }
 
@@ -238,10 +246,14 @@ impl RedisSubscriber {
     /// Fetches up to `count` entries into the buffer. A read that timed out with nothing pending
     /// leaves the buffer empty (the caller loops and reads again).
     async fn fetch(&mut self, count: u64) -> Result<(), RedisError> {
+        // In process the read below cannot block, so the wait it would hold open is taken here,
+        // before the sweep, which then finds what came due while it waited.
+        #[cfg(feature = "testing")]
+        self.tap.readable().await;
         // Replay any due delayed-retry entries before reading, so they re-enter the stream and get
         // delivered through the normal read path. Granularity is the read block interval.
         if let Some(cfg) = &self.delay {
-            delay::sweep_due(&self.pool, cfg, &self.key).await?;
+            cfg.sweep_due(&self.pool, &self.key).await?;
         }
         // Captured before the read, not after: a blocking read selects its entries against the
         // cursor as it stood when the read started, so a seek that lands mid-read invalidates
@@ -254,6 +266,8 @@ impl RedisSubscriber {
         };
         if selected_at != self.generation.load(Ordering::Acquire) {
             // A seek overtook this read; drop its entries and let the caller read again.
+            #[cfg(feature = "testing")]
+            self.tap.discard(entries.len());
             return Ok(());
         }
         self.buffer_generation = selected_at;
@@ -379,6 +393,11 @@ impl RedisSubscriber {
         self.cursor = cursor;
         // Nothing left to reclaim this pass: avoid a hot loop until more entries go stale.
         if entries.is_empty() {
+            // In process the next fetch waits until an entry goes stale instead.
+            #[cfg(feature = "testing")]
+            if self.tap.in_process() {
+                return Ok(Vec::new());
+            }
             tokio::time::sleep(self.block).await;
             return Ok(Vec::new());
         }

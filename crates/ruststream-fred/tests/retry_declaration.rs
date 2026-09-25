@@ -10,11 +10,13 @@
 use std::time::Duration;
 
 use ruststream::testing::TestApp;
-use ruststream_fred::testing::RedisTestBroker;
-use ruststream_fred::{RedisList, RedisPubSub, RedisStream};
+use ruststream_fred::{RedisBroker, RedisList, RedisPubSub, RedisStream};
 use serde::{Deserialize, Serialize};
 
 use ruststream::prelude::*;
+
+/// The address the service's broker is built with; the in-process mode dials nothing.
+const URL: &str = "redis://localhost:6379";
 
 /// How long a claiming subscription leaves a retried entry pending before claiming it back.
 const MIN_IDLE: Duration = Duration::from_secs(30);
@@ -50,29 +52,44 @@ async fn never_ready_event(order: &Order) -> HandlerOutcome {
     HandlerOutcome::retry()
 }
 
+/// The service's app: what `main` runs, and what every case hands the harness.
+fn app() -> impl App<State = ()> {
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+        RedisBroker::standalone(URL),
+        |b| {
+            b.include(never_ready)
+                .max_attempts(nonzero!(3u32))
+                .dead_letter("orders.dead");
+            b.include(never_ready_claimed)
+                .max_attempts(nonzero!(3u32))
+                .dead_letter("claimed.dead");
+            b.include(never_ready_job)
+                .max_attempts(nonzero!(2u32))
+                .dead_letter("jobs.failed");
+            b.include(never_ready_event)
+                .max_attempts(nonzero!(2u32))
+                .dead_letter("events.dead");
+        },
+    )
+}
+
 /// A stream counts through the framework's header, so an immediate retry becomes a copy the
 /// runtime publishes back to the key, and the third delivery is the last the cap allows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stream_stops_at_the_cap_and_hands_the_last_delivery_over() {
-    let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
-            b.include(never_ready)
-                .max_attempts(nonzero!(3u32))
-                .dead_letter("orders.dead");
-        });
-    let tb = TestApp::start(app).await.expect("startup failed");
+    let tb = TestApp::start(app()).await.expect("startup failed");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .message(&Order { id: 1 })
         .to("orders")
         .publish()
         .await
         .expect("publish");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .subscriber("orders")
         .assert_called(3);
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .published::<Order>("orders.dead")
         .assert_called_once()
         .with(&Order { id: 1 });
@@ -85,21 +102,15 @@ async fn a_stream_stops_at_the_cap_and_hands_the_last_delivery_over() {
 /// subscription's `min_idle`, which the harness moves.
 #[tokio::test(start_paused = true)]
 async fn a_claiming_subscription_caps_on_the_servers_own_count() {
-    let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
-            b.include(never_ready_claimed)
-                .max_attempts(nonzero!(3u32))
-                .dead_letter("claimed.dead");
-        });
-    let tb = TestApp::start(app).await.expect("startup failed");
+    let tb = TestApp::start(app()).await.expect("startup failed");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .message(&Order { id: 2 })
         .to("claimed")
         .publish()
         .await
         .expect("publish");
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .subscriber("claimed")
         .assert_called_once();
 
@@ -107,10 +118,10 @@ async fn a_claiming_subscription_caps_on_the_servers_own_count() {
     tb.advance(MIN_IDLE).await.expect("first claim back");
     tb.advance(MIN_IDLE).await.expect("second claim back");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .subscriber("claimed")
         .assert_called(3);
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .published::<Order>("claimed.dead")
         .assert_called_once()
         .with(&Order { id: 2 });
@@ -122,25 +133,19 @@ async fn a_claiming_subscription_caps_on_the_servers_own_count() {
 /// stream and the copies go back to the list key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reliable_list_stops_at_the_cap() {
-    let app =
-        RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
-            b.include(never_ready_job)
-                .max_attempts(nonzero!(2u32))
-                .dead_letter("jobs.failed");
-        });
-    let tb = TestApp::start(app).await.expect("startup failed");
+    let tb = TestApp::start(app()).await.expect("startup failed");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .message(&Order { id: 3 })
         .to("jobs")
         .publish()
         .await
         .expect("publish");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .subscriber("jobs")
         .assert_called(2);
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .published::<Order>("jobs.failed")
         .assert_called_once()
         .with(&Order { id: 3 });
@@ -152,25 +157,19 @@ async fn a_reliable_list_stops_at_the_cap() {
 /// same way.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_channel_stops_at_the_cap() {
-    let app =
-        RustStream::new(AppInfo::new("events", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
-            b.include(never_ready_event)
-                .max_attempts(nonzero!(2u32))
-                .dead_letter("events.dead");
-        });
-    let tb = TestApp::start(app).await.expect("startup failed");
+    let tb = TestApp::start(app()).await.expect("startup failed");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .message(&Order { id: 4 })
         .to("events")
         .publish()
         .await
         .expect("publish");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .subscriber("events")
         .assert_called(2);
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .published::<Order>("events.dead")
         .assert_called_once()
         .with(&Order { id: 4 });

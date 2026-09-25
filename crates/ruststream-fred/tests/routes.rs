@@ -1,21 +1,22 @@
-//! The production routes spelling, mounted on the in-process stand-in.
+//! The production routes spelling, run in process.
 //!
 //! One module per transport form, each globbing that form's own prelude and writing the mount the
 //! way a service writes it: `include(handler).out_reply(Publish)`, with the descriptor and the
-//! policy named by the words the prelude gives them. Nothing here names a test-only type, which is
-//! the contract these cases hold: the same wiring pairs against `RedisBroker` and against
-//! `RedisTestBroker`, so a service is tested on what it ships.
+//! policy named by the words the prelude gives them. The app is the one the service ships, on
+//! `RedisBroker`, and the harness runs it in process.
 //!
-//! The reply is asserted through the broker's publish log. On a real server a list or Pub/Sub reply
-//! is framed with its envelope codec, which the stand-in does not apply, so a decoded assertion
-//! like these reads the bare payload here.
+//! The reply is asserted through the broker's publish log, which decodes a list or Pub/Sub reply
+//! from the envelope it was framed in.
 
 #![cfg(feature = "testing")]
 
+/// The address the service's broker is built with; the in-process mode dials nothing.
+const URL: &str = "redis://localhost:6379";
+
 mod stream_routes {
+    use super::URL;
     use ruststream::testing::TestApp;
     use ruststream_fred::stream::prelude::*;
-    use ruststream_fred::testing::RedisTestBroker;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Deserialize, Serialize)]
@@ -37,22 +38,26 @@ mod stream_routes {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_stream_mount_replies_through_its_own_policy() {
-        let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-            RedisTestBroker::new(),
+    /// The service's app: what `main` runs, and what the case hands the harness.
+    fn app() -> impl App<State = ()> {
+        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+            RedisBroker::standalone(URL),
             |b| {
                 b.include(confirm).out_reply(Publish);
             },
-        );
-        let tb = TestApp::start(app).await.expect("start");
+        )
+    }
 
-        tb.broker::<RedisTestBroker>()
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_stream_mount_replies_through_its_own_policy() {
+        let tb = TestApp::start(app()).await.expect("start");
+
+        tb.broker::<RedisBroker>()
             .publish("orders", &Order { id: 7 })
             .await
             .expect("publish");
 
-        tb.broker::<RedisTestBroker>()
+        tb.broker::<RedisBroker>()
             .published::<Confirmation>("confirmations")
             .assert_called_once()
             .with(&Confirmation {
@@ -65,9 +70,9 @@ mod stream_routes {
 }
 
 mod list_routes {
+    use super::URL;
     use ruststream::testing::TestApp;
     use ruststream_fred::list::prelude::*;
-    use ruststream_fred::testing::RedisTestBroker;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Deserialize, Serialize)]
@@ -85,22 +90,26 @@ mod list_routes {
         Receipt { id: job.id }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_list_mount_replies_through_its_own_policy() {
-        let app = RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
-            RedisTestBroker::new(),
+    /// The service's app: what `main` runs, and what the case hands the harness.
+    fn app() -> impl App<State = ()> {
+        RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
+            RedisBroker::standalone(URL),
             |b| {
                 b.include(run_job).out_reply(Publish::default());
             },
-        );
-        let tb = TestApp::start(app).await.expect("start");
+        )
+    }
 
-        tb.broker::<RedisTestBroker>()
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_list_mount_replies_through_its_own_policy() {
+        let tb = TestApp::start(app()).await.expect("start");
+
+        tb.broker::<RedisBroker>()
             .publish("jobs", &Job { id: 11 })
             .await
             .expect("publish");
 
-        tb.broker::<RedisTestBroker>()
+        tb.broker::<RedisBroker>()
             .published::<Receipt>("receipts")
             .assert_called_once()
             .with(&Receipt { id: 11 });
@@ -110,9 +119,9 @@ mod list_routes {
 }
 
 mod pubsub_routes {
+    use super::URL;
     use ruststream::testing::TestApp;
     use ruststream_fred::pubsub::prelude::*;
-    use ruststream_fred::testing::RedisTestBroker;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Deserialize, Serialize)]
@@ -130,22 +139,26 @@ mod pubsub_routes {
         Audit { id: event.id }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_pubsub_mount_replies_through_its_own_policy() {
-        let app = RustStream::new(AppInfo::new("events", "0.1.0")).with_broker(
-            RedisTestBroker::new(),
+    /// The service's app: what `main` runs, and what the case hands the harness.
+    fn app() -> impl App<State = ()> {
+        RustStream::new(AppInfo::new("events", "0.1.0")).with_broker(
+            RedisBroker::standalone(URL),
             |b| {
                 b.include(on_event).out_reply(Publish::default());
             },
-        );
-        let tb = TestApp::start(app).await.expect("start");
+        )
+    }
 
-        tb.broker::<RedisTestBroker>()
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pubsub_mount_replies_through_its_own_policy() {
+        let tb = TestApp::start(app()).await.expect("start");
+
+        tb.broker::<RedisBroker>()
             .publish("events", &Event { id: 3 })
             .await
             .expect("publish");
 
-        tb.broker::<RedisTestBroker>()
+        tb.broker::<RedisBroker>()
             .published::<Audit>("audit")
             .assert_called_once()
             .with(&Audit { id: 3 });
@@ -154,12 +167,12 @@ mod pubsub_routes {
     }
 }
 
-/// The default reply publisher of the stand-in is the production stream policy, so a handler that
-/// replies without naming a policy at the mount site works here exactly as it does in production.
+/// A handler that replies without naming a policy at the mount site replies through the broker's
+/// default policy.
 mod default_reply {
+    use super::URL;
     use ruststream::testing::TestApp;
     use ruststream_fred::stream::prelude::*;
-    use ruststream_fred::testing::RedisTestBroker;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Deserialize, Serialize)]
@@ -177,22 +190,26 @@ mod default_reply {
         Confirmation { id: order.id }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn an_unnamed_reply_policy_still_publishes() {
-        let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-            RedisTestBroker::new(),
+    /// The service's app: what `main` runs, and what the case hands the harness.
+    fn app() -> impl App<State = ()> {
+        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+            RedisBroker::standalone(URL),
             |b| {
                 b.include(confirm);
             },
-        );
-        let tb = TestApp::start(app).await.expect("start");
+        )
+    }
 
-        tb.broker::<RedisTestBroker>()
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unnamed_reply_policy_still_publishes() {
+        let tb = TestApp::start(app()).await.expect("start");
+
+        tb.broker::<RedisBroker>()
             .publish("orders", &Order { id: 2 })
             .await
             .expect("publish");
 
-        tb.broker::<RedisTestBroker>()
+        tb.broker::<RedisBroker>()
             .published::<Confirmation>("confirmations")
             .assert_called_once()
             .with(&Confirmation { id: 2 });

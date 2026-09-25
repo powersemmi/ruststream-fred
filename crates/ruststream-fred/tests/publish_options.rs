@@ -10,8 +10,10 @@
 use ruststream::codec::CborCodec;
 use ruststream::testing::TestApp;
 use ruststream_fred::stream::prelude::*;
-use ruststream_fred::testing::RedisTestBroker;
 use serde::{Deserialize, Serialize};
+
+/// The address the service's broker is built with; the in-process mode dials nothing.
+const URL: &str = "redis://localhost:6379";
 
 /// The message the handlers forward. It names no destination, so every publish picks one.
 #[derive(Debug, Deserialize, Outgoing, PartialEq, Serialize)]
@@ -97,18 +99,39 @@ fn seen_key<Kind, AppState>(ctx: &Context<'_, Kind, AppState>) -> String {
         .unwrap_or_default()
 }
 
+/// The service's app: what `main` runs, and what every case hands the harness.
+fn app() -> impl App<State = ()> {
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+        RedisBroker::standalone(URL),
+        |b| {
+            b.include(forward).out(Ledger, Publish).build();
+            b.include(watch_keyed).out_reply(Publish);
+            b.include(forward_unkeyed).out(Notes, Publish).build();
+            b.include(watch_unkeyed).out_reply(Publish);
+        },
+    )
+}
+
+/// The same service with the ledger slot encoding in CBOR.
+fn cbor_app() -> impl App<State = ()> {
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+        RedisBroker::standalone(URL),
+        |b| {
+            b.include(forward)
+                .out(Ledger, Publish)
+                .codec(CborCodec)
+                .build();
+        },
+    )
+}
+
 /// The step is the whole call site: the slot view holds the options it set, and the consumer end
 /// reports the key those options resolved into.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_step_sets_the_key_the_delivery_reports() {
-    let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
-            b.include(forward).out(Ledger, Publish).build();
-            b.include(watch_keyed).out_reply(Publish);
-        });
-    let tb = TestApp::start(app).await.expect("start");
+    let tb = TestApp::start(app()).await.expect("start");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .publish("orders.in", &Order { id: 7 })
         .await
         .expect("publish");
@@ -119,7 +142,7 @@ async fn the_step_sets_the_key_the_delivery_reports() {
             partition_key: Some(b"tenant-a".to_vec()),
             ..RedisPublishOptions::default()
         });
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .published::<Seen>("orders.seen")
         .assert_called_once()
         .with(&Seen {
@@ -133,14 +156,9 @@ async fn the_step_sets_the_key_the_delivery_reports() {
 /// a key is per message by nature, so there is no publisher-wide default to inherit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_publish_without_the_step_carries_no_key() {
-    let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
-            b.include(forward_unkeyed).out(Notes, Publish).build();
-            b.include(watch_unkeyed).out_reply(Publish);
-        });
-    let tb = TestApp::start(app).await.expect("start");
+    let tb = TestApp::start(app()).await.expect("start");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .publish("orders.plain.in", &Order { id: 7 })
         .await
         .expect("publish");
@@ -148,7 +166,7 @@ async fn a_publish_without_the_step_carries_no_key() {
     tb.out::<Notes>()
         .assert_called_once()
         .assert_options_default();
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .published::<Seen>("orders.seen")
         .assert_called_once()
         .with(&Seen { key: String::new() });
@@ -161,16 +179,9 @@ async fn a_publish_without_the_step_carries_no_key() {
 /// with the codec that entry named. The adapter this replaced lost both.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_keyed_publish_keeps_the_codec_the_mount_site_named() {
-    let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
-            b.include(forward)
-                .out(Ledger, Publish)
-                .codec(CborCodec)
-                .build();
-        });
-    let tb = TestApp::start(app).await.expect("start");
+    let tb = TestApp::start(cbor_app()).await.expect("start");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .publish("orders.in", &Order { id: 7 })
         .await
         .expect("publish");

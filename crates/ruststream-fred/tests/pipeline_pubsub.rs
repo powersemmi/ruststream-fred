@@ -6,9 +6,11 @@
 use ruststream::testing::TestApp;
 use ruststream_fred::context::keys;
 use ruststream_fred::prelude::*;
-use ruststream_fred::testing::RedisTestBroker;
 use ruststream_fred::{AtomicPubSub, PipelinedPubSub};
 use serde::{Deserialize, Serialize};
+
+/// The address the service's broker is built with; the in-process mode dials nothing.
+const URL: &str = "redis://localhost:6379";
 
 #[derive(Debug, Deserialize, Outgoing, PartialEq, Serialize)]
 struct Event {
@@ -46,24 +48,24 @@ macro_rules! case {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn $test() {
             let app = RustStream::new(AppInfo::new("pipeline", "0.1.0")).with_broker(
-                RedisTestBroker::new(),
+                RedisBroker::standalone(URL),
                 |b| {
                     b.include($handler);
                 },
             );
             let tb = TestApp::start(app).await.expect("start");
 
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .message(&Event { id: 1, keep: $keep })
                 .to("events")
                 .publish()
                 .await
                 .expect("publish");
 
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .subscriber("events")
                 .assert_called_once();
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .published::<Event>("audit")
                 .assert_called($expected);
 

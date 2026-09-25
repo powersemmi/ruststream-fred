@@ -84,11 +84,14 @@ impl<F: Form> RoundMessage<F> {
         commit: bool,
         settle: impl FnOnce(&F, F::Message, &mut Vec<F::Op>) -> Result<(), AckError>,
     ) -> Result<(), AckError> {
-        let inner = self
+        #[cfg_attr(not(feature = "testing"), allow(unused_mut))]
+        let mut inner = self
             .inner
             .take()
             .expect("a pipelined delivery settles once");
         let window = Arc::clone(&self.window);
+        #[cfg(feature = "testing")]
+        window.hold(F::take_flight(&mut inner));
         window
             .settle(&self.round, commit, |form, ops| settle(form, inner, ops))
             .await

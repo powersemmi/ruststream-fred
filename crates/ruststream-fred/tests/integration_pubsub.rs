@@ -1,8 +1,8 @@
 //! Live tests for the Pub/Sub form against a real server.
 //!
-//! What lives here is what the in-process stand-in cannot reproduce: `PSUBSCRIBE` glob matching,
-//! the two delivery modes that do not interoperate, and the moment the server starts routing a
-//! channel to the subscriber. Each case reads the server's own view of its subscriptions
+//! What lives here is what only the server can confirm: `PSUBSCRIBE` glob matching, the two
+//! delivery modes that do not interoperate, and the moment the server starts routing a channel to
+//! the subscriber. Each case reads the server's own view of its subscriptions
 //! (`PUBSUB CHANNELS`, `PUBSUB SHARDCHANNELS`, `PUBSUB NUMPAT`) beside the deliveries, because a
 //! transport that keeps nothing cannot be asked afterwards what it did.
 //!

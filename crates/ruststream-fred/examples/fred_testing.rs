@@ -1,9 +1,9 @@
-//! In-process unit-testing examples for ruststream-fred.
+//! Testing a Redis service in process: the harness runs the app `main` runs, with its
+//! `RedisBroker` connected to an in-process Redis instead of a server.
 //!
-//! The `testing` feature ships `RedisTestBroker`, an in-process transport whose connected form
-//! implements `ruststream::testing::TestableBroker`. Use it to test `#[subscriber]` handlers the
-//! same way you wire them in production: build a `RustStream` app around a `RedisTestBroker`, hand
-//! it to the `TestApp` harness, and publish through the harness handle.
+//! A service enables this crate's `testing` feature in its `[dev-dependencies]`, hands its own app
+//! to `TestApp::start`, publishes through the harness and asserts on what the handlers received
+//! and published. The same test body runs against a server with `TestApp::start_live`.
 //!
 //! This example is a test driver rather than a service, so it runs on a plain `#[tokio::main]`
 //! instead of the `#[ruststream::app]` macro.
@@ -14,24 +14,27 @@
 
 use std::sync::Arc;
 
-// This example drives all three forms, so it takes the crate prelude rather than one form's.
-use ruststream::conformance::harness;
 use ruststream::testing::TestApp;
+// This example drives all three forms, so it takes the crate prelude rather than one form's.
 use ruststream_fred::prelude::*;
-use ruststream_fred::testing::RedisTestBroker;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Outgoing, Serialize, Clone, PartialEq)]
 struct Payment {
     id: u64,
-    user_id: u64,
     amount: u64,
 }
 
-// --8<-- [start:repository]
-/// A repository connector. In production this would wrap a real database client;
-/// the test uses the same connector with an in-memory store so the handler stays test-agnostic.
+/// The reply a settled payment publishes to the `receipts` stream.
+#[derive(Debug, Deserialize, Outgoing, Serialize, PartialEq)]
+#[outgoing(name = "receipts")]
+struct Receipt {
+    id: u64,
+}
+
+/// A repository. In production it wraps a database client; the app state is whatever the
+/// startup hook builds, so a test reads back what the handler stored.
 #[derive(Clone, Default)]
 struct PaymentRepository {
     payments: Arc<Mutex<Vec<Payment>>>,
@@ -42,275 +45,90 @@ impl PaymentRepository {
         self.payments.lock().await.push(payment);
     }
 
-    async fn count(&self) -> usize {
-        self.payments.lock().await.len()
-    }
-
-    async fn contains(&self, id: u64) -> bool {
-        self.payments.lock().await.iter().any(|p| p.id == id)
+    async fn ids(&self) -> Vec<u64> {
+        self.payments.lock().await.iter().map(|p| p.id).collect()
     }
 }
-// --8<-- [end:repository]
 
-// --8<-- [start:business-handler]
-/// A real production handler: validate the message, persist it, or drop it on validation failure.
-#[subscriber(
-    RedisStream::new("payments")
-        .group("workers")
-)]
+/// Validates a payment, stores it, and drops one with no amount.
+#[subscriber(RedisStream::new("payments").group("workers"))]
 async fn process_payment(
     payment: &Payment,
     ctx: &mut Context<'_, (), PaymentRepository>,
 ) -> HandlerOutcome {
     if payment.amount == 0 {
-        // Invalid message: do not requeue, drop it.
         return HandlerOutcome::drop();
     }
-
-    // The handler names its app state as the third `Context` generic; `ctx.state()` borrows the
-    // typed `PaymentRepository` directly, with no lookup or downcast.
     ctx.state().save(payment.clone()).await;
-
     HandlerOutcome::ack()
 }
-// --8<-- [end:business-handler]
 
-// --8<-- [start:stream-handler]
-#[subscriber(
-    RedisStream::new("events")
-        .group("workers")
-)]
-async fn handle_stream_event(payment: &Payment) -> HandlerOutcome {
-    println!("stream event {}", payment.id);
-    HandlerOutcome::ack()
-}
-// --8<-- [end:stream-handler]
-
-// --8<-- [start:list-handler]
-#[subscriber(
-    RedisList::new("jobs")
-        .reliable()
-)]
-async fn handle_list_job(payment: &Payment) -> HandlerOutcome {
-    println!("list job {}", payment.id);
-    HandlerOutcome::ack()
-}
-// --8<-- [end:list-handler]
-
-// --8<-- [start:pubsub-handler]
-#[subscriber(RedisPubSub::new("notifications"))]
-async fn handle_pubsub_notification(payment: &Payment) -> HandlerOutcome {
-    println!("pubsub notification {}", payment.id);
-    HandlerOutcome::ack()
-}
-// --8<-- [end:pubsub-handler]
-
-/// The reply a settled payment publishes to the `receipts` stream.
-#[derive(Debug, Deserialize, Outgoing, Serialize, PartialEq)]
-struct Receipt {
-    id: u64,
-}
-
-// --8<-- [start:reply-handler]
-// A handler that replies: it returns a value and the `publish(..)` clause names where the value
-// goes. The mount below binds this crate's own policy to the reply, with no test-only type in it.
-#[subscriber(RedisStream::new("settled").group("workers"), publish("receipts"))]
+/// Settles a payment taken off a work queue and answers with a receipt.
+#[subscriber(RedisList::new("settlements").reliable(), publish)]
 async fn settle_payment(payment: &Payment) -> Receipt {
     Receipt { id: payment.id }
 }
-// --8<-- [end:reply-handler]
+
+/// Logs every payment notification.
+#[subscriber(RedisPubSub::new("notifications"))]
+async fn notify(payment: &Payment) -> HandlerOutcome {
+    println!("notified of payment {}", payment.id);
+    HandlerOutcome::ack()
+}
+
+/// The service's app: the one `main` runs, and the one its tests hand the harness.
+fn app(repository: PaymentRepository) -> impl App {
+    RustStream::new(AppInfo::new("payments", "0.1.0"))
+        .on_startup(move |()| async move { Ok::<_, std::convert::Infallible>(repository) })
+        .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
+            b.include(process_payment);
+            b.include(settle_payment).out_reply(stream::Publish);
+            b.include(notify);
+        })
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    test_payment_processing().await?;
-    test_stream_delivery().await?;
-    test_list_delivery().await?;
-    test_pubsub_delivery().await?;
-    test_reply_delivery().await?;
-    test_conformance_suite().await?;
-
-    Ok(())
-}
-
-fn payment(id: u64, amount: u64) -> Payment {
-    Payment {
-        id,
-        user_id: 42,
-        amount,
-    }
-}
-
-async fn test_payment_processing() -> Result<(), Box<dyn std::error::Error>> {
-    // --8<-- [start:business-test]
     let repository = PaymentRepository::default();
-    let repository_for_app = repository.clone();
+    // The harness connects the app's broker in process and drives every publish to quiescence,
+    // so the assertions below need no waiting.
+    let tb = TestApp::start(app(repository.clone())).await?;
 
-    let app = RustStream::new(AppInfo::new("test", "0.1.0"))
-        // The startup hook produces the typed app state; the test keeps its own clone (the inner
-        // store is shared via `Arc`) to assert on it afterwards.
-        .on_startup(move |()| async move { Ok::<_, std::convert::Infallible>(repository_for_app) })
-        .with_broker(RedisTestBroker::new(), |b| {
-            b.include(process_payment);
-        });
-
-    // The harness runs the app's real startup and drives every publish to quiescence, so the
-    // assertions below need no waiting.
-    let tb = TestApp::start(app).await?;
-
-    // The valid payment is saved; the invalid one (amount == 0) is dropped.
-    tb.broker::<RedisTestBroker>()
-        .publish("payments", &payment(1, 100))
+    tb.broker::<RedisBroker>()
+        .message(&Payment { id: 1, amount: 100 })
+        .to("payments")
+        .publish()
         .await?;
-    tb.broker::<RedisTestBroker>()
-        .publish("payments", &payment(2, 0))
+    tb.broker::<RedisBroker>()
+        .message(&Payment { id: 2, amount: 0 })
+        .to("payments")
+        .publish()
         .await?;
+    tb.broker::<RedisBroker>()
+        .subscriber("payments")
+        .assert_called(2)
+        .settled(HandlerOutcome::drop());
+    assert_eq!(repository.ids().await, [1]);
 
-    assert!(repository.contains(1).await, "valid payment was not saved");
-    assert!(
-        !repository.contains(2).await,
-        "invalid payment should have been dropped"
-    );
-    assert_eq!(repository.count().await, 1);
-
-    tb.shutdown().await?;
-    // --8<-- [end:business-test]
-    Ok(())
-}
-
-async fn test_stream_delivery() -> Result<(), Box<dyn std::error::Error>> {
-    // --8<-- [start:stream-test]
-    let app =
-        RustStream::new(AppInfo::new("test", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
-            b.include(handle_stream_event);
-        });
-
-    let tb = TestApp::start(app).await?;
-    tb.broker::<RedisTestBroker>()
-        .publish("events", &payment(1, 100))
+    tb.broker::<RedisBroker>()
+        .message(&Payment { id: 3, amount: 50 })
+        .to("settlements")
+        .publish()
         .await?;
-
-    tb.broker::<RedisTestBroker>()
-        .subscriber("events")
-        .assert_called_once()
-        .settled(HandlerOutcome::ack());
-
-    tb.shutdown().await?;
-    // --8<-- [end:stream-test]
-    Ok(())
-}
-
-async fn test_list_delivery() -> Result<(), Box<dyn std::error::Error>> {
-    // --8<-- [start:list-test]
-    let app =
-        RustStream::new(AppInfo::new("test", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
-            b.include(handle_list_job);
-        });
-
-    let tb = TestApp::start(app).await?;
-    tb.broker::<RedisTestBroker>()
-        .publish("jobs", &payment(1, 100))
-        .await?;
-
-    tb.broker::<RedisTestBroker>()
-        .subscriber("jobs")
-        .assert_called_once()
-        .settled(HandlerOutcome::ack());
-
-    tb.shutdown().await?;
-    // --8<-- [end:list-test]
-    Ok(())
-}
-
-async fn test_pubsub_delivery() -> Result<(), Box<dyn std::error::Error>> {
-    // --8<-- [start:pubsub-test]
-    let app =
-        RustStream::new(AppInfo::new("test", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
-            b.include(handle_pubsub_notification);
-        });
-
-    let tb = TestApp::start(app).await?;
-    tb.broker::<RedisTestBroker>()
-        .publish("notifications", &payment(1, 100))
-        .await?;
-
-    tb.broker::<RedisTestBroker>()
-        .subscriber("notifications")
-        .assert_called_once()
-        .settled(HandlerOutcome::ack());
-
-    tb.shutdown().await?;
-    // --8<-- [end:pubsub-test]
-    Ok(())
-}
-
-async fn test_reply_delivery() -> Result<(), Box<dyn std::error::Error>> {
-    // --8<-- [start:reply-test]
-    let app =
-        RustStream::new(AppInfo::new("test", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
-            // The same policy value a routes file names against a real server. This file spans all
-            // three forms, so it globs the crate prelude and reaches the policy through its form
-            // module; a file on one form globs that form's prelude and writes the bare `Publish`.
-            b.include(settle_payment).out_reply(stream::Publish);
-        });
-
-    let tb = TestApp::start(app).await?;
-    tb.broker::<RedisTestBroker>()
-        .publish("settled", &payment(1, 100))
-        .await?;
-
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .published::<Receipt>("receipts")
         .assert_called_once()
-        .with(&Receipt { id: 1 });
+        .with(&Receipt { id: 3 });
+
+    tb.broker::<RedisBroker>()
+        .message(&Payment { id: 4, amount: 10 })
+        .to("notifications")
+        .publish()
+        .await?;
+    tb.broker::<RedisBroker>()
+        .subscriber("notifications")
+        .assert_called_once();
 
     tb.shutdown().await?;
-    // --8<-- [end:reply-test]
     Ok(())
 }
-
-async fn test_conformance_suite() -> Result<(), Box<dyn std::error::Error>> {
-    // --8<-- [start:conformance]
-    // The framework's conformance suite exercises routing, ack/nack, headers,
-    // and requeue against the in-process test broker - no Redis server required.
-    harness::run_suite(RedisTestBroker::new).await;
-    // --8<-- [end:conformance]
-    Ok(())
-}
-
-// --8<-- [start:unit-test]
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn valid_payment_is_saved_and_invalid_is_dropped() {
-        let repository = PaymentRepository::default();
-        let repository_for_app = repository.clone();
-
-        let app = RustStream::new(AppInfo::new("test", "0.1.0"))
-            .on_startup(
-                move |()| async move { Ok::<_, std::convert::Infallible>(repository_for_app) },
-            )
-            .with_broker(RedisTestBroker::new(), |b| {
-                b.include(process_payment);
-            });
-
-        let tb = TestApp::start(app).await.expect("startup failed");
-
-        tb.broker::<RedisTestBroker>()
-            .publish("payments", &payment(1, 100))
-            .await
-            .expect("publish valid");
-        tb.broker::<RedisTestBroker>()
-            .publish("payments", &payment(2, 0))
-            .await
-            .expect("publish invalid");
-
-        assert!(repository.contains(1).await);
-        assert!(!repository.contains(2).await);
-        assert_eq!(repository.count().await, 1);
-
-        tb.shutdown().await.expect("graceful shutdown failed");
-    }
-}
-// --8<-- [end:unit-test]
