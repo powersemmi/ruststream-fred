@@ -67,8 +67,12 @@
     }
   }
 
-  const number = (value, lang) =>
-    typeof value === "number" ? value.toLocaleString(lang, { maximumFractionDigits: 1 }) : "-";
+  // Allocations per message are published to three decimals: one allocation per thousand
+  // messages is a cost, and one decimal would print it as zero.
+  const number = (value, lang, digits = 1) =>
+    typeof value === "number"
+      ? value.toLocaleString(lang, { maximumFractionDigits: digits })
+      : "-";
 
   function side(measurement, unit, lang) {
     if (!measurement) {
@@ -146,7 +150,7 @@
       const row = body.insertRow();
       row.appendChild(text("td", scenario.name));
       row.appendChild(text("td", number(scenario.framework?.instructions, lang)));
-      row.appendChild(text("td", number(scenario.framework?.allocations, lang)));
+      row.appendChild(text("td", number(scenario.framework?.allocations, lang, 3)));
       // Two numbers in one cell: what starting cost in instructions, and in allocations.
       row.appendChild(
         text(
@@ -173,6 +177,14 @@
       results.crate + " " + results.crate_version + " on ruststream " + results.core_version,
     ]);
     rows.push([labels.measured, results.measured_at]);
+    const coded = results.code_measured;
+    if (coded) {
+      rows.push([
+        labels.codeMeasured,
+        results.crate + " " + coded.crate_version + " on ruststream " + coded.core_version +
+          ", " + coded.measured_at,
+      ]);
+    }
 
     const element = document.createElement("table");
     const body = element.createTBody();
