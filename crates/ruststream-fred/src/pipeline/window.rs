@@ -22,6 +22,7 @@ use fred::types::config::Options;
 use fred::types::{ClusterHash, CustomCommand, Value};
 use futures::future::join_all;
 use ruststream::{AckError, IncomingMessage};
+use tokio::runtime::Handle;
 
 use super::{Rounds, pipeline_on};
 use crate::error::RedisError;
@@ -421,6 +422,8 @@ pub(crate) struct Window<F: Form> {
     /// The subscription, named in a flush failure.
     name: Arc<str>,
     owed: Mutex<Owed<F::Op>>,
+    /// The broker's runtime, where a flush no caller can wait for is sent.
+    runtime: Handle,
 }
 
 impl<F: Form> Debug for Window<F> {
@@ -445,6 +448,7 @@ impl<F: Form> Window<F> {
         atomic: bool,
         name: impl Into<Arc<str>>,
         capacity: usize,
+        runtime: Handle,
     ) -> Self {
         let name = name.into();
         let hash_slot = fred::util::redis_keyslot(name.as_bytes());
@@ -473,6 +477,7 @@ impl<F: Form> Window<F> {
                 #[cfg(feature = "testing")]
                 flushing: 0,
             }),
+            runtime,
         }
     }
 
@@ -628,18 +633,19 @@ impl<F: Form> Window<F> {
         let due = pending && owed.outstanding == 0 && owed.waiting == 0;
         let flush = due.then(|| Self::take(owed));
         drop(guard);
-        // A destructor cannot wait: the flush runs on the runtime, and where there is none it
-        // runs when the subscription stops. A flush sent releases the held counts once it lands.
-        if let Some(flush) = flush {
-            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        // A destructor cannot wait: the flush runs on the broker's runtime, which outlives the
+        // runtime of whoever dropped the delivery. A flush sent releases the held counts once it
+        // lands.
+        match flush {
+            Some(flush) => {
                 let window = Arc::clone(self);
-                runtime.spawn(async move { window.send(flush).await });
-                return;
+                self.runtime.spawn(async move { window.send(flush).await });
             }
-            self.give_back_owed(flush);
+            #[cfg(feature = "testing")]
+            None => self.release_if_sent(),
+            #[cfg(not(feature = "testing"))]
+            None => {}
         }
-        #[cfg(feature = "testing")]
-        self.release_if_sent();
     }
 
     /// Holds the harness's count of a delivery settling into the window.
@@ -668,17 +674,9 @@ impl<F: Form> Window<F> {
         drop(released);
     }
 
-    /// Puts a flush that could not be sent back into what the window owes.
-    fn give_back_owed(&self, mut flush: Flush<F::Op>) {
-        let mut owed = self.owed();
-        #[cfg(feature = "testing")]
-        {
-            owed.flushing -= 1;
-        }
-        flush.committed.append(&mut owed.committed);
-        flush.ops.append(&mut owed.ops);
-        owed.committed = flush.committed;
-        owed.ops = flush.ops;
+    /// Runs `task` on the broker's runtime, for work a destructor starts and cannot wait for.
+    pub(crate) fn spawn(&self, task: impl Future<Output = ()> + Send + 'static) {
+        self.runtime.spawn(task);
     }
 
     /// Takes what the window owes, for a flush on stop.
@@ -784,6 +782,7 @@ mod tests {
             false,
             "orders",
             8,
+            Handle::current(),
         ))
     }
 
