@@ -671,11 +671,7 @@ impl State {
         };
         match data {
             Data::List(_) => self.recount_list(server, key),
-            Data::ZSet(members) => {
-                for member in members.keys() {
-                    self.link_removed(server, key, member);
-                }
-            }
+            Data::ZSet(_) => self.link_dropped(server, key),
             Data::Stream(stream) => {
                 for group in stream.groups() {
                     self.claim_due.remove(&(key.clone(), group.clone()));
