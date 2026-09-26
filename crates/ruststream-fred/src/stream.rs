@@ -21,12 +21,16 @@ use std::time::Duration;
 
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::Bindings;
-use ruststream::{AddressedCopies, RedeliveryAddress, RedeliveryAddressed, SubscriptionSource};
+use ruststream::{
+    AddressedCopies, RedeliveryAddress, RedeliveryAddressed, RetryDeclaration, SubscriptionSource,
+};
 
 #[cfg(feature = "asyncapi")]
 use crate::asyncapi;
 use crate::broker::ConnectedRedisBroker;
 use crate::delay::{DelayConfig, DelayedRetry};
+#[cfg(feature = "testing")]
+use crate::route::Route;
 #[cfg(feature = "testing")]
 use crate::testing::StreamRetry;
 use crate::{error::RedisError, subscriber::RedisSubscriber};
@@ -184,6 +188,9 @@ pub struct RedisStream {
     start: StreamStart,
     mode: ReadMode,
     delayed_retry: Option<DelayedRetry>,
+    /// Where the mount site sends a spent delivery, taken from its retry declaration when the
+    /// subscription opens, so the broker writes that name as the stream it is.
+    dead_letter: Option<String>,
 }
 
 impl RedisStream {
@@ -199,6 +206,7 @@ impl RedisStream {
             start: StreamStart::New,
             mode: ReadMode::Fresh,
             delayed_retry: None,
+            dead_letter: None,
         }
     }
 
@@ -217,6 +225,7 @@ impl RedisStream {
             start: StreamStart::New,
             mode: ReadMode::Reclaim { min_idle },
             delayed_retry: None,
+            dead_letter: None,
         }
     }
 
@@ -270,6 +279,7 @@ impl RedisStream {
             start: StreamStart::New,
             mode: ReadMode::Claiming { min_idle },
             delayed_retry: None,
+            dead_letter: None,
         }
     }
 
@@ -351,6 +361,18 @@ impl RedisStream {
         self.mode.clone()
     }
 
+    /// The dead-letter destination the mount site declared, once the registration has handed its
+    /// declaration over.
+    pub(crate) fn dead_letter(&self) -> Option<&str> {
+        self.dead_letter.as_deref()
+    }
+
+    /// Takes the dead-letter destination out of the mount site's declaration.
+    fn with_declaration(mut self, declaration: &RetryDeclaration) -> Self {
+        self.dead_letter = declaration.dead_letter().map(str::to_owned);
+        self
+    }
+
     pub(crate) fn delay_config(&self) -> Option<DelayConfig> {
         self.delayed_retry.as_ref().map(DelayConfig::from_retry)
     }
@@ -386,6 +408,10 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisStream {
 
     fn name(&self) -> &str {
         self.key()
+    }
+
+    fn declare_retry(self, declaration: &RetryDeclaration) -> Self {
+        self.with_declaration(declaration)
     }
 
     async fn subscribe(
@@ -454,13 +480,18 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisStrea
         self.key()
     }
 
+    fn declare_retry(self, declaration: &RetryDeclaration) -> Self {
+        self.with_declaration(declaration)
+    }
+
     async fn subscribe(
         self,
         connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> Result<Self::Subscriber, RedisError> {
         self.group_or_err()?;
+        let recorded = connected.record_routes(self.key(), self.dead_letter(), &Route::Stream)?;
         let delayed = self.delayed_retry.is_some();
-        match self.mode {
+        let subscriber = match self.mode {
             ReadMode::Reclaim { .. } => Err(RedisError::InvalidOptions(format!(
                 "reclaim subscription on `{}` cannot mount on the in-process test broker: it \
                  keeps no pending list, so the subscription would read fresh entries instead of \
@@ -477,7 +508,9 @@ impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisStrea
                     .subscribe_stream(self.key(), StreamRetry::fresh(delayed))
                     .await
             }
-        }
+        }?;
+        recorded.keep();
+        Ok(subscriber)
     }
 
     /// The same body the real broker's descriptor writes, so a document built in a test is the

@@ -22,16 +22,17 @@ use crate::{
     testing::{
         ConnectedRedisTestBroker,
         broker::{TestBrokerState, validate_publish_key},
+        router::Form,
     },
 };
 
 /// One buffered publish (key, payload, headers), held while a transaction is open.
 type Buffered = (String, Bytes, HeaderMap);
 
-// The default reply publisher is the production stream policy, the same value a routes file
-// names: the stand-in has no policy of its own, so there is one spelling for both brokers.
+// The default publisher is the production default policy, the same value the real broker names:
+// the stand-in has no policy of its own, so there is one spelling for both brokers.
 impl DefaultPublish for ConnectedRedisTestBroker {
-    type Policy = crate::RedisPublish;
+    type Policy = crate::RedisDefaultPublish;
 }
 
 /// Publisher returned by
@@ -45,6 +46,9 @@ impl DefaultPublish for ConnectedRedisTestBroker {
 pub struct RedisTestPublisher {
     state: Arc<TestBrokerState>,
     txn: Arc<Mutex<Option<Vec<Buffered>>>>,
+    /// The command family this handle stands in for, which decides what it reaches; `None` on
+    /// the default publisher, which takes the family the broker recorded for the name.
+    form: Option<Form>,
 }
 
 impl std::fmt::Debug for RedisTestPublisher {
@@ -55,9 +59,14 @@ impl std::fmt::Debug for RedisTestPublisher {
 
 impl RedisTestPublisher {
     pub(crate) fn new(state: Arc<TestBrokerState>) -> Self {
+        Self::of_form(state, Some(Form::Stream))
+    }
+
+    fn of_form(state: Arc<TestBrokerState>, form: Option<Form>) -> Self {
         Self {
             state,
             txn: Arc::new(Mutex::new(None)),
+            form,
         }
     }
 
@@ -110,11 +119,31 @@ impl Publisher for RedisTestPublisher {
             return ready(Ok(()));
         }
         let (key, payload, headers) = entry;
-        self.state
-            .router
-            .publish(key, payload, headers, self.state.coordinator().as_ref());
-        ready(Ok(()))
+        ready(fan_out(&self.state, key, payload, headers, self.form))
     }
+}
+
+/// Hands one publish of `form` to the router, turning a refusal into the error the real publish
+/// would return. With no form, the family is the one the broker recorded for the name, as the
+/// real default publisher reads it.
+fn fan_out(
+    state: &TestBrokerState,
+    key: String,
+    payload: Bytes,
+    headers: HeaderMap,
+    form: Option<Form>,
+) -> Result<(), RedisError> {
+    let form = form.unwrap_or_else(|| Form::of(&state.routes.route(&key)));
+    state
+        .router
+        .publish(
+            key,
+            payload,
+            headers,
+            state.coordinator().as_ref(),
+            Some(form),
+        )
+        .map_err(|refusal| RedisError::Publish(refusal.into()))
 }
 
 impl TransactionalPublisher for RedisTestPublisher {
@@ -153,9 +182,9 @@ impl TransactionalPublisher for RedisTestPublisher {
             return ready(Err(err));
         }
         for (key, payload, headers) in buffered {
-            self.state
-                .router
-                .publish(key, payload, headers, self.state.coordinator().as_ref());
+            if let Err(err) = fan_out(&self.state, key, payload, headers, self.form) {
+                return ready(Err(err));
+            }
         }
         ready(Ok(()))
     }
@@ -230,8 +259,8 @@ impl std::fmt::Debug for RedisTestPlainPublisher {
 }
 
 impl RedisTestPlainPublisher {
-    pub(crate) fn new(state: Arc<TestBrokerState>) -> Self {
-        Self(RedisTestPublisher::new(state))
+    pub(crate) fn new(state: Arc<TestBrokerState>, form: Option<Form>) -> Self {
+        Self(RedisTestPublisher::of_form(state, form))
     }
 }
 
@@ -351,10 +380,10 @@ impl Transaction for RedisTestTransaction {
         if let Err(err) = self.state.alive() {
             return ready(Err(err));
         }
-        for (key, payload, headers) in self.buffered.drain(..) {
-            self.state
-                .router
-                .publish(key, payload, headers, self.state.coordinator().as_ref());
+        for (key, payload, headers) in std::mem::take(&mut self.buffered) {
+            if let Err(err) = fan_out(&self.state, key, payload, headers, Some(Form::Stream)) {
+                return ready(Err(err));
+            }
         }
         ready(Ok(()))
     }

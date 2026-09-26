@@ -27,11 +27,12 @@ use ruststream::{AddressedCopies, Broker, ConnectedBroker, DescribeServer, Serve
 use crate::{
     error::RedisError,
     list::{RedisList, RedisListPublish, RedisListPublisher, RedisListSubscriber},
-    publisher::RedisPublisher,
+    publisher::{RedisDefaultPublisher, RedisPublisher},
     pubsub::{
         PubSubMode, RedisPubSub, RedisPubSubPattern, RedisPubSubPublish, RedisPubSubPublisher,
         RedisPubSubSubscriber,
     },
+    route::{Recorded, Route, Routes},
     stream::{ReadMode, RedisStream},
     subscriber::RedisSubscriber,
 };
@@ -475,6 +476,7 @@ impl Broker for RedisBroker {
                 default_group: self.default_group,
                 clustered,
                 closed: AtomicBool::new(false),
+                routes: Routes::default(),
             }),
         })
     }
@@ -551,9 +553,31 @@ pub(crate) struct RedisCore {
     /// error, but publishers handed out before the shutdown alias the connection and outlive it,
     /// so their operations check this flag rather than issuing a command against a dead pool.
     closed: AtomicBool,
+    /// How each name this connection's subscriptions read or dead-letter to is written, for the
+    /// default publisher.
+    routes: Routes,
 }
 
 impl RedisCore {
+    /// The route table the default publisher reads.
+    pub(crate) const fn routes(&self) -> &Routes {
+        &self.routes
+    }
+
+    /// Records a subscription's own name and its dead-letter destination with `route`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RedisError::InvalidOptions`] when either name is already written another way.
+    pub(crate) fn record_routes(
+        &self,
+        name: &str,
+        dead_letter: Option<&str>,
+        route: &Route,
+    ) -> Result<Recorded<'_>, RedisError> {
+        self.routes.record_subscription(name, dead_letter, route)
+    }
+
     /// The live pool, or [`RedisError::ShutDown`] once the connection was torn down.
     pub(crate) fn pool(&self) -> Result<Pool, RedisError> {
         if self.closed.load(Ordering::Acquire) {
@@ -610,7 +634,11 @@ impl ConnectedRedisBroker {
         if let ReadMode::Claiming { .. } = def.mode() {
             require_claim_support(pool.server_version().as_ref(), def.key())?;
         }
+        let recorded = self
+            .core
+            .record_routes(def.key(), def.dead_letter(), &Route::Stream)?;
         ensure_group(&pool, def.key(), &group, def.start().as_id()).await?;
+        recorded.keep();
         Ok(RedisSubscriber::new(
             pool,
             def.key().to_owned(),
@@ -634,6 +662,9 @@ impl ConnectedRedisBroker {
         def: RedisPubSub,
     ) -> Result<RedisPubSubSubscriber, RedisError> {
         let codec = def.codec_handle();
+        let recorded = self
+            .core
+            .record_routes(def.channel(), def.dead_letter(), &def.route())?;
         let client = self.new_client().await?;
         // Opened before the subscribe, because the messages arrive over a broadcast channel whose
         // receiver sees only what is sent after it exists. The connection is dedicated to this one
@@ -657,6 +688,7 @@ impl ConnectedRedisBroker {
                     .map_err(RedisError::subscribe)?;
             }
         }
+        recorded.keep();
         Ok(RedisPubSubSubscriber::new(client, rx, codec))
     }
 
@@ -712,6 +744,13 @@ impl ConnectedRedisBroker {
         {
             return ready(Err(err));
         }
+        match self
+            .core
+            .record_routes(def.key(), def.dead_letter(), &def.route())
+        {
+            Ok(recorded) => recorded.keep(),
+            Err(err) => return ready(Err(err)),
+        }
         let block = def.block_or_default();
         let codec = def.codec_handle();
         ready(Ok(RedisListSubscriber::new(
@@ -729,6 +768,15 @@ impl ConnectedRedisBroker {
     #[must_use]
     pub fn publisher(&self) -> RedisPublisher {
         RedisPublisher::new(Arc::clone(&self.core))
+    }
+
+    /// Returns the publisher of the broker's default policy, [`RedisDefaultPublish`], which
+    /// writes each name the way this connection's subscriptions read it.
+    ///
+    /// [`RedisDefaultPublish`]: crate::RedisDefaultPublish
+    #[must_use]
+    pub fn default_publisher(&self) -> RedisDefaultPublisher {
+        RedisDefaultPublisher::new(Arc::clone(&self.core))
     }
 
     /// Returns a Pub/Sub publisher configured by `publish` (mode and envelope codec).

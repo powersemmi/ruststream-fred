@@ -13,6 +13,7 @@ mod message;
 mod partition;
 mod publisher;
 mod recovery;
+mod route;
 mod seek;
 mod settings;
 mod subscriber;
@@ -37,7 +38,9 @@ pub use list::{
 };
 pub use message::{DELIVERY_COUNT_HEADER, IDLE_MS_HEADER, PARTITION_KEY_HEADER, RedisMessage};
 pub use partition::{RedisPublishOptions, RedisPublishSteps};
-pub use publisher::{RedisPublish, RedisPublisher, RedisTransaction};
+pub use publisher::{
+    RedisDefaultPublish, RedisDefaultPublisher, RedisPublish, RedisPublisher, RedisTransaction,
+};
 pub use pubsub::{
     PubSubMode, RedisPubSub, RedisPubSubMessage, RedisPubSubPattern, RedisPubSubPublish,
     RedisPubSubPublisher, RedisPubSubSubscriber,

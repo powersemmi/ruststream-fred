@@ -56,7 +56,7 @@ async fn test_broker_passes_list_lifecycle() {
     harness::lifecycle(
         RedisTestBroker::new,
         |key| RedisList::new(key).reliable(),
-        |connected| connected.plain_publisher(),
+        |connected| connected.list_publisher(),
     )
     .await;
 }
@@ -67,7 +67,7 @@ async fn test_broker_passes_pubsub_lifecycle() {
     harness::lifecycle(
         RedisTestBroker::new,
         |channel| RedisPubSub::new(channel),
-        |connected| connected.plain_publisher(),
+        |connected| connected.pubsub_publisher(),
     )
     .await;
 }
@@ -95,7 +95,7 @@ async fn test_broker_addresses_list_copies() {
     harness::redelivery_address(
         RedisTestBroker::new,
         |key| RedisList::new(key).reliable(),
-        |connected| connected.plain_publisher(),
+        |connected| connected.list_publisher(),
     )
     .await;
 }
@@ -106,7 +106,7 @@ async fn test_broker_addresses_pubsub_copies() {
     harness::redelivery_address(
         RedisTestBroker::new,
         |channel| RedisPubSub::new(channel),
-        |connected| connected.plain_publisher(),
+        |connected| connected.pubsub_publisher(),
     )
     .await;
 }
@@ -131,7 +131,7 @@ async fn test_broker_passes_pubsub_batches() {
     capabilities::batches(
         RedisTestBroker::new,
         |channel| RedisPubSub::new(channel),
-        |connected| connected.plain_publisher(),
+        |connected| connected.pubsub_publisher(),
     )
     .await;
 }
@@ -142,7 +142,7 @@ async fn test_broker_passes_list_batches() {
     capabilities::batches(
         RedisTestBroker::new,
         |key| RedisList::new(key),
-        |connected| connected.plain_publisher(),
+        |connected| connected.list_publisher(),
     )
     .await;
 }

@@ -1023,7 +1023,7 @@ async fn a_pubsub_delivery_cannot_be_settled() {
         .expect("subscribe");
 
     broker
-        .publisher()
+        .pubsub_publisher()
         .publish(OutgoingMessage::new("unsettleable.pubsub", b"e"), None)
         .await
         .expect("publish");
@@ -1041,7 +1041,7 @@ async fn a_simple_list_delivery_cannot_be_settled_or_requeued() {
         .expect("subscribe");
 
     broker
-        .publisher()
+        .list_publisher()
         .publish(OutgoingMessage::new("unsettleable.list", b"j"), None)
         .await
         .expect("publish");
@@ -1079,11 +1079,21 @@ async fn a_stream_and_a_reliable_list_still_settle() {
         }
         .expect("subscribe");
 
-        broker
-            .publisher()
-            .publish(OutgoingMessage::new(name, b"x"), None)
-            .await
-            .expect("publish");
+        match source {
+            Settleable::Stream => {
+                broker
+                    .publisher()
+                    .publish(OutgoingMessage::new(name, b"x"), None)
+                    .await
+            }
+            Settleable::List => {
+                broker
+                    .list_publisher()
+                    .publish(OutgoingMessage::new(name, b"x"), None)
+                    .await
+            }
+        }
+        .expect("publish");
 
         let msg = next_message(&mut Box::pin(sub.stream())).await;
         msg.ack().await.expect("a settleable form must acknowledge");
