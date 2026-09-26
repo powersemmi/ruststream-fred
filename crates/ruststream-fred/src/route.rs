@@ -102,9 +102,17 @@ impl Display for Framing<'_> {
 /// table on one relaxed load.
 #[derive(Debug, Default)]
 pub(crate) struct Routes {
-    table: RwLock<HashMap<String, Route>>,
+    table: RwLock<HashMap<String, Held>>,
     /// Set once a list or a channel is recorded: before that every name is a stream.
     foreign: AtomicBool,
+}
+
+/// A recorded route and the subscriptions that wrote it, opened or still opening: a name goes
+/// only when the last of them failed to open.
+#[derive(Debug)]
+struct Held {
+    route: Route,
+    holders: usize,
 }
 
 impl Routes {
@@ -112,7 +120,7 @@ impl Routes {
     /// opens: both or neither.
     ///
     /// The first subscription to write a name keeps its route: two subscriptions that write one
-    /// name the same way share it. What this call added is forgotten again unless the returned
+    /// name the same way share it. What this call recorded is let go of again unless the returned
     /// [`Recorded`] is kept, so a subscription that fails to open leaves nothing behind.
     ///
     /// # Errors
@@ -129,7 +137,7 @@ impl Routes {
         let mut routes = self.table.write().expect("redis route table poisoned");
         let names = std::iter::once(name).chain(dead_letter);
         for written in names.clone() {
-            if let Some(held) = routes.get(written)
+            if let Some(Held { route: held, .. }) = routes.get(written)
                 && !held.writes_like(route)
             {
                 return Err(RedisError::InvalidOptions(format!(
@@ -145,23 +153,36 @@ impl Routes {
             added: Vec::new(),
         };
         for written in names {
-            if let Entry::Vacant(vacant) = routes.entry(written.to_owned()) {
-                if !matches!(route, Route::Stream) {
-                    self.foreign.store(true, Ordering::Release);
+            match routes.entry(written.to_owned()) {
+                Entry::Vacant(vacant) => {
+                    if !matches!(route, Route::Stream) {
+                        self.foreign.store(true, Ordering::Release);
+                    }
+                    vacant.insert(Held {
+                        route: route.clone(),
+                        holders: 1,
+                    });
                 }
-                vacant.insert(route.clone());
-                recorded.added.push(written.to_owned());
+                Entry::Occupied(mut occupied) => occupied.get_mut().holders += 1,
             }
+            recorded.added.push(written.to_owned());
         }
+        drop(routes);
         Ok(recorded)
     }
 
-    /// Forgets names a subscription that did not open had added.
+    /// Lets go of the names a subscription that did not open wrote: a name another subscription
+    /// shares, opened or still opening, stays.
     fn forget(&self, names: &[String]) {
         // A poisoned table is left as it is: a destructor does not panic.
         if let Ok(mut routes) = self.table.write() {
             for name in names {
-                routes.remove(name);
+                if let Entry::Occupied(mut held) = routes.entry(name.clone()) {
+                    held.get_mut().holders -= 1;
+                    if held.get().holders == 0 {
+                        held.remove();
+                    }
+                }
             }
         }
     }
@@ -177,12 +198,11 @@ impl Routes {
             .read()
             .expect("redis route table poisoned")
             .get(name)
-            .cloned()
-            .unwrap_or(Route::Stream)
+            .map_or(Route::Stream, |held| held.route.clone())
     }
 }
 
-/// The names one subscription added to the table while it opens. Dropped, it forgets them;
+/// The names one subscription wrote to the table while it opens. Dropped, it lets go of them;
 /// [`keep`](Self::keep) once the subscription has opened.
 #[must_use = "the routes are forgotten again unless kept"]
 pub(crate) struct Recorded<'a> {
@@ -212,6 +232,25 @@ mod tests {
     #[test]
     fn a_name_nothing_reads_is_a_stream() {
         assert!(matches!(Routes::default().route("orders"), Route::Stream));
+    }
+
+    #[test]
+    fn a_failed_open_keeps_a_route_another_subscription_shares() {
+        let routes = Routes::default();
+        let channel = Route::Channel {
+            mode: PubSubMode::Classic,
+            envelope: None,
+        };
+        let failing = routes
+            .record_subscription("events", Some("events.dead"), &channel)
+            .expect("record");
+        routes
+            .record_subscription("events", Some("events.dead"), &channel)
+            .expect("a second subscription shares the channel")
+            .keep();
+        drop(failing);
+        assert!(matches!(routes.route("events"), Route::Channel { .. }));
+        assert!(matches!(routes.route("events.dead"), Route::Channel { .. }));
     }
 
     #[test]
