@@ -369,6 +369,15 @@ async fn a_retry_whose_write_fails_is_not_acknowledged() {
         )
         .await
         .expect("acl setuser");
+    // A denial an earlier run logged for the same user must not pass for this one.
+    let _: fred::types::Value = pool
+        .next()
+        .custom(
+            CustomCommand::new_static("ACL", ClusterHash::FirstKey, false),
+            vec!["LOG", "RESET"],
+        )
+        .await
+        .expect("acl log reset");
     let limited = url.replacen("redis://", &format!("redis://{user}:limited@"), 1);
     let app = RustStream::new(AppInfo::new("pipeline", "0.1.0")).with_broker(
         RedisBroker::standalone(limited),
@@ -388,25 +397,29 @@ async fn a_retry_whose_write_fails_is_not_acknowledged() {
         .await
         .expect("publish");
 
-    // The delivery is read and handled; its schedule fails, and the entry stays owed to the group.
+    // The handler ran and its schedule reached Redis, which refused it: the ACL log names the
+    // denied `ZADD`. Shutdown then drains the window, so whatever the flush decided has been sent.
     let deadline = tokio::time::Instant::now() + WAIT;
     loop {
-        let groups: Vec<HashMap<String, fred::types::Value>> = pool
-            .xinfo_groups(stream.as_str())
+        let log: Vec<HashMap<String, fred::types::Value>> = pool
+            .next()
+            .custom(
+                CustomCommand::new_static("ACL", ClusterHash::FirstKey, false),
+                vec!["LOG"],
+            )
             .await
-            .expect("xinfo groups");
-        let read = groups.iter().any(|group| {
-            group
-                .get("last-delivered-id")
-                .and_then(fred::types::Value::as_str)
-                .is_some_and(|id| id != "0-0")
+            .expect("acl log");
+        let denied = log.iter().any(|entry| {
+            let field = |name: &str| entry.get(name).and_then(fred::types::Value::as_str);
+            field("username").as_deref() == Some(user.as_str())
+                && field("object").as_deref() == Some("zadd")
         });
-        if read {
+        if denied {
             break;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "the delivery was never read"
+            "the retry never tried its schedule"
         );
         tokio::task::yield_now().await;
     }
