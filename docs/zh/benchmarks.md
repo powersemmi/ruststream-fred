@@ -26,10 +26,10 @@ crate 上手写的同一个循环：Broker、订阅、它产出的投递流和 a
 
 ## 数字 { #the-numbers }
 
-三个交错轮次中的最佳值，括号里是最差的一轮。越大越好。小于多次运行之间离散范围的差值，
+三个交错轮次中的最佳值，括号里是中位的一轮。越大越好。小于多次运行之间离散范围的差值，
 按「无法区分」公布，而不是给出百分比。
 
-<div id="benchmark-results" data-benchmark-results="../../benchmarks/results.json" data-benchmark-labels='{"loading": "正在加载已公布的结果……", "scenario": "场景", "raw": "裸客户端", "adapter": "ruststream-fred", "framework": "RustStream 服务", "adapterOverhead": "适配层相对裸客户端", "overhead": "服务相对裸客户端", "indistinguishable": "无法区分", "brokerBound": "受 Broker 限制", "unavailable": "已公布的结果加载失败。", "cpu": "CPU", "architecture": "架构", "cpu_frequency": "频率", "cores": "核心", "memory": "内存", "memory_speed": "内存速率", "os": "操作系统", "broker": "Broker", "rustc": "Rust", "profile": "构建配置", "features": "feature", "rustflags": "RUSTFLAGS", "versions": "版本", "measured": "测量日期"}'></div>
+<div id="benchmark-results" data-benchmark-results="../../benchmarks/results.json" data-benchmark-labels='{"loading": "正在加载已公布的结果……", "scenario": "场景", "raw": "裸客户端", "adapter": "ruststream-fred", "framework": "RustStream 服务", "adapterOverhead": "适配层相对裸客户端", "overhead": "服务相对裸客户端", "indistinguishable": "无法区分", "brokerBound": "受 Broker 限制", "instructions": "每条消息的指令数", "allocations": "每条消息的内存分配次数", "cold": "冷启动（指令 / 分配）", "unavailable": "已公布的结果加载失败。", "cpu": "CPU", "architecture": "架构", "cpu_frequency": "频率", "cores": "核心", "memory": "内存", "memory_speed": "内存速率", "os": "操作系统", "broker": "Broker", "rustc": "Rust", "valgrind": "valgrind", "profile": "构建配置", "features": "feature", "rustflags": "RUSTFLAGS", "versions": "版本", "measured": "测量日期", "codeMeasured": "代码开销测量"}'></div>
 
 这张表每次打开页面时都从下面那份文档读取，所以它显示的是最近一次运行，别的都不是。
 
@@ -45,6 +45,30 @@ Pub/Sub 不做任何确认，套接字之上的活在这一行才有地方显现
 同一次运行的机器可读形式在
 [`benchmarks/results.json`](https://powersemmi.github.io/ruststream-fred/latest/benchmarks/results.json)，
 框架的站点用它拼出跨 Broker 的汇总表。
+
+## crate 自身的代码 { #the-crates-own-code }
+
+<div id="benchmark-code"></div>
+
+第二张表是这个 crate 自身在每条消息上的开销，是数出来的，不是计时得来的：指令数由 callgrind 统计，
+内存分配次数由 DHAT 统计。每个场景都是用户会写的那种服务，建立在 `RedisBroker` 上，对着测试台的
+单机服务器启动，所以其中的每一条命令都是真实服务会发出的：`XREADGROUP` 读取 `RedisStream`
+消费者组，`XACK` 确认投递，`XADD` 经由 `RedisPublish` 发出回复。
+
+服务跑在单线程的 tokio 运行时上，`fred` 也在同一个线程上驱动它的连接。这个线程上的一切都计算在内：
+框架、这个 crate，以及 `fred` 编写命令和解析回复的工作。服务器是另一个进程，不在数字里；内核处理
+套接字调用的那一部分也不在。消息在被测的消费阶段开始之前，由另一个线程追加到流里，所以生产消息
+也不计算在内。
+
+指令数和分配次数都是稳态下每条消息的值：1000 次投递的运行和 2000 次投递的运行之间的斜率。最后一列
+是连接连接池、创建消费者组、打开订阅并处理第一次投递一次性付出的开销。这些数字是绝对值，框架自身的
+开销也算在内；框架单独的开销由核心库在它的
+[基准测试页面](https://powersemmi.github.io/ruststream/latest/zh/benchmarks/)上公布。
+
+服务连着真实的服务器，所以计数在两次运行之间会有少许浮动：六次运行里，同一场景的指令总数彼此相差
+不超过 0.4%，分配次数在约 59000 次里相差不超过 8 次。因此每个场景的下限取见到的最大值，再加 0.1% 的
+余量。`just bench-code` 在分配次数超过场景声明的下限时失败，加上 `--baseline=main` 时，
+指令数多出百分之二以上也算失败；改变开销的合并请求要附上自己的数字。
 
 ## 机器 { #the-machine }
 
@@ -84,3 +108,10 @@ just bench
 这条 recipe 从 `docker-compose.test.yml` 起停测试台，跑完所有场景，然后把测到的结果写回
 `docs/benchmarks/results.json`。它要花十分钟左右，并且需要整台机器。消息条数不是固定的：一次试探
 运行会把它定下来，使得每一次被测量的运行在所在机器上都不短于五秒。
+
+```bash
+just bench-code
+```
+
+这条 recipe 起停同一套测试台，在 valgrind 下对着它的单机服务器统计代码表，并重写同一份文档里的
+`code` 部分。它需要 valgrind 和基准测试运行器：`cargo install --locked gungraun-runner --version =0.19.4`。

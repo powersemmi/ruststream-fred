@@ -1,6 +1,6 @@
 [package]
 name = "ruststream-fred-bench"
-description = "The paired benchmark for ruststream-fred: its own consumer against raw fred. Never published."
+description = "The benchmarks for ruststream-fred: its own consumer against raw fred, and its code per message. Never published."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,13 +16,16 @@ workspace = true
 default = []
 # A benchmark measures what ships, and this crate's `testing` feature adds the in-process mode's
 # hooks to its transport. Nothing here enables it; the feature exists so that asking for it is
-# the compile error in `benches/paired.rs` rather than a number nobody can trust.
+# the compile error in `benches/paired.rs` rather than a number nobody can trust. `benches/common`
+# carries the same compile error for the code-cost benches.
 testing = ["ruststream-fred/testing"]
 
 # The benchmark lives in its own package so that the measured binary links this crate the way a
 # service does. `ruststream-fred`'s own dev-dependencies pull `ruststream/conformance`, which
 # enables `ruststream/testing`, and a benchmark inside that package would be built against it.
 [dev-dependencies]
+# The code-cost benchmarks: callgrind and DHAT through the runner the core pins.
+gungraun = "=0.19.4"
 ruststream-fred.workspace = true
 # `macros` and `json` are for the framework loop alone: it is the service a user writes, so it is
 # written the way a user writes one.
@@ -38,4 +41,19 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "ti
 
 [[bench]]
 name = "paired"
+harness = false
+
+# The code-cost benchmarks: one scenario per binary, each a service on the production broker
+# against the compose stand. `just bench-code` runs them under valgrind; `benches/common` is the
+# shared setup.
+[[bench]]
+name = "consume"
+harness = false
+
+[[bench]]
+name = "reply"
+harness = false
+
+[[bench]]
+name = "batch"
 harness = false

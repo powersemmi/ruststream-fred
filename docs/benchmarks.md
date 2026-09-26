@@ -33,11 +33,11 @@ cluster is used with, where classic `PUBLISH` is broadcast to every node.
 
 ## The numbers
 
-The best of three interleaved rounds, with the slowest round in parentheses. Higher is
+The best of three interleaved rounds, with the median round in parentheses. Higher is
 better. A difference smaller than the spread between runs is reported as `indistinguishable`
 rather than as a percentage.
 
-<div id="benchmark-results" data-benchmark-labels='{"loading": "Loading the published results...", "scenario": "Scenario", "raw": "Raw client", "adapter": "ruststream-fred", "framework": "RustStream service", "adapterOverhead": "Adapter over the client", "overhead": "Service over the client", "indistinguishable": "indistinguishable", "brokerBound": "broker-bound", "unavailable": "The published results could not be loaded.", "cpu": "CPU", "architecture": "Architecture", "cpu_frequency": "Frequency", "cores": "Cores", "memory": "Memory", "memory_speed": "Memory speed", "os": "OS", "broker": "Broker", "rustc": "Rust", "profile": "Profile", "features": "Features", "rustflags": "RUSTFLAGS", "versions": "Versions", "measured": "Measured on"}'></div>
+<div id="benchmark-results" data-benchmark-labels='{"loading": "Loading the published results...", "scenario": "Scenario", "raw": "Raw client", "adapter": "ruststream-fred", "framework": "RustStream service", "adapterOverhead": "Adapter over the client", "overhead": "Service over the client", "indistinguishable": "indistinguishable", "brokerBound": "broker-bound", "instructions": "Instructions per message", "allocations": "Allocations per message", "cold": "Cold start (instructions / allocations)", "unavailable": "The published results could not be loaded.", "cpu": "CPU", "architecture": "Architecture", "cpu_frequency": "Frequency", "cores": "Cores", "memory": "Memory", "memory_speed": "Memory speed", "os": "OS", "broker": "Broker", "rustc": "Rust", "valgrind": "valgrind", "profile": "Profile", "features": "Features", "rustflags": "RUSTFLAGS", "versions": "Versions", "measured": "Measured on", "codeMeasured": "Code costs measured"}'></div>
 
 The table is read from the document below every time the page is opened, so what it shows is the
 last run and nothing else.
@@ -57,6 +57,35 @@ than a stream delivery.
 The machine-readable form of the same run, which the framework's site reads to build its
 cross-broker table, is at
 [`benchmarks/results.json`](https://powersemmi.github.io/ruststream-fred/latest/benchmarks/results.json).
+
+## The crate's own code
+
+<div id="benchmark-code"></div>
+
+The second table is this crate's own cost per message, counted rather than timed: instructions
+under callgrind and allocations under DHAT. Each scenario is the service a user writes, built on
+`RedisBroker` and started against the standalone server of the stand, so every command in it is
+one a service sends: `XREADGROUP` to read a `RedisStream` consumer group, `XACK` to settle, and
+`XADD` to reply through `RedisPublish`.
+
+The service runs on a single-threaded tokio runtime, and `fred` drives its connections on the same
+thread. Everything on that thread is counted: the framework, this crate, and `fred` writing the
+commands and parsing the replies. The server is another process and is not in the number, and
+neither is the kernel's side of a socket call. The messages are appended to the stream from
+another thread before the measured drain starts, so producing them is not counted either.
+
+Instructions and allocations are per message in the steady state: the slope between a run of 1000
+deliveries and a run of 2000. The last column is what connecting the pool, creating the consumer
+group, opening the subscription and taking the first delivery cost once. The numbers are absolute,
+the framework's own cost included; the core publishes that cost alone on its
+[benchmarks page](https://powersemmi.github.io/ruststream/latest/benchmarks/).
+
+The service talks to a real server, so a count moves a little between runs: over six runs the
+instruction totals of a scenario stayed within 0.4% of each other and its allocations within eight
+blocks of 59,000. Each floor is therefore the highest count seen plus a margin of 0.1%.
+`just bench-code` fails on an allocation above the floor a scenario declares, and with
+`--baseline=main` on more than two percent more instructions, and a pull request that changes the
+cost cites its numbers.
 
 ## The machine
 
@@ -102,3 +131,11 @@ The recipe starts the stand from `docker-compose.test.yml`, runs every scenario,
 and rewrites `docs/benchmarks/results.json` with what it measured. It takes about ten minutes and
 wants the machine to itself. The message count is not fixed: a probe run sets it so that every
 measured run lasts at least five seconds on whatever machine it is taken on.
+
+```bash
+just bench-code
+```
+
+The recipe starts the same stand, counts the code table under valgrind against its standalone
+server, stops the stand and rewrites the `code` section of the same document. It needs valgrind
+and the benchmark runner: `cargo install --locked gungraun-runner --version =0.19.4`.
