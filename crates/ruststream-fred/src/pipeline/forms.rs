@@ -51,42 +51,45 @@ impl StreamForm {
         }
     }
 
-    /// How many commands [`queue`](Self::queue) sends for `op`.
-    fn commands(&self, op: &StreamOp) -> usize {
-        match op {
-            StreamOp::Ack(_) | StreamOp::Republish(_) => 1,
-            StreamOp::Schedule { .. } => {
-                1 + usize::from(
-                    self.delay
-                        .as_ref()
-                        .is_some_and(|cfg| cfg.ttl_millis().is_some()),
-                )
-            }
-        }
-    }
-
     /// Queues one settle into `sink`, a segment or the flush's settles.
     async fn queue<Sink>(&self, sink: &Sink, op: StreamOp) -> Result<(), Error>
     where
         Sink: StreamsInterface + SortedSetsInterface + KeysInterface + Sync,
     {
+        self.queue_counted(sink, op).await.1
+    }
+
+    /// Queues one settle into `sink` and says how many of its commands reached it: a command
+    /// refused after the first leaves the ones before it queued, and their replies still come
+    /// back.
+    async fn queue_counted<Sink>(&self, sink: &Sink, op: StreamOp) -> (usize, Result<(), Error>)
+    where
+        Sink: StreamsInterface + SortedSetsInterface + KeysInterface + Sync,
+    {
+        let one = |queued: Result<(), Error>| (usize::from(queued.is_ok()), queued);
         match op {
-            StreamOp::Ack(id) => sink.xack::<(), _, _, _>(&*self.key, &*self.group, id).await,
-            StreamOp::Republish(fields) => {
-                sink.xadd::<(), _, _, _, _>(&*self.key, false, None::<()>, "*", fields)
-                    .await
-            }
+            StreamOp::Ack(id) => one(sink.xack::<(), _, _, _>(&*self.key, &*self.group, id).await),
+            StreamOp::Republish(fields) => one(sink
+                .xadd::<(), _, _, _, _>(&*self.key, false, None::<()>, "*", fields)
+                .await),
             StreamOp::Schedule { score, member } => {
                 let cfg = self
                     .delay
                     .as_ref()
                     .expect("a schedule is owed only where a delay queue is named");
-                sink.zadd::<(), _, _>(cfg.zset_key(), None, None, false, false, (score, member))
-                    .await?;
-                if let Some(ttl) = cfg.ttl_millis() {
-                    sink.pexpire::<(), _>(cfg.zset_key(), ttl, None).await?;
+                let scheduled = sink
+                    .zadd::<(), _, _>(cfg.zset_key(), None, None, false, false, (score, member))
+                    .await;
+                match (scheduled, cfg.ttl_millis()) {
+                    (Err(err), _) => (0, Err(err)),
+                    (Ok(()), None) => (1, Ok(())),
+                    (Ok(()), Some(ttl)) => {
+                        match sink.pexpire::<(), _>(cfg.zset_key(), ttl, None).await {
+                            Ok(()) => (2, Ok(())),
+                            Err(err) => (1, Err(err)),
+                        }
+                    }
                 }
-                Ok(())
             }
         }
     }
@@ -180,8 +183,7 @@ impl Form for StreamForm {
                     }
                 }
                 op => {
-                    let commands = self.commands(&op);
-                    let queued = self.queue(writes.pipeline(client), op).await;
+                    let (commands, queued) = self.queue_counted(writes.pipeline(client), op).await;
                     writes.queued(commands, queued, &mut sent);
                 }
             }
@@ -332,7 +334,7 @@ impl Form for ListForm {
         for op in ops.drain(..) {
             if op.requeue {
                 let queued = self.queue_requeue(writes.pipeline(client), &op).await;
-                writes.queued(1, queued, &mut sent);
+                writes.queued(usize::from(queued.is_ok()), queued, &mut sent);
             }
             if let Some(op) = writes.close(op) {
                 released.push(op);
@@ -382,11 +384,14 @@ impl<Settle> Writes<Settle> {
         self.pipeline.get_or_insert_with(|| client.pipeline())
     }
 
-    /// Accounts for `commands` queued for the delivery being assembled.
+    /// Accounts for `commands` queued for the delivery being assembled, and for the refusal of
+    /// the rest of its writes when `queued` is one: the commands queued before a refusal still
+    /// answer, so they count toward the replies all the same.
     fn queued(&mut self, commands: usize, queued: Result<(), Error>, sent: &mut Sent) {
         self.wrote = true;
+        self.commands += commands;
         match queued {
-            Ok(()) => self.commands += commands,
+            Ok(()) => {}
             Err(err) => {
                 self.refused = true;
                 sent.failed += 1;
