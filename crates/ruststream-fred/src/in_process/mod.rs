@@ -755,6 +755,19 @@ impl State {
         }
     }
 
+    /// Forgets a linked set's members when the set itself goes: no sweep is left to move them
+    /// back, so the counts held for its due members are released at once.
+    fn link_dropped(&mut self, server: &Server, zset: &Bytes) {
+        let Some(link) = self.links.get_mut(zset) else {
+            return;
+        };
+        link.due.clear();
+        let released = std::mem::take(&mut link.held).len();
+        if released > 0 {
+            server.released(released);
+        }
+    }
+
     /// Releases the count of a delayed entry its sweep just added back to `key`.
     fn readded(&mut self, server: &Server, key: &Bytes) {
         if let Some(held) = self.readd_holds.get_mut(key)

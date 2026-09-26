@@ -408,6 +408,10 @@ struct Owed<Op> {
     /// the window owed has been sent.
     #[cfg(feature = "testing")]
     held: Vec<InFlight>,
+    /// Flushes taken out of the window and not sent yet: what they carry is owed all the same,
+    /// so the held counts wait for them.
+    #[cfg(feature = "testing")]
+    flushing: usize,
 }
 
 /// The window of one pipelined subscription.
@@ -466,6 +470,8 @@ impl<F: Form> Window<F> {
                 failure: None,
                 #[cfg(feature = "testing")]
                 held: Vec::new(),
+                #[cfg(feature = "testing")]
+                flushing: 0,
             }),
         }
     }
@@ -649,6 +655,7 @@ impl<F: Form> Window<F> {
         let released = {
             let mut owed = self.owed();
             let sent = owed.outstanding == 0
+                && owed.flushing == 0
                 && owed.ops.is_empty()
                 && owed.committed.is_empty()
                 && owed.staged.iter().all(Vec::is_empty);
@@ -664,6 +671,10 @@ impl<F: Form> Window<F> {
     /// Puts a flush that could not be sent back into what the window owes.
     fn give_back_owed(&self, mut flush: Flush<F::Op>) {
         let mut owed = self.owed();
+        #[cfg(feature = "testing")]
+        {
+            owed.flushing -= 1;
+        }
         flush.committed.append(&mut owed.committed);
         flush.ops.append(&mut owed.ops);
         owed.committed = flush.committed;
@@ -689,6 +700,10 @@ impl<F: Form> Window<F> {
 
     fn take(owed: &mut Owed<F::Op>) -> Flush<F::Op> {
         owed.settled = 0;
+        #[cfg(feature = "testing")]
+        {
+            owed.flushing += 1;
+        }
         Flush {
             committed: std::mem::take(&mut owed.committed),
             ops: std::mem::take(&mut owed.ops),
@@ -699,7 +714,7 @@ impl<F: Form> Window<F> {
         if flush.committed.is_empty() && flush.ops.is_empty() {
             self.give_back(flush);
             #[cfg(feature = "testing")]
-            self.release_if_sent();
+            self.sent_one();
             return;
         }
         // The segments are submitted first, in commit order, and the settles after them: the
@@ -729,6 +744,13 @@ impl<F: Form> Window<F> {
         }
         self.give_back(flush);
         #[cfg(feature = "testing")]
+        self.sent_one();
+    }
+
+    /// A flush taken out of the window has been sent: its counts may go once nothing else is owed.
+    #[cfg(feature = "testing")]
+    fn sent_one(&self) {
+        self.owed().flushing -= 1;
         self.release_if_sent();
     }
 
