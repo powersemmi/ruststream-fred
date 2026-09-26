@@ -45,6 +45,7 @@ use fred::mocks::MockCommand;
 use fred::types::config::{Config, PerformanceConfig, Server as ServerAddress};
 use fred::types::{Message, MessageKind, Value, Version};
 use ruststream::testing::Coordinator;
+use tokio::runtime::Handle;
 use tokio::sync::{Notify, broadcast};
 use tokio::time::Instant;
 
@@ -112,6 +113,9 @@ pub(crate) struct Server {
     /// The address a Pub/Sub message reports it came from.
     address: ServerAddress,
     next_reader: AtomicU64,
+    /// The runtime the connection was opened on, where a plain timer runs whichever caller armed
+    /// it, as the broker runs its own tasks.
+    runtime: Handle,
     this: Weak<Self>,
 }
 
@@ -175,6 +179,7 @@ pub(crate) async fn connect(
         capacity,
         address,
         next_reader: AtomicU64::new(0),
+        runtime: Handle::current(),
         this: this.clone(),
     });
     // `fred` refuses an empty pool before anything is built; asking it keeps that answer.
@@ -266,7 +271,7 @@ impl Server {
         match self.coordinator.get() {
             Some(coordinator) => coordinator.schedule_redelivery(delay, run),
             None => {
-                tokio::spawn(async move {
+                self.runtime.spawn(async move {
                     tokio::time::sleep(delay).await;
                     run();
                 });

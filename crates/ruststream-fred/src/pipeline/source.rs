@@ -57,11 +57,9 @@ impl<Inner, F: Form> PipelinedSubscriber<Inner, F> {
 impl<Inner, F: Form> Drop for PipelinedSubscriber<Inner, F> {
     fn drop(&mut self) {
         // A subscription stops by being dropped, and a destructor cannot wait: the flush of what
-        // the window still owes runs on the runtime, and where there is none it cannot run at all.
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            let window = Arc::clone(&self.window);
-            runtime.spawn(async move { window.drain().await });
-        }
+        // the window still owes runs on the broker's runtime, wherever the drop happens.
+        let window = Arc::clone(&self.window);
+        self.window.spawn(async move { window.drain().await });
     }
 }
 
@@ -233,6 +231,7 @@ impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker> for Pipelined<Re
             Mode::ATOMIC,
             inner.key(),
             prefetch(),
+            connected.runtime().clone(),
         );
         Ok(PipelinedSubscriber::new(inner, window))
     }
@@ -259,6 +258,7 @@ impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker> for Pipelined<Re
             Mode::ATOMIC,
             channel,
             prefetch(),
+            connected.runtime().clone(),
         );
         Ok(PipelinedSubscriber::new(ChannelReader(inner), window))
     }
@@ -283,6 +283,7 @@ impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker> for Pipelined<Re
                 Mode::ATOMIC,
                 wire.key(),
                 prefetch(),
+                connected.runtime().clone(),
             );
             PipelinedSubscriber::new(ListReader::new(wire), window)
         }))

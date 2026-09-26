@@ -29,6 +29,7 @@ use ruststream::testing::{Coordinator, InProcess, TestableBroker};
 use ruststream::{AddressedCopies, Broker, ConnectedBroker, DescribeServer, ServerSpec, Subscribe};
 #[cfg(feature = "testing")]
 use ruststream::{OutgoingMessage, RawMessage};
+use tokio::runtime::Handle;
 use tokio::sync::broadcast::Receiver;
 
 #[cfg(feature = "testing")]
@@ -490,6 +491,7 @@ impl Broker for RedisBroker {
         Ok(ConnectedRedisBroker {
             core: Arc::new(RedisCore {
                 pool,
+                runtime: Handle::current(),
                 config,
                 default_group: self.default_group,
                 clustered,
@@ -524,6 +526,7 @@ impl InProcess for RedisBroker {
         Ok(ConnectedRedisBroker {
             core: Arc::new(RedisCore {
                 pool,
+                runtime: Handle::current(),
                 config,
                 default_group: self.default_group,
                 clustered,
@@ -599,6 +602,10 @@ fn has_port(host: &str) -> bool {
 /// The live connection shared by the connected broker and every handle derived from it.
 pub(crate) struct RedisCore {
     pool: Pool,
+    /// The runtime `connect` ran on. Every task the broker starts for itself is spawned here, so
+    /// a call from a dedicated thread's runtime (a handler under `threads(n)`) leaves no task
+    /// behind that dies when that runtime stops.
+    runtime: Handle,
     /// The config the pool was built from; Pub/Sub subscriptions dial their dedicated client
     /// from it.
     config: Config,
@@ -868,7 +875,14 @@ impl ConnectedRedisBroker {
         );
         let pool = self.core.pool()?;
         recorded.keep();
-        Ok(PubSubWire::new(client, rx, codec, pool, tap))
+        Ok(PubSubWire::new(
+            client,
+            rx,
+            codec,
+            pool,
+            tap,
+            self.runtime().clone(),
+        ))
     }
 
     /// Registers a Pub/Sub subscription with the in-process server, whose messages then arrive
@@ -952,6 +966,7 @@ impl ConnectedRedisBroker {
             codec,
             self.core.pool()?,
             tap,
+            self.runtime().clone(),
         )))
     }
 
@@ -1062,6 +1077,11 @@ impl ConnectedRedisBroker {
         self.core.rounds()
     }
 
+    /// The runtime this connection was opened on, where the broker spawns its own tasks.
+    pub(crate) fn runtime(&self) -> &Handle {
+        &self.core.runtime
+    }
+
     /// Returns a clone of the underlying pool, for advanced operations not covered by the
     /// wrapper.
     ///
@@ -1079,9 +1099,15 @@ impl ConnectedRedisBroker {
         // a connection whose owner already shut down.
         let _ = self.core.pool()?;
         let client = Client::new(self.core.config.clone(), None, None, None);
-        client
-            .init()
+        // `init` spawns the task that drives the connection on the runtime it is polled on; it is
+        // polled on the broker's own runtime, so the connection outlives a caller's runtime. The
+        // price is one task spawned per subscription opened.
+        let connecting = client.clone();
+        self.core
+            .runtime
+            .spawn(async move { connecting.init().await })
             .await
+            .map_err(|err| RedisError::Connect(Box::new(err)))?
             .map_err(|err| RedisError::Connect(Box::new(err)))?;
         Ok(client)
     }
