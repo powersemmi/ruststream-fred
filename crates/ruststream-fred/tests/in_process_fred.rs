@@ -985,13 +985,14 @@ async fn zadd_moves_a_score_only_in_the_direction_it_names() {
     assert!((score - 9.0).abs() < f64::EPSILON, "got {score}");
 }
 
-/// A sharded publish reaches the sharded subscriptions only, and a classic one the classic.
+/// A sharded publish reaches the sharded subscriptions only. The classic side listens through a
+/// pattern: one service cannot read a channel name both ways, which the route table refuses.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_sharded_publish_reaches_the_sharded_subscriptions_only() {
     let broker = connected().await;
-    let mut classic = SubscriptionSource::subscribe(RedisPubSub::new("shards"), &broker)
+    let mut classic = SubscriptionSource::subscribe(RedisPubSubPattern::new("shard?"), &broker)
         .await
-        .expect("subscribe");
+        .expect("psubscribe");
     let mut sharded = SubscriptionSource::subscribe(
         RedisPubSub::new("shards").mode(ruststream_fred::PubSubMode::Sharded),
         &broker,
