@@ -16,6 +16,10 @@ use ruststream::{
 };
 use tracing::warn;
 
+use crate::convert::fields_for_publish;
+use crate::envelope::frame;
+use crate::pipeline::Round;
+use crate::publisher::joins_round;
 use crate::{
     error::RedisError,
     partition::{RedisPublishOptions, resolved_headers},
@@ -46,6 +50,8 @@ impl DefaultPublish for ConnectedRedisTestBroker {
 pub struct RedisTestPublisher {
     state: Arc<TestBrokerState>,
     txn: Arc<Mutex<Option<Vec<Buffered>>>>,
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    round_name: u64,
     /// The command family this handle stands in for, which decides what it reaches; `None` on
     /// the default publisher, which takes the family the broker recorded for the name.
     form: Option<Form>,
@@ -58,16 +64,51 @@ impl std::fmt::Debug for RedisTestPublisher {
 }
 
 impl RedisTestPublisher {
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    pub(crate) const fn round_name(&self) -> u64 {
+        self.round_name
+    }
+
     pub(crate) fn new(state: Arc<TestBrokerState>) -> Self {
         Self::of_form(state, Some(Form::Stream))
     }
 
     fn of_form(state: Arc<TestBrokerState>, form: Option<Form>) -> Self {
         Self {
+            round_name: state.rounds.publisher(),
             state,
             txn: Arc::new(Mutex::new(None)),
             form,
         }
+    }
+
+    /// Queues a publish into the round it joined, as the command this handle stands for: the
+    /// round's segment is the stand-in's own, so the write reaches the router when the window
+    /// flushes, under the same rules as a direct one.
+    async fn join(
+        &self,
+        round: &Round,
+        key: &str,
+        payload: &[u8],
+        headers: &HeaderMap,
+    ) -> Result<(), RedisError> {
+        let form = self
+            .form
+            .unwrap_or_else(|| Form::of(&self.state.routes.route(key)));
+        match form {
+            Form::Stream => {
+                round
+                    .xadd(key, fields_for_publish(payload.to_vec(), headers))
+                    .await
+            }
+            Form::List => round.lpush(key, frame(None, payload, headers), None).await,
+            Form::Channel => {
+                round
+                    .publish(key, frame(None, payload, headers), false)
+                    .await
+            }
+        }
+        .map_err(RedisError::publish)
     }
 
     fn buffer_if_in_txn(&self, entry: &Buffered) -> bool {
@@ -98,28 +139,32 @@ impl Publisher for RedisTestPublisher {
     /// Returns [`RedisError::Publish`] when the stream key is empty, or [`RedisError::ShutDown`]
     /// once the connection this handle was made from has been shut down: the handle can outlive
     /// the connection, so this is where the real broker's dropped pool is mirrored.
-    fn publish(
+    async fn publish(
         &self,
         msg: OutgoingMessage<'_, BytesMut>,
         options: Option<&Self::Options>,
-    ) -> impl Future<Output = Result<(), Self::Error>> {
-        if let Err(err) = self.state.alive() {
-            return ready(Err(err));
-        }
-        if let Err(err) = validate_publish_key(msg.name()) {
-            return ready(Err(err));
-        }
+    ) -> Result<(), Self::Error> {
+        self.state.alive()?;
+        validate_publish_key(msg.name())?;
         let (key, payload, headers) = msg.into_parts();
         let entry: Buffered = (
             key.to_owned(),
             payload.freeze(),
             resolved_headers(headers, options),
         );
+        if let Some(round) = self
+            .state
+            .rounds
+            .joined(self.round_name, joins_round(options))
+        {
+            let (key, payload, headers) = entry;
+            return self.join(&round, &key, &payload, &headers).await;
+        }
         if self.buffer_if_in_txn(&entry) {
-            return ready(Ok(()));
+            return Ok(());
         }
         let (key, payload, headers) = entry;
-        ready(fan_out(&self.state, key, payload, headers, self.form))
+        fan_out(&self.state, key, payload, headers, self.form)
     }
 }
 
@@ -259,6 +304,11 @@ impl std::fmt::Debug for RedisTestPlainPublisher {
 }
 
 impl RedisTestPlainPublisher {
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    pub(crate) const fn round_name(&self) -> u64 {
+        self.0.round_name
+    }
+
     pub(crate) fn new(state: Arc<TestBrokerState>, form: Option<Form>) -> Self {
         Self(RedisTestPublisher::of_form(state, form))
     }

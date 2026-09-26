@@ -10,6 +10,7 @@ use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use fred::clients::Pool;
 use futures::Stream;
 use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::{
@@ -18,6 +19,7 @@ use ruststream::{
 };
 use tokio::sync::mpsc;
 
+use crate::pipeline::{RoundMessage, TestForm, Window};
 use crate::{
     delay::next_retry_count,
     error::RedisError,
@@ -149,6 +151,108 @@ fn stamp_fresh(delivery: &mut Delivery) {
     delivery.headers.insert(IDLE_MS_HEADER, "0");
 }
 
+impl RedisTestSubscriber {
+    /// Yields one delivery at a time, each with a slot in `window`, telling the window how many
+    /// more have arrived behind it, and reports a failed flush of the window once.
+    pub(crate) fn round_stream<'a>(
+        &'a mut self,
+        window: &'a Arc<Window<TestForm>>,
+    ) -> impl Stream<Item = Result<RoundMessage<TestForm>, RedisError>> + Send + 'a {
+        let retry = self.retry();
+        let coordinator = self.coordinator.clone();
+        let settlement = self.settlement;
+        let delayed = self.delayed;
+        let pool = self.state.pool().clone();
+        futures::stream::poll_fn(move |cx| {
+            if let Some(failure) = window.take_failure() {
+                return Poll::Ready(Some(Err(failure)));
+            }
+            self.poll_delivery(cx).map(|next| {
+                next.map(|delivery| {
+                    let waiting = self.rx.len()
+                        + self
+                            .claiming
+                            .as_ref()
+                            .map_or(0, |claiming| claiming.rx.len());
+                    window.yielded(waiting);
+                    let delivery = RedisTestMessage::from_delivery(
+                        delivery,
+                        retry.clone(),
+                        coordinator.clone(),
+                        settlement,
+                        delayed,
+                        pool.clone(),
+                    );
+                    Ok(RoundMessage::new(
+                        delivery,
+                        Arc::clone(window),
+                        window.open(),
+                    ))
+                })
+            })
+        })
+    }
+}
+
+impl RedisTestSubscriber {
+    /// Yields batches of up to `size` deliveries already waiting, each batch sharing one slot of
+    /// `window`, as the subscription's own batches are assembled.
+    pub(crate) fn round_batches<'a>(
+        &'a mut self,
+        window: &'a Arc<Window<TestForm>>,
+        size: NonZeroUsize,
+    ) -> impl Stream<Item = Result<Vec<RoundMessage<TestForm>>, RedisError>> + Send + 'a {
+        window.fill_at(size.get());
+        let retry = self.retry();
+        let coordinator = self.coordinator.clone();
+        let settlement = self.settlement;
+        let delayed = self.delayed;
+        let pool = self.state.pool().clone();
+        futures::stream::poll_fn(move |cx| {
+            if let Some(failure) = window.take_failure() {
+                return Poll::Ready(Some(Err(failure)));
+            }
+            let first = match self.poll_delivery(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Ready(Some(delivery)) => delivery,
+            };
+            let mut deliveries = vec![first];
+            while deliveries.len() < size.get() {
+                match self.poll_delivery(cx) {
+                    Poll::Ready(Some(delivery)) => deliveries.push(delivery),
+                    Poll::Ready(None) | Poll::Pending => break,
+                }
+            }
+            let members = u32::try_from(deliveries.len()).unwrap_or(u32::MAX);
+            let waiting = self.rx.len()
+                + self
+                    .claiming
+                    .as_ref()
+                    .map_or(0, |claiming| claiming.rx.len());
+            for _ in 0..members {
+                window.yielded(waiting);
+            }
+            let round = window.open_batch(members);
+            let batch = deliveries
+                .into_iter()
+                .map(|delivery| {
+                    let delivery = RedisTestMessage::from_delivery(
+                        delivery,
+                        retry.clone(),
+                        coordinator.clone(),
+                        settlement,
+                        delayed,
+                        pool.clone(),
+                    );
+                    RoundMessage::new(delivery, Arc::clone(window), round.clone())
+                })
+                .collect();
+            Poll::Ready(Some(Ok(batch)))
+        })
+    }
+}
+
 impl Drop for RedisTestSubscriber {
     fn drop(&mut self) {
         self.state.router.unsubscribe(self.id);
@@ -164,6 +268,7 @@ impl Subscriber for RedisTestSubscriber {
         let coordinator = self.coordinator.clone();
         let settlement = self.settlement;
         let delayed = self.delayed;
+        let pool = self.state.pool().clone();
         // Poll the receiver in place rather than wrapping it in an owning stream, so `stream` can
         // be called again after the returned stream is dropped (the runtime and the conformance
         // helpers re-enter it per call).
@@ -176,6 +281,7 @@ impl Subscriber for RedisTestSubscriber {
                         coordinator.clone(),
                         settlement,
                         delayed,
+                        pool.clone(),
                     ))
                 })
             })
@@ -205,6 +311,8 @@ pub struct RedisTestMessage {
     delayed: bool,
     /// The server's own delivery count, counting this delivery, on a claiming subscription.
     delivered: Option<u64>,
+    /// The stand-in's pool, which `Ctx<keys::FredPool>` hands the handler.
+    pool: Pool,
 }
 
 impl Drop for RedisTestMessage {
@@ -236,6 +344,7 @@ impl RedisTestMessage {
         coordinator: Option<Coordinator>,
         settlement: Settlement,
         delayed: bool,
+        pool: Pool,
     ) -> Self {
         // Only a claiming subscription stamps the counter, and only there does the real broker
         // report a count of its own.
@@ -250,6 +359,21 @@ impl RedisTestMessage {
             settlement,
             delayed,
             delivered,
+            pool,
+        }
+    }
+
+    /// The stand-in's pool, for the per-delivery context.
+    pub(crate) const fn pool(&self) -> &Pool {
+        &self.pool
+    }
+
+    /// What settling this delivery answers, before the settle runs: nothing on a form that settles,
+    /// `Unsupported` on Pub/Sub and a simple list, as on a server.
+    pub(crate) fn settle_answer(&self) -> Result<(), AckError> {
+        match self.settlement {
+            Settlement::Settleable => Ok(()),
+            Settlement::Unsupported => Err(AckError::Unsupported),
         }
     }
 
@@ -427,6 +551,7 @@ impl BatchSubscriber for RedisTestSubscriber {
         let coordinator = self.coordinator.clone();
         let settlement = self.settlement;
         let delayed = self.delayed;
+        let pool = self.state.pool().clone();
         futures::stream::poll_fn(move |cx| {
             let first = match self.poll_delivery(cx) {
                 Poll::Pending => return Poll::Pending,
@@ -437,6 +562,7 @@ impl BatchSubscriber for RedisTestSubscriber {
                     coordinator.clone(),
                     settlement,
                     delayed,
+                    pool.clone(),
                 ),
             };
             let mut batch = vec![first];
@@ -449,6 +575,7 @@ impl BatchSubscriber for RedisTestSubscriber {
                             coordinator.clone(),
                             settlement,
                             delayed,
+                            pool.clone(),
                         ));
                     }
                     Poll::Ready(None) | Poll::Pending => break,

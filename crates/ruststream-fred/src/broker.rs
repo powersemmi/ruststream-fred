@@ -26,11 +26,12 @@ use ruststream::{AddressedCopies, Broker, ConnectedBroker, DescribeServer, Serve
 
 use crate::{
     error::RedisError,
-    list::{RedisList, RedisListPublish, RedisListPublisher, RedisListSubscriber},
+    list::{ListWire, RedisList, RedisListPublish, RedisListPublisher, RedisListSubscriber},
+    pipeline::Rounds,
     publisher::{RedisDefaultPublisher, RedisPublisher},
     pubsub::{
-        PubSubMode, RedisPubSub, RedisPubSubPattern, RedisPubSubPublish, RedisPubSubPublisher,
-        RedisPubSubSubscriber,
+        PubSubMode, PubSubWire, RedisPubSub, RedisPubSubPattern, RedisPubSubPublish,
+        RedisPubSubPublisher, RedisPubSubSubscriber,
     },
     route::{Recorded, Route, Routes},
     stream::{ReadMode, RedisStream},
@@ -477,6 +478,7 @@ impl Broker for RedisBroker {
                 clustered,
                 closed: AtomicBool::new(false),
                 routes: Routes::default(),
+                rounds: Arc::default(),
             }),
         })
     }
@@ -556,9 +558,17 @@ pub(crate) struct RedisCore {
     /// How each name this connection's subscriptions read or dead-letter to is written, for the
     /// default publisher.
     routes: Routes,
+    /// The rounds of the deliveries in flight on this connection's pipelined subscriptions, which
+    /// a reply or a bound slot publish joins.
+    rounds: Arc<Rounds>,
 }
 
 impl RedisCore {
+    /// The rounds a publish of this connection may join.
+    pub(crate) fn rounds(&self) -> &Arc<Rounds> {
+        &self.rounds
+    }
+
     /// The route table the default publisher reads.
     pub(crate) const fn routes(&self) -> &Routes {
         &self.routes
@@ -661,6 +671,11 @@ impl ConnectedRedisBroker {
         &self,
         def: RedisPubSub,
     ) -> Result<RedisPubSubSubscriber, RedisError> {
+        Ok(RedisPubSubSubscriber::new(self.open_pubsub(def).await?))
+    }
+
+    /// Subscribes a dedicated client to the channel `def` names and hands back its wire.
+    pub(crate) async fn open_pubsub(&self, def: RedisPubSub) -> Result<PubSubWire, RedisError> {
         let codec = def.codec_handle();
         let recorded = self
             .core
@@ -688,8 +703,9 @@ impl ConnectedRedisBroker {
                     .map_err(RedisError::subscribe)?;
             }
         }
+        let pool = self.core.pool()?;
         recorded.keep();
-        Ok(RedisPubSubSubscriber::new(client, rx, codec))
+        Ok(PubSubWire::new(client, rx, codec, pool))
     }
 
     /// Opens a Pub/Sub subscription on a glob (`PSUBSCRIBE`), described by `def`, on a dedicated
@@ -713,7 +729,12 @@ impl ConnectedRedisBroker {
             .await
             .map_err(RedisError::subscribe)?;
         confirm_subscribed(&client).await?;
-        Ok(RedisPubSubSubscriber::new(client, rx, codec))
+        Ok(RedisPubSubSubscriber::new(PubSubWire::new(
+            client,
+            rx,
+            codec,
+            self.core.pool()?,
+        )))
     }
 
     /// Opens a list (work-queue) subscription described by `def`.
@@ -728,32 +749,24 @@ impl ConnectedRedisBroker {
         &self,
         def: RedisList,
     ) -> impl Future<Output = Result<RedisListSubscriber, RedisError>> {
-        let pool = match self.core.pool() {
-            Ok(pool) => pool,
-            Err(err) => return ready(Err(err)),
-        };
-        let recovery = match def.recovery_config() {
-            Ok(recovery) => recovery,
-            Err(err) => return ready(Err(err)),
-        };
+        ready(self.open_list(def).map(RedisListSubscriber::new))
+    }
+
+    /// Validates `def` against this connection and hands back its wire.
+    pub(crate) fn open_list(&self, def: RedisList) -> Result<ListWire, RedisError> {
+        let pool = self.core.pool()?;
+        let recovery = def.recovery_config()?;
         let reliable = def.is_reliable();
         let processing = def.processing_or_default();
-        if reliable
-            && self.core.clustered()
-            && let Err(err) = require_one_slot(def.key(), &processing)
-        {
-            return ready(Err(err));
+        if reliable && self.core.clustered() {
+            require_one_slot(def.key(), &processing)?;
         }
-        match self
-            .core
-            .record_routes(def.key(), def.dead_letter(), &def.route())
-        {
-            Ok(recorded) => recorded.keep(),
-            Err(err) => return ready(Err(err)),
-        }
+        self.core
+            .record_routes(def.key(), def.dead_letter(), &def.route())?
+            .keep();
         let block = def.block_or_default();
         let codec = def.codec_handle();
-        ready(Ok(RedisListSubscriber::new(
+        Ok(ListWire::new(
             pool,
             def.into_key(),
             reliable,
@@ -761,7 +774,7 @@ impl ConnectedRedisBroker {
             block,
             codec,
             recovery,
-        )))
+        ))
     }
 
     /// Returns a stream publisher (`XADD`) bound to this connection.
@@ -789,6 +802,11 @@ impl ConnectedRedisBroker {
     #[must_use]
     pub fn list_publisher(&self, publish: RedisListPublish) -> RedisListPublisher {
         RedisListPublisher::new(Arc::clone(&self.core), publish)
+    }
+
+    /// The rounds a publish of this connection may join.
+    pub(crate) fn rounds(&self) -> &Arc<Rounds> {
+        self.core.rounds()
     }
 
     /// Returns a clone of the underlying pool, for advanced operations not covered by the

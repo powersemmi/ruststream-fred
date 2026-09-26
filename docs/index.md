@@ -60,6 +60,9 @@ The reference on docs.rs opens with the crate's own textbook, one section per to
   [capping the retries](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#capping-the-retries)
   and
   [repositioning a group](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#repositioning-a-group).
+- [Pipelining](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#pipelining): a window that
+  settles a whole fetch in one round trip, and the Redis commands a handler queues into it, which
+  run only when the delivery is acknowledged.
 - [Publishing](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#publishing): the
   policies, the
   [partition key](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#partition-keys)

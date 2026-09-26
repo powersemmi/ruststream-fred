@@ -24,7 +24,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use fred::clients::Client;
+use fred::clients::{Client, Pool};
 use fred::interfaces::{ClientLike, PubsubInterface};
 use fred::types::{Message, MessageKind};
 use futures::Stream;
@@ -37,11 +37,14 @@ use ruststream::{
     Lend, NamedCopies, OutgoingMessage, PairError, Partitioned, PublishPolicy, Publisher,
     RedeliveryAddress, RedeliveryAddressed, RetryDeclaration, SubscriptionSource,
 };
-use tokio::sync::broadcast::{Receiver, error::RecvError};
+use tokio::sync::broadcast::Receiver;
+use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::envelope::{SharedEnvelope, frame, unframe};
 use crate::partition::{RedisPublishOptions, resolved_headers};
+use crate::pipeline::{Pipelined, PubSubForm, RoundMessage, Window};
+use crate::publisher::joins_round;
 use crate::route::Route;
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
 
@@ -77,8 +80,12 @@ pub mod prelude {
     pub use super::{PubSubMode, Publish, RedisPubSub, RedisPubSubPattern};
     // `keys` arrives as the module, not as a glob: its members are short words a service also uses
     // for its own types, and `Ctx<keys::Channel>` reads as what it is at the use site.
-    pub use crate::context::{PubSubContext, keys};
-    pub use crate::{PARTITION_KEY_HEADER, RedisBroker, RedisPublishOptions, RedisPublishSteps};
+    pub use crate::context::{PipelineContext, PoolContext, PubSubContext, keys};
+    pub use crate::pipeline::{AtomicStep, Bindable, InRound};
+    pub use crate::{
+        AtomicPubSub, PARTITION_KEY_HEADER, PipelinedPubSub, RedisBroker, RedisPublishOptions,
+        RedisPublishSteps,
+    };
 
     #[cfg(any(
         feature = "tls-rustls",
@@ -172,6 +179,25 @@ impl RedisPubSub {
     #[must_use]
     pub fn channel(&self) -> &str {
         &self.channel
+    }
+
+    /// Opens a window on this subscription: the commands its handlers queue through
+    /// [`keys::Pipeline`](crate::context::keys::Pipeline) leave together, in one pipeline on a
+    /// connection of the pool, once nothing is in flight.
+    ///
+    /// Pub/Sub settles nothing, so the window carries the handlers' commands alone; what it adds
+    /// is that a handler's Redis side effects follow its outcome. See [`pipeline`](crate::pipeline).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream_fred::RedisPubSub;
+    ///
+    /// let events = RedisPubSub::new("events").pipeline();
+    /// # let _ = events;
+    /// ```
+    pub const fn pipeline(self) -> Pipelined<Self> {
+        Pipelined::wrap(self)
     }
 
     pub(crate) const fn delivery_mode(&self) -> PubSubMode {
@@ -458,12 +484,8 @@ impl Debug for RedisPubSubSubscriber {
 }
 
 impl RedisPubSubSubscriber {
-    pub(crate) fn new(
-        client: Client,
-        rx: Receiver<Message>,
-        codec: Option<SharedEnvelope>,
-    ) -> Self {
-        Self(BufferedSubscriber::new(PubSubWire { client, rx, codec }))
+    pub(crate) fn new(wire: PubSubWire) -> Self {
+        Self(BufferedSubscriber::new(wire))
     }
 }
 
@@ -501,15 +523,119 @@ impl BatchSubscriber for RedisPubSubSubscriber {
 }
 
 /// The wire side of a Pub/Sub subscription: the dedicated client and the channel it feeds.
-struct PubSubWire {
+pub(crate) struct PubSubWire {
     client: Client,
     rx: Receiver<Message>,
     codec: Option<SharedEnvelope>,
+    /// The broker's pool, handed to every delivery for `Ctx<keys::FredPool>`.
+    pool: Pool,
 }
 
 impl Debug for PubSubWire {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PubSubWire").finish_non_exhaustive()
+    }
+}
+
+impl PubSubWire {
+    pub(crate) const fn new(
+        client: Client,
+        rx: Receiver<Message>,
+        codec: Option<SharedEnvelope>,
+        pool: Pool,
+    ) -> Self {
+        Self {
+            client,
+            rx,
+            codec,
+            pool,
+        }
+    }
+
+    /// The window's client: a connection of the pool the flushes go out on.
+    pub(crate) fn round_client(&self) -> Client {
+        self.pool.next().clone()
+    }
+
+    /// Yields one delivery per message, each with a slot in `window`, telling the window how
+    /// many more have arrived behind it, and reports a failed flush of the window once.
+    pub(crate) fn round_stream<'a>(
+        &'a mut self,
+        window: &'a Arc<Window<PubSubForm>>,
+    ) -> impl Stream<Item = Result<RoundMessage<PubSubForm>, RedisError>> + Send + 'a {
+        let codec = self.codec.clone();
+        let pool = &self.pool;
+        unfold((&mut self.rx, codec), move |(rx, codec)| async move {
+            loop {
+                if let Some(failure) = window.take_failure() {
+                    return Some((Err(failure), (rx, codec)));
+                }
+                match rx.recv().await {
+                    Ok(msg) => {
+                        let delivery = to_message(&msg, codec.as_ref(), pool);
+                        window.yielded(rx.len());
+                        let round = window.open();
+                        return Some((
+                            Ok(RoundMessage::new(delivery, Arc::clone(window), round)),
+                            (rx, codec),
+                        ));
+                    }
+                    // The receiver fell behind the broadcast buffer; skip the gap and keep reading.
+                    Err(RecvError::Lagged(_)) => {}
+                    Err(RecvError::Closed) => return None,
+                }
+            }
+        })
+    }
+}
+
+impl PubSubWire {
+    /// Yields one batch of up to `size` messages: the first one waited for, and those already
+    /// arrived behind it. The batch shares one slot of `window`.
+    pub(crate) fn round_batches<'a>(
+        &'a mut self,
+        window: &'a Arc<Window<PubSubForm>>,
+        size: NonZeroUsize,
+    ) -> impl Stream<Item = Result<Vec<RoundMessage<PubSubForm>>, RedisError>> + Send + 'a {
+        window.fill_at(size.get());
+        let codec = self.codec.clone();
+        let pool = &self.pool;
+        unfold((&mut self.rx, codec), move |(rx, codec)| async move {
+            loop {
+                if let Some(failure) = window.take_failure() {
+                    return Some((Err(failure), (rx, codec)));
+                }
+                let first = match rx.recv().await {
+                    Ok(msg) => msg,
+                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => return None,
+                };
+                let mut messages = vec![first];
+                while messages.len() < size.get() {
+                    match rx.try_recv() {
+                        Ok(msg) => messages.push(msg),
+                        Err(TryRecvError::Lagged(_)) => {}
+                        Err(_) => break,
+                    }
+                }
+                let members = u32::try_from(messages.len()).unwrap_or(u32::MAX);
+                for _ in 0..members {
+                    window.yielded(rx.len());
+                }
+                let round = window.open_batch(members);
+                let batch = messages
+                    .iter()
+                    .map(|msg| {
+                        RoundMessage::new(
+                            to_message(msg, codec.as_ref(), pool),
+                            Arc::clone(window),
+                            round.clone(),
+                        )
+                    })
+                    .collect();
+                return Some((Ok(batch), (rx, codec)));
+            }
+        })
     }
 }
 
@@ -524,7 +650,7 @@ impl Drop for PubSubWire {
     }
 }
 
-fn to_message(msg: &Message, codec: Option<&SharedEnvelope>) -> RedisPubSubMessage {
+fn to_message(msg: &Message, codec: Option<&SharedEnvelope>, pool: &Pool) -> RedisPubSubMessage {
     let raw = msg.value.as_bytes().unwrap_or(&[]);
     let (payload, headers) = unframe(codec, raw);
     RedisPubSubMessage {
@@ -534,6 +660,7 @@ fn to_message(msg: &Message, codec: Option<&SharedEnvelope>) -> RedisPubSubMessa
         pattern: matches!(msg.kind, MessageKind::PMessage),
         payload,
         headers,
+        pool: pool.clone(),
     }
 }
 
@@ -543,11 +670,12 @@ impl ruststream::Subscriber for PubSubWire {
 
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
         let codec = self.codec.clone();
-        unfold((&mut self.rx, codec), |(rx, codec)| async move {
+        let pool = &self.pool;
+        unfold((&mut self.rx, codec), move |(rx, codec)| async move {
             loop {
                 match rx.recv().await {
                     Ok(msg) => {
-                        let message = to_message(&msg, codec.as_ref());
+                        let message = to_message(&msg, codec.as_ref(), pool);
                         return Some((Ok(message), (rx, codec)));
                     }
                     // The receiver fell behind the broadcast buffer; skip the gap and keep reading.
@@ -566,6 +694,8 @@ pub struct RedisPubSubMessage {
     pattern: bool,
     payload: Bytes,
     headers: HeaderMap,
+    /// The broker's pool, which `Ctx<keys::FredPool>` hands the handler.
+    pool: Pool,
 }
 
 impl Debug for RedisPubSubMessage {
@@ -593,6 +723,11 @@ impl RedisPubSubMessage {
     #[must_use]
     pub fn from_pattern(&self) -> bool {
         self.pattern
+    }
+
+    /// The broker's connection pool, for the per-delivery context.
+    pub(crate) const fn pool(&self) -> &Pool {
+        &self.pool
     }
 }
 
@@ -750,6 +885,8 @@ pub struct RedisPubSubPublisher {
     core: Arc<RedisCore>,
     mode: PubSubMode,
     codec: Option<SharedEnvelope>,
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    round_name: u64,
 }
 
 impl Debug for RedisPubSubPublisher {
@@ -762,8 +899,14 @@ impl Debug for RedisPubSubPublisher {
 }
 
 impl RedisPubSubPublisher {
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    pub(crate) const fn round_name(&self) -> u64 {
+        self.round_name
+    }
+
     pub(crate) fn new(core: Arc<RedisCore>, publish: RedisPubSubPublish) -> Self {
         Self {
+            round_name: core.rounds().publisher(),
             core,
             mode: publish.mode,
             codec: publish.codec,
@@ -789,6 +932,21 @@ impl Publisher for RedisPubSubPublisher {
         options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
         let (channel, payload, headers) = msg.into_parts();
+        if let Some(round) = self
+            .core
+            .rounds()
+            .joined(self.round_name, joins_round(options))
+        {
+            let body = frame(
+                self.codec.as_ref(),
+                payload,
+                &resolved_headers(headers, options),
+            );
+            return round
+                .publish(channel, body, self.mode == PubSubMode::Sharded)
+                .await
+                .map_err(RedisError::publish);
+        }
         send(
             &self.core,
             self.mode,
@@ -827,7 +985,13 @@ pub(crate) async fn send(
 mod tests {
     use super::*;
     use crate::context::PubSubContext;
+    use fred::types::config::Config;
     use ruststream::BuildContext;
+
+    /// An unconnected pool (just client structs); `Pool::new` opens no sockets.
+    fn offline_pool() -> Pool {
+        Pool::new(Config::default(), None, None, None, 1).expect("offline pool")
+    }
 
     #[test]
     fn build_context_reads_channel_and_pattern_flag() {
@@ -836,6 +1000,7 @@ mod tests {
             pattern: false,
             payload: Bytes::from_static(b"{}"),
             headers: HeaderMap::new(),
+            pool: offline_pool(),
         };
         let cx = PubSubContext::build(&exact);
         assert_eq!(cx.channel(), "events");
@@ -846,6 +1011,7 @@ mod tests {
             pattern: true,
             payload: Bytes::from_static(b"{}"),
             headers: HeaderMap::new(),
+            pool: offline_pool(),
         };
         assert!(PubSubContext::build(&matched).from_pattern());
     }

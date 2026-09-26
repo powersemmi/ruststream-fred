@@ -47,6 +47,10 @@
   (`batch(nonzero!(n))`); on a stream that number is the `COUNT` of the `XREADGROUP` that fetches
   the batch, while lists and Pub/Sub pop one entry at a time and assemble the batch on the client.
   Redis's own read option, `block(..)`, chains after the size on the stream and list forms.
+- **Pipelining on every form.** `.pipeline()` on a descriptor opens a window: the settles of a
+  fetch leave in one round trip, and the Redis commands a handler queues through
+  `Ctx<keys::Pipeline>` leave with them, only if the delivery is acknowledged. `.atomic()` after it
+  makes each delivery's commands and its acknowledgement one `MULTI` / `EXEC`.
 - **One prelude per transport.** `stream::prelude`, `list::prelude`, and `pubsub::prelude` each
   carry the core prelude, that form's descriptor and options, and that form's publish policy under
   the uniform name `Publish` (streams add `TransactionalPublish` for the same policy), so a mount
@@ -156,7 +160,8 @@ slot with a capability (`Out<impl Publisher>`, `Out<impl TransactionalPublisher>
 never names a Redis type.
 
 Runnable examples live in `crates/ruststream-fred/examples/`, one per subject: `fred_streams`,
-`fred_list`, `fred_pubsub`, `fred_transaction`, `fred_seek`, `fred_dead_letter`, `fred_auth`.
+`fred_list`, `fred_pubsub`, `fred_pipeline`, `fred_transaction`, `fred_seek`, `fred_dead_letter`,
+`fred_auth`.
 
 ## Test it
 

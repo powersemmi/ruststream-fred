@@ -30,7 +30,13 @@
 //!   matched through a `PSUBSCRIBE` pattern (for a pattern subscription the channel differs from the
 //!   registered glob).
 //!
-//! Lists carry nothing native beyond their payload and headers, so they stay on the `()` default.
+//! * [`PoolContext`] (every form) - the broker's connection pool alone, which
+//!   [`keys::FredPool`] reads. The key also reads [`StreamContext`], [`StreamBatchContext`] and
+//!   [`PubSubContext`], so a handler takes the pool beside a form's own keys; `Ctx<keys::FredPool>`
+//!   goes after the form's key there, because the first `Ctx` key names the handler's context.
+//!
+//! Lists carry nothing native beyond their payload and headers, so a list handler reads the pool
+//! off [`PoolContext`] or stays on the `()` default.
 //!
 //! # Examples
 //!
@@ -47,16 +53,22 @@
 //! # let _ = handle;
 //! ```
 
+use std::convert::Infallible;
+
+use fred::clients::Pool;
+use ruststream::runtime::{Context, Ctx, FromContext};
 use ruststream::{BuildBatchContext, BuildContext, Field};
 
+use crate::list::RedisListMessage;
 use crate::message::RedisMessage;
+use crate::pipeline::{Form, RedisPipeline, RoundMessage};
 use crate::pubsub::RedisPubSubMessage;
 use crate::seek::{EntryId, RedisGroupPosition, RedisGroupSeeker};
 
 /// Per-delivery context for a Redis Streams delivery ([`RedisMessage`]).
 ///
 /// Built once per delivery from the message. Read its fields by [`keys`] key off a
-/// [`Context`](ruststream::runtime::Context), or bind one as a handler parameter with the core
+/// [`Context`], or bind one as a handler parameter with the core
 /// `Ctx<K>` extractor. A body that repositions its group names this type as its context and needs
 /// nothing else: the [`keys::SeekHandle`] key carries the live handle.
 ///
@@ -116,6 +128,12 @@ impl StreamContext {
     #[must_use]
     pub const fn seeker(&self) -> &RedisGroupSeeker {
         &self.seeker
+    }
+
+    /// The broker's connection pool, for a command whose answer the handler needs now.
+    #[must_use]
+    pub const fn pool(&self) -> &Pool {
+        self.seeker.pool()
     }
 }
 
@@ -187,6 +205,12 @@ impl StreamBatchContext {
     pub const fn seeker(&self) -> &RedisGroupSeeker {
         &self.seeker
     }
+
+    /// The broker's connection pool, for a command whose answer the batch needs now.
+    #[must_use]
+    pub const fn pool(&self) -> &Pool {
+        self.seeker.pool()
+    }
 }
 
 impl BuildBatchContext<RedisMessage> for StreamBatchContext {
@@ -201,20 +225,44 @@ impl BuildBatchContext<RedisMessage> for StreamBatchContext {
 ///
 /// Pub/Sub keeps no history, so there is nothing to reposition and no position to report: the
 /// fields are the delivery's own channel and how it matched.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct PubSubContext {
     channel: String,
     from_pattern: bool,
+    pool: Pool,
 }
 
 impl PubSubContext {
     /// Constructs a context directly from its native fields (mainly for tests).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fred::clients::Pool;
+    /// use fred::types::config::Config;
+    /// use ruststream_fred::context::PubSubContext;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// // An unconnected pool: `Pool::new` opens no socket.
+    /// let pool = Pool::new(Config::default(), None, None, None, 1)?;
+    /// let cx = PubSubContext::new("events.eu", true, pool);
+    /// assert_eq!(cx.channel(), "events.eu");
+    /// # Ok(())
+    /// # }
+    /// ```
     #[must_use]
-    pub fn new(channel: impl Into<String>, from_pattern: bool) -> Self {
+    pub fn new(channel: impl Into<String>, from_pattern: bool, pool: Pool) -> Self {
         Self {
             channel: channel.into(),
             from_pattern,
+            pool,
         }
+    }
+
+    /// The broker's connection pool, for a command whose answer the handler needs now.
+    #[must_use]
+    pub const fn pool(&self) -> &Pool {
+        &self.pool
     }
 
     /// The concrete channel this message arrived on (the matched channel, not the subscription
@@ -236,7 +284,186 @@ impl BuildContext<RedisPubSubMessage> for PubSubContext {
         Self {
             channel: msg.channel().to_owned(),
             from_pattern: msg.from_pattern(),
+            pool: msg.pool().clone(),
         }
+    }
+}
+
+/// The per-delivery context that carries the broker's connection pool and nothing else: what a
+/// handler taking `Ctx<keys::FredPool>` alone reads, on every form.
+///
+/// # Examples
+///
+/// ```
+/// # mod demo {
+/// use fred::interfaces::KeysInterface;
+/// use ruststream::prelude::*;
+/// use ruststream::subscriber;
+/// use ruststream_fred::RedisList;
+/// use ruststream_fred::context::keys;
+/// # #[derive(serde::Deserialize)]
+/// # struct Job { id: u64 }
+///
+/// /// Counts every job in a key the handler reads back at once.
+/// #[subscriber(RedisList::new("jobs").reliable())]
+/// async fn work(job: &Job, Ctx(pool): Ctx<keys::FredPool>) -> HandlerOutcome {
+///     let _ = job.id;
+///     match pool.incr::<i64, _>("jobs.seen").await {
+///         Ok(_) => HandlerOutcome::ack(),
+///         Err(_) => HandlerOutcome::retry(),
+///     }
+/// }
+/// # }
+/// ```
+#[derive(Debug, Clone)]
+pub struct PoolContext {
+    pool: Pool,
+}
+
+impl PoolContext {
+    /// The broker's connection pool.
+    #[must_use]
+    pub const fn pool(&self) -> &Pool {
+        &self.pool
+    }
+
+    pub(crate) const fn from_pool(pool: Pool) -> Self {
+        Self { pool }
+    }
+}
+
+impl BuildContext<RedisMessage> for PoolContext {
+    fn build(msg: &RedisMessage) -> Self {
+        Self::from_pool(msg.seeker().pool().clone())
+    }
+}
+
+impl BuildContext<RedisListMessage> for PoolContext {
+    fn build(msg: &RedisListMessage) -> Self {
+        Self::from_pool(msg.pool().clone())
+    }
+}
+
+impl BuildContext<RedisPubSubMessage> for PoolContext {
+    fn build(msg: &RedisPubSubMessage) -> Self {
+        Self::from_pool(msg.pool().clone())
+    }
+}
+
+/// The stand-in's deliveries carry its pool, so a handler taking `Ctx<keys::FredPool>` mounts on
+/// the harness as it mounts on a server.
+#[cfg(feature = "testing")]
+impl BuildContext<crate::testing::RedisTestMessage> for PoolContext {
+    fn build(msg: &crate::testing::RedisTestMessage) -> Self {
+        Self::from_pool(msg.pool().clone())
+    }
+}
+
+/// The per-delivery context of a `.pipeline()` subscription: the delivery's round and the
+/// broker's connection pool.
+///
+/// Only a pipelined subscription's delivery builds it, which is what makes `Ctx<keys::Pipeline>`
+/// a compile error on a subscription without a window.
+///
+/// # Examples
+///
+/// ```
+/// # mod demo {
+/// use ruststream::prelude::*;
+/// use ruststream::subscriber;
+/// use ruststream_fred::PipelinedStream;
+/// use ruststream_fred::context::{PipelineContext, keys};
+/// # #[derive(serde::Deserialize)]
+/// # struct Order { id: u64 }
+///
+/// #[subscriber(PipelinedStream::new("orders").group("workers"))]
+/// async fn work(order: &Order, ctx: &mut Context<'_, PipelineContext>) -> HandlerOutcome {
+///     let queued = ctx.context(keys::Pipeline).incr("orders.seen").await;
+///     let _ = order.id;
+///     if queued.is_err() {
+///         return HandlerOutcome::retry();
+///     }
+///     HandlerOutcome::ack()
+/// }
+/// # }
+/// ```
+#[derive(Debug, Clone)]
+pub struct PipelineContext {
+    pipeline: RedisPipeline,
+    pool: Pool,
+}
+
+impl PipelineContext {
+    /// The delivery's round: what the handler queues its commands into.
+    #[must_use]
+    pub const fn pipeline(&self) -> &RedisPipeline {
+        &self.pipeline
+    }
+
+    /// The broker's connection pool, for a command whose answer the handler needs now.
+    #[must_use]
+    pub const fn pool(&self) -> &Pool {
+        &self.pool
+    }
+}
+
+impl<F: Form> BuildContext<RoundMessage<F>> for PipelineContext {
+    fn build(msg: &RoundMessage<F>) -> Self {
+        Self {
+            pipeline: RedisPipeline::new(msg.round().clone()),
+            pool: F::pool(msg.inner()).clone(),
+        }
+    }
+}
+
+/// A batch of a `.pipeline()` subscription is one segment: its context hands the batch body the
+/// round every delivery of the batch shares.
+impl<F: Form> BuildBatchContext<RoundMessage<F>> for PipelineContext {
+    fn build(first: &RoundMessage<F>) -> Self {
+        <Self as BuildContext<RoundMessage<F>>>::build(first)
+    }
+}
+
+impl<F: Form> BuildContext<RoundMessage<F>> for PoolContext {
+    fn build(msg: &RoundMessage<F>) -> Self {
+        Self::from_pool(F::pool(msg.inner()).clone())
+    }
+}
+
+/// `Ctx<keys::FredPool>` beside `Ctx<keys::Pipeline>`: the handler's context is
+/// [`PipelineContext`] there.
+impl<State: Sync> FromContext<PipelineContext, State> for Ctx<keys::FredPool> {
+    type Rejection = Infallible;
+
+    fn from_context(
+        ctx: &mut Context<'_, PipelineContext, State>,
+    ) -> impl Future<Output = Result<Self, Infallible>> + Send {
+        let pool = ctx.context(keys::FredPool).clone();
+        async move { Ok(Self(pool)) }
+    }
+}
+
+/// `Ctx<keys::FredPool>` beside a stream key: the handler's context is [`StreamContext`] there.
+impl<State: Sync> FromContext<StreamContext, State> for Ctx<keys::FredPool> {
+    type Rejection = Infallible;
+
+    fn from_context(
+        ctx: &mut Context<'_, StreamContext, State>,
+    ) -> impl Future<Output = Result<Self, Infallible>> + Send {
+        let pool = ctx.context(keys::FredPool).clone();
+        async move { Ok(Self(pool)) }
+    }
+}
+
+/// `Ctx<keys::FredPool>` beside a Pub/Sub key: the handler's context is [`PubSubContext`] there.
+impl<State: Sync> FromContext<PubSubContext, State> for Ctx<keys::FredPool> {
+    type Rejection = Infallible;
+
+    fn from_context(
+        ctx: &mut Context<'_, PubSubContext, State>,
+    ) -> impl Future<Output = Result<Self, Infallible>> + Send {
+        let pool = ctx.context(keys::FredPool).clone();
+        async move { Ok(Self(pool)) }
     }
 }
 
@@ -250,10 +477,87 @@ impl BuildContext<RedisPubSubMessage> for PubSubContext {
 pub mod keys {
     use ruststream::ContextField;
 
+    use fred::clients::Pool;
+
     use super::{
-        Field, PubSubContext, RedisGroupPosition, RedisGroupSeeker, StreamBatchContext,
-        StreamContext,
+        Field, PipelineContext, PoolContext, PubSubContext, RedisGroupPosition, RedisGroupSeeker,
+        RedisPipeline, StreamBatchContext, StreamContext,
     };
+
+    /// Reads the delivery's round off the context of a `.pipeline()` subscription: the
+    /// [`RedisPipeline`] its handler queues commands into.
+    ///
+    /// The key names [`PipelineContext`], which only a pipelined subscription's delivery builds,
+    /// so taking it on a subscription without a window does not compile.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+    pub struct Pipeline;
+
+    impl ContextField for Pipeline {
+        type Context = PipelineContext;
+        type Value = RedisPipeline;
+        fn read(self, src: &PipelineContext) -> RedisPipeline {
+            src.pipeline().clone()
+        }
+    }
+
+    impl Field<PipelineContext> for Pipeline {
+        type Value<'a> = &'a RedisPipeline;
+        fn get(self, src: &PipelineContext) -> &RedisPipeline {
+            src.pipeline()
+        }
+    }
+
+    impl Field<PipelineContext> for FredPool {
+        type Value<'a> = &'a Pool;
+        fn get(self, src: &PipelineContext) -> &Pool {
+            src.pool()
+        }
+    }
+
+    /// Reads the broker's connection pool, `fred::clients::Pool`, off the context of any
+    /// subscription.
+    ///
+    /// For a command whose answer the handler needs now, or one that must leave at once. As the
+    /// only `Ctx` key of a handler it names [`PoolContext`]; beside a form's own key it reads
+    /// that form's context, and goes after that key in the signature.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+    pub struct FredPool;
+
+    impl ContextField for FredPool {
+        type Context = PoolContext;
+        type Value = Pool;
+        fn read(self, src: &PoolContext) -> Pool {
+            src.pool().clone()
+        }
+    }
+
+    impl Field<PoolContext> for FredPool {
+        type Value<'a> = &'a Pool;
+        fn get(self, src: &PoolContext) -> &Pool {
+            src.pool()
+        }
+    }
+
+    impl Field<StreamContext> for FredPool {
+        type Value<'a> = &'a Pool;
+        fn get(self, src: &StreamContext) -> &Pool {
+            src.pool()
+        }
+    }
+
+    impl Field<StreamBatchContext> for FredPool {
+        type Value<'a> = &'a Pool;
+        fn get(self, src: &StreamBatchContext) -> &Pool {
+            src.pool()
+        }
+    }
+
+    impl Field<PubSubContext> for FredPool {
+        type Value<'a> = &'a Pool;
+        fn get(self, src: &PubSubContext) -> &Pool {
+            src.pool()
+        }
+    }
 
     /// Reads the stream entry id this delivery was read at off a [`StreamContext`].
     ///
@@ -398,22 +702,29 @@ pub mod keys {
 mod tests {
     use super::PubSubContext;
     use super::keys::{Channel, FromPattern};
+    use fred::clients::Pool;
+    use fred::types::config::Config;
     use ruststream::{ContextField, Field};
+
+    /// An unconnected pool (just client structs); `Pool::new` opens no sockets.
+    fn offline_pool() -> Pool {
+        Pool::new(Config::default(), None, None, None, 1).expect("offline pool")
+    }
 
     #[test]
     fn pubsub_keys_read_channel_and_pattern_flag() {
-        let exact = PubSubContext::new("events", false);
+        let exact = PubSubContext::new("events", false, offline_pool());
         assert_eq!(Channel.get(&exact), "events");
         assert!(!FromPattern.get(&exact));
 
-        let matched = PubSubContext::new("events.user", true);
+        let matched = PubSubContext::new("events.user", true, offline_pool());
         assert_eq!(Channel.get(&matched), "events.user");
         assert!(FromPattern.get(&matched));
     }
 
     #[test]
     fn pubsub_context_field_keys_yield_owned_values() {
-        let pubsub = PubSubContext::new("orders.eu", true);
+        let pubsub = PubSubContext::new("orders.eu", true, offline_pool());
         assert_eq!(
             <Channel as ContextField>::read(Channel, &pubsub),
             "orders.eu".to_owned()

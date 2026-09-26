@@ -27,6 +27,7 @@ use crate::message::PARTITION_KEY_HEADER;
 ///
 /// let options = RedisPublishOptions {
 ///     partition_key: Some(b"tenant-a".to_vec()),
+///     ..RedisPublishOptions::default()
 /// };
 /// assert_eq!(options.partition_key.as_deref(), Some(b"tenant-a".as_slice()));
 /// ```
@@ -36,6 +37,13 @@ pub struct RedisPublishOptions {
     ///
     /// Opaque bytes: the runtime hashes them to pick a dispatch lane, and never interprets them.
     pub partition_key: Option<Vec<u8>>,
+
+    /// Whether this message joins the round of the delivery being handled, on a `.pipeline()`
+    /// subscription, instead of leaving at once.
+    ///
+    /// The [`InRound`](crate::pipeline::InRound) transform sets it on a reply; a message sent
+    /// outside a pipelined delivery's handling leaves at once whatever it says.
+    pub join_round: bool,
 }
 
 /// The steps this crate adds to the publish builder.
@@ -131,6 +139,7 @@ mod tests {
 
         let options = RedisPublishOptions {
             partition_key: Some(b"tenant-a".to_vec()),
+            ..RedisPublishOptions::default()
         };
         let resolved = resolved_headers(headers, Some(&options));
 

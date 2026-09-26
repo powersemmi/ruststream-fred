@@ -20,6 +20,7 @@
 //! [`RedisListPublish::codec`]. Both framings are lossless; the envelope writes a field whose
 //! bytes are valid UTF-8 as text and any other bytes as themselves.
 
+use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
 use std::future::{Future, ready};
 use std::num::NonZeroUsize;
@@ -27,9 +28,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use fred::clients::Pool;
+use fred::clients::{Client, Pool};
 use fred::error::ErrorKind;
-use fred::interfaces::{KeysInterface, ListInterface};
+use fred::interfaces::{KeysInterface, ListInterface, SortedSetsInterface};
+use fred::types::Value;
 use fred::types::lists::LMoveDirection;
 use futures::Stream;
 use futures::stream::unfold;
@@ -45,8 +47,11 @@ use ruststream::{
 use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::envelope::{SharedEnvelope, frame, unframe};
 use crate::partition::{RedisPublishOptions, resolved_headers};
+use crate::pipeline::{ListForm, Pipelined, RoundMessage, Window};
+use crate::publisher::joins_round;
 use crate::recovery::{self, RecoveryConfig};
 use crate::route::Route;
+use crate::subscriber::other_than;
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
 
 /// This form's publish policy, [`RedisListPublish`], under the mount-site name every form gives
@@ -77,9 +82,13 @@ pub mod prelude {
     pub use ruststream::prelude::*;
 
     pub use super::{Publish, RedisList};
+    // `keys` arrives as the module, not as a glob: its members are short words a service also uses
+    // for its own types, and `Ctx<keys::FredPool>` reads as what it is at the use site.
+    pub use crate::context::{PipelineContext, PoolContext, keys};
+    pub use crate::pipeline::{AtomicStep, Bindable, InRound};
     pub use crate::{
-        PARTITION_KEY_HEADER, RedisBroker, RedisPublishOptions, RedisPublishSteps,
-        RedisSubscribeExt,
+        AtomicList, PARTITION_KEY_HEADER, PipelinedList, RedisBroker, RedisPublishOptions,
+        RedisPublishSteps, RedisSubscribeExt,
     };
 
     #[cfg(any(
@@ -167,6 +176,27 @@ impl RedisList {
             recovery_ttl: None,
             dead_letter: None,
         }
+    }
+
+    /// Opens a window on this subscription: its settles and the commands its handlers queue
+    /// through [`keys::Pipeline`](crate::context::keys::Pipeline) leave together, in one pipeline
+    /// on a connection of the pool.
+    ///
+    /// A pipelined list reads in batches: a reliable list claims with one pipeline of `LMOVE`, a
+    /// simple one pops with `RPOP key count`, and both wait with their blocking pop on an empty
+    /// queue. A reliable list's `LREM` settles ride the window; a simple list settles nothing, so
+    /// its window carries the handlers' commands alone. See [`pipeline`](crate::pipeline).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream_fred::RedisList;
+    ///
+    /// let jobs = RedisList::new("jobs").reliable().pipeline();
+    /// # let _ = jobs;
+    /// ```
+    pub const fn pipeline(self) -> Pipelined<Self> {
+        Pipelined::wrap(self)
     }
 
     /// Switches to reliable (at-least-once) mode: entries move to a processing list and are removed
@@ -432,28 +462,8 @@ impl Debug for RedisListSubscriber {
 }
 
 impl RedisListSubscriber {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal constructor mirroring the descriptor"
-    )]
-    pub(crate) fn new(
-        pool: Pool,
-        key: String,
-        reliable: bool,
-        processing: String,
-        block: Duration,
-        codec: Option<SharedEnvelope>,
-        recovery: Option<RecoveryConfig>,
-    ) -> Self {
-        Self(BufferedSubscriber::new(ListWire {
-            pool,
-            key,
-            reliable,
-            processing,
-            block,
-            codec,
-            recovery,
-        }))
+    pub(crate) fn new(wire: ListWire) -> Self {
+        Self(BufferedSubscriber::new(wire))
     }
 }
 
@@ -491,8 +501,11 @@ impl BatchSubscriber for RedisListSubscriber {
 }
 
 /// The wire side of a list subscription: one blocking pop per delivery.
-struct ListWire {
+pub(crate) struct ListWire {
     pool: Pool,
+    /// The connection every pop goes out on. A blocking pop holds its connection until it returns,
+    /// so the pops keep to one, and a window flushes on another.
+    reader: Client,
     key: String,
     reliable: bool,
     processing: String,
@@ -512,12 +525,38 @@ impl Debug for ListWire {
 }
 
 impl ListWire {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal constructor mirroring the descriptor"
+    )]
+    pub(crate) fn new(
+        pool: Pool,
+        key: String,
+        reliable: bool,
+        processing: String,
+        block: Duration,
+        codec: Option<SharedEnvelope>,
+        recovery: Option<RecoveryConfig>,
+    ) -> Self {
+        Self {
+            reader: pool.next().clone(),
+            pool,
+            key,
+            reliable,
+            processing,
+            block,
+            codec,
+            recovery,
+        }
+    }
+
     fn simple_message(&self, raw: &[u8]) -> RedisListMessage {
         let (payload, headers) = unframe(self.codec.as_ref(), raw);
         RedisListMessage {
             payload,
             headers,
             ack: None,
+            pool: self.pool.clone(),
         }
     }
 
@@ -526,8 +565,8 @@ impl ListWire {
         RedisListMessage {
             payload,
             headers,
+            pool: self.pool.clone(),
             ack: Some(ListAck {
-                pool: self.pool.clone(),
                 main_key: self.key.clone(),
                 processing_key: self.processing.clone(),
                 value: raw,
@@ -546,7 +585,7 @@ impl ListWire {
                 recovery::sweep_orphans(&self.pool, cfg, &self.key, &self.processing).await?;
             }
             let value: Option<Vec<u8>> = empty_on_timeout(
-                self.pool
+                self.reader
                     .blmove(
                         self.key.as_str(),
                         self.processing.as_str(),
@@ -572,9 +611,270 @@ impl ListWire {
             Ok(Some(self.reliable_message(value, handle)))
         } else {
             let popped: Option<(String, Vec<u8>)> =
-                empty_on_timeout(self.pool.brpop(self.key.as_str(), secs).await)?;
+                empty_on_timeout(self.reader.brpop(self.key.as_str(), secs).await)?;
             Ok(popped.map(|(_, v)| self.simple_message(&v)))
         }
+    }
+}
+
+/// One entry a pipelined list read claimed or popped: its raw value and, on a reliable list with
+/// orphan recovery, the member its claim is tracked by.
+type Claimed = (Vec<u8>, Option<RecoveryHandle>);
+
+impl ListWire {
+    /// The settle side of this subscription inside a window.
+    pub(crate) fn round_form(&self) -> ListForm {
+        ListForm::new(
+            self.key.as_str(),
+            self.processing.as_str(),
+            self.recovery.as_ref().map(|cfg| cfg.zset_key.as_str()),
+        )
+    }
+
+    /// The window's client: a connection of the pool the flushes go out on.
+    pub(crate) fn round_client(&self) -> Client {
+        other_than(&self.pool, &self.reader)
+    }
+
+    /// The key this subscription reads.
+    pub(crate) fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Takes up to `count` entries in one round trip, and waits for one when the list is empty.
+    ///
+    /// A reliable list claims with `LMOVE` into its processing list, `count` of them in one
+    /// pipeline, and keeps `BLMOVE` for waiting on an empty queue; a simple list pops with
+    /// `RPOP key count` and waits with `BRPOP`. Both read the right end, the end a producer's
+    /// `LPUSH` makes the oldest.
+    async fn claim(&self, count: usize, into: &mut VecDeque<Claimed>) -> Result<(), RedisError> {
+        let before = into.len();
+        if self.reliable {
+            if let Some(cfg) = &self.recovery {
+                recovery::sweep_orphans(&self.pool, cfg, &self.key, &self.processing).await?;
+            }
+            let claims = self.reader.pipeline();
+            for _ in 0..count {
+                claims
+                    .lmove::<(), _, _>(
+                        self.key.as_str(),
+                        self.processing.as_str(),
+                        LMoveDirection::Right,
+                        LMoveDirection::Left,
+                    )
+                    .await
+                    .map_err(RedisError::stream)?;
+            }
+            for reply in claims.try_all::<Value>().await {
+                // An empty answer is a pop that found the queue dry; a producer may push between
+                // two of them, so every answer is read: each entry answered is on the processing
+                // list now and has to be delivered.
+                match reply.map_err(RedisError::stream)? {
+                    Value::Null => {}
+                    value => into.push_back((value_bytes(value)?, None)),
+                }
+            }
+        } else {
+            let popped: Value = self
+                .reader
+                .rpop(self.key.as_str(), Some(count))
+                .await
+                .map_err(RedisError::stream)?;
+            if let Value::Array(values) = popped {
+                for value in values {
+                    into.push_back((value_bytes(value)?, None));
+                }
+            }
+        }
+        if into.len() == before
+            && let Some(value) = self.wait_one().await?
+        {
+            // The queue was empty: the blocking pop waited for one, and the next read claims the
+            // rest of what arrived.
+            into.push_back((value, None));
+        }
+        self.track(into.range_mut(before..)).await
+    }
+
+    /// Waits for one entry on an empty list: `BLMOVE` into the processing list on a reliable list,
+    /// `BRPOP` on a simple one. `None` when the wait timed out.
+    async fn wait_one(&self) -> Result<Option<Vec<u8>>, RedisError> {
+        let secs = block_secs(self.block);
+        if self.reliable {
+            empty_on_timeout(
+                self.reader
+                    .blmove(
+                        self.key.as_str(),
+                        self.processing.as_str(),
+                        LMoveDirection::Right,
+                        LMoveDirection::Left,
+                        secs,
+                    )
+                    .await,
+            )
+        } else {
+            let popped: Option<(String, Vec<u8>)> =
+                empty_on_timeout(self.reader.brpop(self.key.as_str(), secs).await)?;
+            Ok(popped.map(|(_, value)| value))
+        }
+    }
+
+    /// Records every fresh claim in the recovery ZSET, in one pipeline.
+    async fn track<'a>(
+        &self,
+        claimed: impl Iterator<Item = &'a mut Claimed>,
+    ) -> Result<(), RedisError> {
+        let Some(cfg) = &self.recovery else {
+            return Ok(());
+        };
+        let tracking = self.pool.next().pipeline();
+        let mut any = false;
+        for (value, handle) in claimed {
+            let (score, member) = recovery::tracked(value);
+            tracking
+                .zadd::<(), _, _>(
+                    cfg.zset_key.as_str(),
+                    None,
+                    None,
+                    false,
+                    false,
+                    (score, member.clone()),
+                )
+                .await
+                .map_err(RedisError::stream)?;
+            *handle = Some(RecoveryHandle {
+                zset_key: cfg.zset_key.clone(),
+                member,
+            });
+            any = true;
+        }
+        if !any {
+            return Ok(());
+        }
+        if let Some(ttl) = cfg.ttl_millis() {
+            tracking
+                .pexpire::<(), _>(cfg.zset_key.as_str(), ttl, None)
+                .await
+                .map_err(RedisError::stream)?;
+        }
+        for reply in tracking.try_all::<Value>().await {
+            reply.map_err(RedisError::stream)?;
+        }
+        Ok(())
+    }
+
+    fn message_of(&self, (value, recovery): Claimed) -> RedisListMessage {
+        if self.reliable {
+            self.reliable_message(value, recovery)
+        } else {
+            self.simple_message(&value)
+        }
+    }
+}
+
+/// The raw bytes of a popped value.
+fn value_bytes(value: Value) -> Result<Vec<u8>, RedisError> {
+    match value {
+        Value::Bytes(bytes) => Ok(bytes.to_vec()),
+        Value::String(text) => Ok(text.as_bytes().to_vec()),
+        other => Err(RedisError::Stream(
+            format!("a list read answered with {other:?} where an entry was expected").into(),
+        )),
+    }
+}
+
+/// A list subscription's reader, as a pipelined subscription holds it: the wire and the entries
+/// its last read claimed.
+pub struct ListReader {
+    wire: ListWire,
+    buffer: VecDeque<Claimed>,
+}
+
+impl Debug for ListReader {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ListReader")
+            .field("wire", &self.wire)
+            .field("buffered", &self.buffer.len())
+            .finish()
+    }
+}
+
+impl ListReader {
+    pub(crate) const fn new(wire: ListWire) -> Self {
+        Self {
+            wire,
+            buffer: VecDeque::new(),
+        }
+    }
+
+    /// Yields one delivery per entry, each with a slot in `window`, claiming `count` at a time,
+    /// and reports a failed flush of the window once.
+    pub(crate) fn round_stream<'a>(
+        &'a mut self,
+        window: &'a Arc<Window<ListForm>>,
+        count: usize,
+    ) -> impl Stream<Item = Result<RoundMessage<ListForm>, RedisError>> + Send + 'a {
+        unfold(self, move |reader| async move {
+            loop {
+                if let Some(failure) = window.take_failure() {
+                    return Some((Err(failure), reader));
+                }
+                if let Some(claimed) = reader.buffer.pop_front() {
+                    let delivery = reader.wire.message_of(claimed);
+                    let round = window.open();
+                    return Some((
+                        Ok(RoundMessage::new(delivery, Arc::clone(window), round)),
+                        reader,
+                    ));
+                }
+                if let Err(err) = reader.wire.claim(count, &mut reader.buffer).await {
+                    return Some((Err(err), reader));
+                }
+                window.fetched(reader.buffer.len());
+            }
+        })
+    }
+}
+
+impl ListReader {
+    /// Yields one batch per read of up to `size` entries, sharing one slot of `window`, so what
+    /// the batch handler queued commits with the settles of every entry.
+    pub(crate) fn round_batches<'a>(
+        &'a mut self,
+        window: &'a Arc<Window<ListForm>>,
+        size: NonZeroUsize,
+    ) -> impl Stream<Item = Result<Vec<RoundMessage<ListForm>>, RedisError>> + Send + 'a {
+        window.fill_at(size.get());
+        unfold(self, move |reader| async move {
+            loop {
+                if let Some(failure) = window.take_failure() {
+                    return Some((Err(failure), reader));
+                }
+                if !reader.buffer.is_empty() {
+                    let take = size.get().min(reader.buffer.len());
+                    let members = u32::try_from(take).unwrap_or(u32::MAX);
+                    let round = window.open_batch(members);
+                    let batch = reader
+                        .buffer
+                        .drain(..take)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .map(|claimed| {
+                            RoundMessage::new(
+                                reader.wire.message_of(claimed),
+                                Arc::clone(window),
+                                round.clone(),
+                            )
+                        })
+                        .collect();
+                    return Some((Ok(batch), reader));
+                }
+                if let Err(err) = reader.wire.claim(size.get(), &mut reader.buffer).await {
+                    return Some((Err(err), reader));
+                }
+                window.fetched(reader.buffer.len());
+            }
+        })
     }
 }
 
@@ -597,7 +897,6 @@ impl ruststream::Subscriber for ListWire {
 
 /// Settlement handle for a reliable-mode list delivery.
 struct ListAck {
-    pool: Pool,
     main_key: String,
     processing_key: String,
     /// The raw wire value (framed), needed verbatim to `LREM` it from the processing list.
@@ -619,6 +918,23 @@ pub struct RedisListMessage {
     payload: Bytes,
     headers: HeaderMap,
     ack: Option<ListAck>,
+    /// The connection the entry was read on: what settles it, and what `Ctx<keys::FredPool>`
+    /// hands the handler.
+    pool: Pool,
+}
+
+impl RedisListMessage {
+    /// The broker's connection pool, for the per-delivery context.
+    pub(crate) const fn pool(&self) -> &Pool {
+        &self.pool
+    }
+
+    /// Takes what a window settles this delivery with: the raw entry and the member its claim is
+    /// tracked by, on a reliable list. `None` on a simple list, which settles nothing.
+    pub(crate) fn into_settle(self) -> Option<(Vec<u8>, Option<Vec<u8>>)> {
+        self.ack
+            .map(|handle| (handle.value, handle.recovery.map(|rec| rec.member)))
+    }
 }
 
 impl Debug for RedisListMessage {
@@ -648,7 +964,7 @@ impl IncomingMessage for RedisListMessage {
         let Some(handle) = self.ack else {
             return Err(AckError::Unsupported);
         };
-        settle(&handle).await
+        settle(&self.pool, &handle).await
     }
 
     async fn nack(self, requeue: bool) -> Result<(), AckError> {
@@ -658,9 +974,9 @@ impl IncomingMessage for RedisListMessage {
         if requeue {
             // Return the original entry verbatim to the main list, before removing it from
             // processing (a crash in between leaves a duplicate rather than a loss).
-            lpush(&handle.pool, handle.main_key.as_str(), handle.value.clone()).await?;
+            lpush(&self.pool, handle.main_key.as_str(), handle.value.clone()).await?;
         }
-        settle(&handle).await
+        settle(&self.pool, &handle).await
     }
 }
 
@@ -675,14 +991,13 @@ async fn lpush(pool: &Pool, key: &str, body: Vec<u8>) -> Result<(), AckError> {
 
 /// Removes the entry from the processing list and, when recovery is enabled, drops its tracking from
 /// the recovery ZSET.
-async fn settle(handle: &ListAck) -> Result<(), AckError> {
-    let _: i64 = handle
-        .pool
+async fn settle(pool: &Pool, handle: &ListAck) -> Result<(), AckError> {
+    let _: i64 = pool
         .lrem(handle.processing_key.as_str(), 1, handle.value.clone())
         .await
         .map_err(ack_broker)?;
     if let Some(rec) = &handle.recovery {
-        recovery::forget(&handle.pool, &rec.zset_key, &rec.member).await?;
+        recovery::forget(pool, &rec.zset_key, &rec.member).await?;
     }
     Ok(())
 }
@@ -827,6 +1142,8 @@ pub struct RedisListPublisher {
     core: Arc<RedisCore>,
     codec: Option<SharedEnvelope>,
     ttl: Option<Duration>,
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    round_name: u64,
 }
 
 impl Debug for RedisListPublisher {
@@ -839,8 +1156,14 @@ impl Debug for RedisListPublisher {
 }
 
 impl RedisListPublisher {
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    pub(crate) const fn round_name(&self) -> u64 {
+        self.round_name
+    }
+
     pub(crate) fn new(core: Arc<RedisCore>, publish: RedisListPublish) -> Self {
         Self {
+            round_name: core.rounds().publisher(),
             core,
             codec: publish.codec,
             ttl: publish.ttl,
@@ -871,6 +1194,21 @@ impl ruststream::Publisher for RedisListPublisher {
         options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
         let (key, payload, headers) = msg.into_parts();
+        if let Some(round) = self
+            .core
+            .rounds()
+            .joined(self.round_name, joins_round(options))
+        {
+            let body = frame(
+                self.codec.as_ref(),
+                payload,
+                &resolved_headers(headers, options),
+            );
+            return round
+                .lpush(key, body, self.ttl.map(ttl_millis))
+                .await
+                .map_err(RedisError::publish);
+        }
         push(
             &self.core,
             self.codec.as_ref(),
@@ -910,7 +1248,7 @@ pub(crate) async fn push(
         .pexpire(key, ttl_millis(ttl), None)
         .await
         .map_err(RedisError::publish)?;
-    let _: Vec<fred::types::Value> = pipeline.all().await.map_err(RedisError::publish)?;
+    let _: Vec<Value> = pipeline.all().await.map_err(RedisError::publish)?;
     Ok(())
 }
 

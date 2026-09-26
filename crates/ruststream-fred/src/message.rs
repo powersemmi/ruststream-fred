@@ -143,6 +143,17 @@ impl RedisMessage {
     pub(crate) fn seeker(&self) -> &RedisGroupSeeker {
         &self.seeker
     }
+
+    /// Takes what a window settles this delivery with: its entry id, and the body and headers a
+    /// retry republishes or schedules.
+    pub(crate) fn into_settle(mut self) -> (String, Bytes, HeaderMap) {
+        let handle = self.ack.take().expect("RedisMessage settled twice");
+        (
+            handle.id,
+            std::mem::take(&mut self.payload),
+            std::mem::take(&mut self.headers),
+        )
+    }
 }
 
 impl Partitioned for RedisMessage {
