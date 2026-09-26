@@ -769,7 +769,7 @@ impl State {
     }
 
     /// Releases the count of a delayed entry its sweep just added back to `key`.
-    fn readded(&mut self, server: &Server, key: &Bytes) {
+    fn added_back(&mut self, server: &Server, key: &Bytes) {
         if let Some(held) = self.readd_holds.get_mut(key)
             && *held > 0
         {
