@@ -6,7 +6,7 @@ Redis Streams - это журнал, как Kafka: подписка читает
 собственное приложение сервиса на модели Redis внутри процесса, поэтому тестам не нужен сервер.
 
 ```toml
-ruststream = { version = ">=0.7.0-rc.9, <0.8.0", features = ["macros"] }
+ruststream = { version = ">=0.7.0-rc.10, <0.8.0", features = ["macros"] }
 ruststream-fred = "0.7"
 serde = { version = "1", features = ["derive"] }
 ```
