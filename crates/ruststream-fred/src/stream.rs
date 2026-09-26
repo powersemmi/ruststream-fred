@@ -30,10 +30,6 @@ use crate::asyncapi;
 use crate::broker::ConnectedRedisBroker;
 use crate::delay::{DelayConfig, DelayedRetry};
 use crate::pipeline::Pipelined;
-#[cfg(feature = "testing")]
-use crate::route::Route;
-#[cfg(feature = "testing")]
-use crate::testing::StreamRetry;
 use crate::{error::RedisError, subscriber::RedisSubscriber};
 
 /// This form's publish policy, [`RedisPublish`](crate::RedisPublish), under the mount-site name
@@ -464,95 +460,6 @@ impl RedeliveryAddressed<ConnectedRedisBroker> for RedisStream {
     fn redelivery_address(
         &self,
         _connected: &ConnectedRedisBroker,
-    ) -> impl Future<Output = Result<RedeliveryAddress, RedisError>> {
-        ready(Ok(self.redelivery_key()))
-    }
-}
-
-/// Mounts the production descriptor on the in-process stand-in, which routes by stream key alone.
-///
-/// The descriptor is validated exactly as [`ConnectedRedisBroker::subscribe`] validates it, so a
-/// subscription that a real server would refuse at startup is refused here too rather than passing
-/// a test and failing on deployment: a descriptor naming no consumer group is rejected.
-///
-/// [`RedisStream::reclaim`] is rejected as well. It asks for another consumer's stale pending
-/// entries, and the stand-in keeps no pending list for a subscription that never reads the tail,
-/// so honouring the mount would feed the handler fresh entries instead: the opposite set, and a
-/// test that passes on a delivery the real subscription could never make. Exercise recovery
-/// against a real server.
-///
-/// [`RedisStream::claiming`] does mount, because the stand-in can answer it honestly: a delivery
-/// carries the two counters the server sends and reports its count to the runtime, a retry leaves
-/// the entry pending, and the entry comes back ahead of fresh ones once it has been idle
-/// `min_idle`, with its delivery count raised. A test drives the wait with
-/// [`TestApp::advance`](ruststream::testing::TestApp::advance).
-///
-/// [`RedisStream::delayed_retry`] mounts too: naming a queue makes a delay native here as it is
-/// against a real server, and the stand-in holds the delivery for exactly that long instead of
-/// writing a ZSET it has none of.
-///
-/// Everything else the descriptor carries is inert here, because the stand-in has one queue per
-/// key, delivers on publish, and settles in memory: the group and consumer names, `start_id` and
-/// `block`. Nothing about a group cursor, `XAUTOCLAIM` redelivery or trimming can be asserted in
-/// process; those belong in a live-server test.
-#[cfg(feature = "testing")]
-impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisStream {
-    type Subscriber = crate::testing::RedisTestSubscriber;
-    /// The answer the real broker gives, so a registration that compiles against Redis compiles
-    /// against the stand-in.
-    type Copies = AddressedCopies;
-
-    fn name(&self) -> &str {
-        self.key()
-    }
-
-    fn declare_retry(self, declaration: &RetryDeclaration) -> Self {
-        self.with_declaration(declaration)
-    }
-
-    async fn subscribe(
-        self,
-        connected: &crate::testing::ConnectedRedisTestBroker,
-    ) -> Result<Self::Subscriber, RedisError> {
-        self.group_or_err()?;
-        let recorded = connected.record_routes(self.key(), self.dead_letter(), &Route::Stream)?;
-        let delayed = self.delayed_retry.is_some();
-        let subscriber = match self.mode {
-            ReadMode::Reclaim { .. } => Err(RedisError::InvalidOptions(format!(
-                "reclaim subscription on `{}` cannot mount on the in-process test broker: it \
-                 keeps no pending list, so the subscription would read fresh entries instead of \
-                 the stale ones XAUTOCLAIM returns; test reclaim against a real Redis server",
-                self.key
-            ))),
-            ReadMode::Claiming { min_idle } => {
-                connected
-                    .subscribe_stream(self.key(), StreamRetry::claiming(min_idle, delayed))
-                    .await
-            }
-            ReadMode::Fresh => {
-                connected
-                    .subscribe_stream(self.key(), StreamRetry::fresh(delayed))
-                    .await
-            }
-        }?;
-        recorded.keep();
-        Ok(subscriber)
-    }
-
-    /// The same body the real broker's descriptor writes, so a document built in a test is the
-    /// document the service publishes.
-    #[cfg(feature = "asyncapi")]
-    fn channel_bindings(&self) -> Bindings {
-        self.describe()
-    }
-}
-
-/// The same answer the real broker gives, so a scope that starts against Redis starts here.
-#[cfg(feature = "testing")]
-impl RedeliveryAddressed<crate::testing::ConnectedRedisTestBroker> for RedisStream {
-    fn redelivery_address(
-        &self,
-        _connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> impl Future<Output = Result<RedeliveryAddress, RedisError>> {
         ready(Ok(self.redelivery_key()))
     }

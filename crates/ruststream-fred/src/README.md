@@ -969,11 +969,9 @@ because this crate routes no reply through a header.
 
 # Testing
 
-The `testing` feature ships [`testing::RedisTestBroker`], an in-process transport that routes by
-exact stream key or channel, with no server, no docker and no network. Every descriptor and
-every publish policy this crate ships mounts on it, so a test wires the declaration the service
-ships rather than a test-only spelling, and [`RedisDefaultPublish`] is the default publisher on
-both brokers. `TestApp` and the assertions are the framework's:
+A test hands the harness the app `main` runs, on [`RedisBroker`], and addresses the broker by
+that type. Enable this crate's `testing` feature in `[dev-dependencies]`; `TestApp` and the
+assertions are the framework's:
 <https://docs.rs/ruststream/latest/ruststream/testing/index.html>.
 
 ```
@@ -981,10 +979,9 @@ both brokers. `TestApp` and the assertions are the framework's:
 # mod demo {
 use ruststream::testing::TestApp;
 use ruststream_fred::stream::prelude::*;
-use ruststream_fred::testing::RedisTestBroker;
 use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Outgoing, Serialize)]
 struct Payment {
     id: u64,
     amount: u64,
@@ -998,20 +995,24 @@ async fn process(payment: &Payment) -> HandlerOutcome {
     HandlerOutcome::ack()
 }
 
-pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let app = RustStream::new(AppInfo::new("test", "0.1.0"))
-        .with_broker(RedisTestBroker::new(), |b| {
+/// The app `main` runs, and the one the tests hand the harness.
+pub fn app() -> impl App<State = ()> {
+    RustStream::new(AppInfo::new("payments", "0.1.0"))
+        .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
             b.include(process);
-        });
+        })
+}
 
-    // Startup is the app's own, and a publish is driven to quiescence, so the assertion
-    // after it needs no waiting.
-    let tb = TestApp::start(app).await?;
-    tb.broker::<RedisTestBroker>()
-        .publish("payments", &Payment { id: 1, amount: 100 })
+pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    // The broker connects in process: nothing dials the address.
+    let tb = TestApp::start(app()).await?;
+    tb.broker::<RedisBroker>()
+        .message(&Payment { id: 1, amount: 100 })
+        .to("payments")
+        .publish()
         .await?;
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .subscriber("payments")
         .assert_called_once()
         .settled(HandlerOutcome::ack());
@@ -1031,34 +1032,44 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 # }
 ```
 
-A bare-string `#[subscriber("key")]` needs a broker-wide default group on the stand-in, as it does
-on a server: it mounts on `RedisTestBroker::new().default_group("workers")`, and a stand-in without
-one refuses it at startup, naming the setting. The setting decides whether the subscription opens;
-the stand-in routes by stream key and does not model how a consumer group shares deliveries.
+`TestApp::start` connects the broker to a Redis server modelled inside the test process. The
+connected broker is the production one: every command this crate sends, a publish, a group read,
+an acknowledgement, a delay-queue sweep, reaches the model as that command and is answered as
+Redis answers it. The model reads every setting off the broker: its address is parsed as
+`connect` parses it, and the pool size, the default group and the cluster topology carry over.
+It answers as Redis 8.4, so a [`RedisStream::claiming`] subscription mounts.
 
-Settlement follows the transport: a stream and a reliable list acknowledge and redeliver a
-requeue, while Pub/Sub and a simple list report `AckError::Unsupported` and refuse one, here
-exactly as on a real server. Capabilities match per form too, so a slot bounded on a transaction
-capability fails to compile in process exactly where it would fail against Redis. A handle that
-outlived `shutdown` reports [`RedisError::ShutDown`].
+The model keeps what a service relies on:
 
-The stand-in keeps Redis's namespaces apart as a server does. A stream and a list are keys of a
-type, so an `XADD` to a key a list subscription reads, or an `LPUSH` to a stream, fails with
-`WRONGTYPE`; a channel is no key, so a stream or list write under a channel's name, or a
-`PUBLISH` to a name only a stream or a list reads, fails instead of landing where nobody reads it.
-A message a test injects with `tb.broker::<RedisTestBroker>().publish(..)` stands for an external
-producer and reaches whatever reads the name.
+* key types: a write of the wrong type fails with `WRONGTYPE`, and so does a read;
+* consumer groups with a cursor, a pending entries list and delivery counts, `start_id`,
+  `XAUTOCLAIM` and `XREADGROUP ... CLAIM` at their idle thresholds, and repositioning with
+  [`RedisGroupSeeker`];
+* lists, with the reliable form's processing list and its recovery set;
+* Pub/Sub channels, `PSUBSCRIBE` globs and sharded channels, which keep nothing for a subscriber
+  that is not there;
+* sorted sets, key expiry, `MULTI` / `EXEC`, and on a cluster topology the refusal of a command
+  or a transaction that spans hash slots.
 
-The stand-in routes by key or channel and nothing else, so consumer and group names, `start_id`,
-`block`, a list's processing list and recovery watchdog, a Pub/Sub mode and the envelope codec
-change nothing in process; a reply therefore reads back as the bare payload here and as a frame
-on a real server. Two descriptors are refused outright rather than reinterpreted, because
-honouring them would deliver what the real subscription never delivers: [`RedisStream::reclaim`],
-whose stale pending entries the stand-in keeps none of, and [`RedisPubSubPattern`], whose glob it
-cannot match. Consumer-group cursors, `XAUTOCLAIM` redelivery, idle reclaim, `MAXLEN` trimming
-and the cluster and sentinel topologies belong in a test against a real server; the crate's own
-live suites are gated behind per-topology environment variables, and `just test-brokers` starts
-the compose stand and runs them.
+Delivery follows Redis's routing. A stream entry reaches every consumer group of the stream once,
+each through one of its consumers. A list element reaches one consumer. A channel message reaches
+every subscription of the channel and every pattern subscription whose glob matches it.
+
+A test's input goes where the default publisher writes its name: an `XADD`, or the `LPUSH` or
+`PUBLISH` of the subscription that reads the name, in that subscription's framing.
+`published::<T>(name)` reads every write to the name back, a requeue's copy and an entry a delay
+queue adds back included. The model's time is the test's clock, so entry ids, idle times and the
+scores of the delay queue and the list recovery stand still on a paused clock and
+`tb.advance(by)` moves them.
+
+A handler's own commands through `Ctx<keys::FredPool>` or a window run against the model too. A
+command it does not model fails with an error naming it, and so do scripts and functions
+(`EVAL`, `EVALSHA`, `FCALL`): a handler built on them is tested against a server.
+
+The same test body runs against a server with `TestApp::start_live(app())`. The crate's own live
+suites are gated behind per-topology environment variables, and `just test-brokers` starts the
+compose stand and runs them. What only a server shows belongs there: scripts, the sentinel and
+cluster topologies under failover and resharding, and authentication and TLS.
 
 # Operations
 
@@ -1113,8 +1124,8 @@ document.
 
 All off by default: this crate ships the three transports and the broker with no feature on.
 
-* `testing`: [`testing::RedisTestBroker`], the in-process transport, and the framework's
-  `testing` feature it rides.
+* `testing`: the in-process mode of [`RedisBroker`], which the framework's `TestApp` runs an app
+  on, and the framework's `testing` feature it rides.
 * `asyncapi`: the document-plane hooks, the bindings and the `x-ruststream-redis` extension.
 * `tls-rustls`, `tls-rustls-ring`, `tls-native-tls`: TLS, mapped onto `fred`'s backends.
 * `sentinel-auth`: distinct credentials for the sentinels.

@@ -7,6 +7,8 @@
 
 use std::future::{Future, ready};
 use std::sync::Arc;
+#[cfg(feature = "testing")]
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use fred::clients::{Client, Pool};
@@ -20,9 +22,24 @@ use fred::types::config::CredentialProvider;
 ))]
 use fred::types::config::TlsConfig;
 use fred::types::config::{Config, ServerConfig};
-use fred::types::{ClusterHash, CustomCommand, Value, Version};
+use fred::types::{ClusterHash, CustomCommand, Message, Value, Version};
 use fred::util::redis_keyslot;
+#[cfg(feature = "testing")]
+use ruststream::testing::{Coordinator, InProcess, TestableBroker};
 use ruststream::{AddressedCopies, Broker, ConnectedBroker, DescribeServer, ServerSpec, Subscribe};
+#[cfg(feature = "testing")]
+use ruststream::{OutgoingMessage, RawMessage};
+use tokio::sync::broadcast::Receiver;
+
+#[cfg(feature = "testing")]
+use crate::convert::{fields_for_publish, parts_from_fields};
+use crate::delay::DelayConfig;
+#[cfg(feature = "testing")]
+use crate::envelope::{frame, unframe};
+#[cfg(feature = "testing")]
+use crate::in_process::{self, Subscription, Write};
+use crate::loopback::{Loopback, Tap};
+use crate::recovery::RecoveryConfig;
 
 use crate::{
     error::RedisError,
@@ -479,10 +496,49 @@ impl Broker for RedisBroker {
                 closed: AtomicBool::new(false),
                 routes: Routes::default(),
                 rounds: Arc::default(),
+                loopback: Loopback::default(),
+                #[cfg(feature = "testing")]
+                opened: Mutex::default(),
             }),
         })
     }
 }
+
+/// The in-process mode: the production connected broker over an in-process Redis, the transport
+/// a test runs the service's own app against.
+///
+/// Every setting of this broker is read the way [`Broker::connect`] reads it: the topology's
+/// address is parsed (a URL `connect` refuses is refused here), the pool keeps its size, the
+/// default group and the cluster flag carry over, and a cluster topology refuses what spans hash
+/// slots. What the model answers is described in the crate's testing overview.
+#[cfg(feature = "testing")]
+impl InProcess for RedisBroker {
+    async fn connect_in_process(self) -> Result<Self::Connected, Self::Error> {
+        let config = self.build_config()?;
+        let clustered = config.server.is_clustered();
+        let pool_size = match &self.topology {
+            Topology::Preconnected(pool) => pool.size(),
+            _ => self.pool_size,
+        };
+        let (pool, config, server) = in_process::connect(&config, pool_size, clustered).await?;
+        Ok(ConnectedRedisBroker {
+            core: Arc::new(RedisCore {
+                pool,
+                config,
+                default_group: self.default_group,
+                clustered,
+                closed: AtomicBool::new(false),
+                routes: Routes::default(),
+                rounds: Arc::default(),
+                loopback: Loopback::to(server),
+                opened: Mutex::default(),
+            }),
+        })
+    }
+}
+
+#[cfg(feature = "testing")]
+ruststream::register_testable_broker!(RedisBroker);
 
 /// `DescribeServer` reports the host and port a client dials (the first seed for cluster and
 /// sentinel). Nothing else a configured address may carry reaches the description: a broker built
@@ -561,6 +617,26 @@ pub(crate) struct RedisCore {
     /// The rounds of the deliveries in flight on this connection's pipelined subscriptions, which
     /// a reply or a bound slot publish joins.
     rounds: Arc<Rounds>,
+    /// The in-process server, on a connection the test harness made in process.
+    loopback: Loopback,
+    /// The subscriptions opened on this connection, which the test harness asks where a publish
+    /// is delivered.
+    #[cfg(feature = "testing")]
+    opened: Mutex<Vec<Opened>>,
+}
+
+/// What one subscription reads, for the harness's routing question.
+#[cfg(feature = "testing")]
+#[derive(Debug, Clone)]
+enum Opened {
+    /// A consumer of `group` on the stream `key`.
+    Stream { key: String, group: String },
+    /// A consumer of the list `key`.
+    List { key: String },
+    /// A subscription to one channel.
+    Channel { name: String, sharded: bool },
+    /// A subscription to every channel a glob matches.
+    Pattern { glob: String },
 }
 
 impl RedisCore {
@@ -605,6 +681,35 @@ impl RedisCore {
     pub(crate) const fn clustered(&self) -> bool {
         self.clustered
     }
+
+    /// The in-process server, when the connection is one.
+    pub(crate) const fn loopback(&self) -> &Loopback {
+        &self.loopback
+    }
+
+    #[cfg(feature = "testing")]
+    fn opened(&self, subscription: Opened) {
+        self.opened
+            .lock()
+            .expect("redis subscription record poisoned")
+            .push(subscription);
+    }
+
+    /// The version the server reported, or the in-process server's own.
+    #[cfg_attr(
+        not(feature = "testing"),
+        allow(
+            clippy::unused_self,
+            reason = "the connection is read under `testing` only"
+        )
+    )]
+    fn server_version(&self, pool: &Pool) -> Option<Version> {
+        #[cfg(feature = "testing")]
+        if self.loopback.server().is_some() {
+            return Some(in_process::VERSION);
+        }
+        pool.server_version()
+    }
 }
 
 impl std::fmt::Debug for RedisCore {
@@ -642,12 +747,14 @@ impl ConnectedRedisBroker {
         let group = def.group_or_err()?.to_owned();
         let consumer = def.consumer_or_auto();
         if let ReadMode::Claiming { .. } = def.mode() {
-            require_claim_support(pool.server_version().as_ref(), def.key())?;
+            require_claim_support(self.core.server_version(&pool).as_ref(), def.key())?;
         }
         let recorded = self
             .core
             .record_routes(def.key(), def.dead_letter(), &Route::Stream)?;
         ensure_group(&pool, def.key(), &group, def.start().as_id()).await?;
+        let delay = def.delay_config().map(|cfg| cfg.on(self.core.loopback()));
+        let tap = self.stream_tap(&def, &group, &consumer, delay.as_ref());
         recorded.keep();
         Ok(RedisSubscriber::new(
             pool,
@@ -656,8 +763,56 @@ impl ConnectedRedisBroker {
             consumer,
             def.block_or_default(),
             def.mode(),
-            def.delay_config(),
+            delay,
+            tap,
         ))
+    }
+
+    /// Registers a stream subscription with the in-process server, and records it for the
+    /// harness's routing question.
+    #[cfg_attr(
+        not(feature = "testing"),
+        allow(
+            clippy::unused_self,
+            reason = "the connection is read under `testing` only"
+        )
+    )]
+    fn stream_tap(
+        &self,
+        def: &RedisStream,
+        group: &str,
+        consumer: &str,
+        delay: Option<&DelayConfig>,
+    ) -> Tap {
+        #[cfg(feature = "testing")]
+        {
+            self.core.opened(Opened::Stream {
+                key: def.key().to_owned(),
+                group: group.to_owned(),
+            });
+            if let Some(server) = self.core.loopback().server() {
+                let (claim, fresh) = match def.mode() {
+                    ReadMode::Fresh => (None, true),
+                    ReadMode::Reclaim { min_idle } => (Some(min_idle), false),
+                    ReadMode::Claiming { min_idle } => (Some(min_idle), true),
+                };
+                let reader = server.attach_stream(
+                    def.key(),
+                    group,
+                    consumer,
+                    claim,
+                    fresh,
+                    delay.map(DelayConfig::zset_key),
+                );
+                return Tap::registered(Arc::clone(server), reader);
+            }
+            Tap::default()
+        }
+        #[cfg(not(feature = "testing"))]
+        {
+            let _ = (def, group, consumer, delay);
+            Tap::default()
+        }
     }
 
     /// Opens a Pub/Sub subscription on one channel, described by `def`, on a dedicated client.
@@ -686,6 +841,7 @@ impl ConnectedRedisBroker {
         // subscription, so opening the stream early can pick up nothing else.
         let rx = client.message_rx();
         let channel = def.channel().to_owned();
+        let sharded = def.delivery_mode() == PubSubMode::Sharded;
         match def.delivery_mode() {
             PubSubMode::Classic => {
                 client
@@ -703,9 +859,69 @@ impl ConnectedRedisBroker {
                     .map_err(RedisError::subscribe)?;
             }
         }
+        let (rx, tap) = self.pubsub_tap(
+            rx,
+            PubSubTarget::Channel {
+                name: def.channel(),
+                sharded,
+            },
+        );
         let pool = self.core.pool()?;
         recorded.keep();
-        Ok(PubSubWire::new(client, rx, codec, pool))
+        Ok(PubSubWire::new(client, rx, codec, pool, tap))
+    }
+
+    /// Registers a Pub/Sub subscription with the in-process server, whose messages then arrive
+    /// on a channel of its own instead of the client's, and records it for the harness's routing
+    /// question.
+    #[cfg_attr(
+        not(feature = "testing"),
+        allow(
+            clippy::unused_self,
+            reason = "the connection is read under `testing` only"
+        )
+    )]
+    fn pubsub_tap(
+        &self,
+        rx: Receiver<Message>,
+        target: PubSubTarget<'_>,
+    ) -> (Receiver<Message>, Tap) {
+        #[cfg(feature = "testing")]
+        {
+            let (opened, subscription) = match target {
+                PubSubTarget::Channel { name, sharded } => {
+                    let bytes = bytes::Bytes::copy_from_slice(name.as_bytes());
+                    (
+                        Opened::Channel {
+                            name: name.to_owned(),
+                            sharded,
+                        },
+                        if sharded {
+                            Subscription::Sharded(bytes)
+                        } else {
+                            Subscription::Channel(bytes)
+                        },
+                    )
+                }
+                PubSubTarget::Pattern(glob) => (
+                    Opened::Pattern {
+                        glob: glob.to_owned(),
+                    },
+                    Subscription::Pattern(bytes::Bytes::copy_from_slice(glob.as_bytes())),
+                ),
+            };
+            self.core.opened(opened);
+            if let Some(server) = self.core.loopback().server() {
+                let (rx, reader) = server.attach_pubsub(subscription);
+                return (rx, Tap::registered(Arc::clone(server), reader));
+            }
+            (rx, Tap::default())
+        }
+        #[cfg(not(feature = "testing"))]
+        {
+            let _ = target;
+            (rx, Tap::default())
+        }
     }
 
     /// Opens a Pub/Sub subscription on a glob (`PSUBSCRIBE`), described by `def`, on a dedicated
@@ -729,11 +945,13 @@ impl ConnectedRedisBroker {
             .await
             .map_err(RedisError::subscribe)?;
         confirm_subscribed(&client).await?;
+        let (rx, tap) = self.pubsub_tap(rx, PubSubTarget::Pattern(def.pattern()));
         Ok(RedisPubSubSubscriber::new(PubSubWire::new(
             client,
             rx,
             codec,
             self.core.pool()?,
+            tap,
         )))
     }
 
@@ -755,7 +973,9 @@ impl ConnectedRedisBroker {
     /// Validates `def` against this connection and hands back its wire.
     pub(crate) fn open_list(&self, def: RedisList) -> Result<ListWire, RedisError> {
         let pool = self.core.pool()?;
-        let recovery = def.recovery_config()?;
+        let recovery = def
+            .recovery_config()?
+            .map(|cfg| cfg.on(self.core.loopback()));
         let reliable = def.is_reliable();
         let processing = def.processing_or_default();
         if reliable && self.core.clustered() {
@@ -766,6 +986,7 @@ impl ConnectedRedisBroker {
             .keep();
         let block = def.block_or_default();
         let codec = def.codec_handle();
+        let tap = self.list_tap(def.key(), recovery.as_ref());
         Ok(ListWire::new(
             pool,
             def.into_key(),
@@ -774,7 +995,39 @@ impl ConnectedRedisBroker {
             block,
             codec,
             recovery,
+            tap,
         ))
+    }
+
+    /// Registers a list subscription with the in-process server, and records it for the
+    /// harness's routing question.
+    #[cfg_attr(
+        not(feature = "testing"),
+        allow(
+            clippy::unused_self,
+            reason = "the connection is read under `testing` only"
+        )
+    )]
+    fn list_tap(&self, key: &str, recovery: Option<&RecoveryConfig>) -> Tap {
+        #[cfg(feature = "testing")]
+        {
+            self.core.opened(Opened::List {
+                key: key.to_owned(),
+            });
+            if let Some(server) = self.core.loopback().server() {
+                let reader = server.attach_list(
+                    key,
+                    recovery.map(|cfg| (cfg.zset_key.as_str(), cfg.min_idle)),
+                );
+                return Tap::registered(Arc::clone(server), reader);
+            }
+            Tap::default()
+        }
+        #[cfg(not(feature = "testing"))]
+        {
+            let _ = (key, recovery);
+            Tap::default()
+        }
     }
 
     /// Returns a stream publisher (`XADD`) bound to this connection.
@@ -852,7 +1105,193 @@ impl ConnectedBroker for ConnectedRedisBroker {
             .quit()
             .await
             .map_err(|err| RedisError::Connect(Box::new(err)))?;
+        // The in-process server goes down with the connection, after the `QUIT` it answers.
+        #[cfg(feature = "testing")]
+        if let Some(server) = self.core.loopback().server() {
+            server.close();
+        }
         Ok(ClosedRedisBroker { connections_closed })
+    }
+}
+
+/// What a Pub/Sub subscription listens to, as its registration names it.
+#[cfg_attr(
+    not(feature = "testing"),
+    allow(dead_code, reason = "read by the in-process registration only")
+)]
+#[derive(Clone, Copy)]
+enum PubSubTarget<'a> {
+    Channel { name: &'a str, sharded: bool },
+    Pattern(&'a str),
+}
+
+/// The harness's view of the connection: the in-process server it injects into and reads the
+/// writes of, and, in both modes, where a publish is delivered.
+///
+/// # Panics
+///
+/// `inject` and `published` panic on a broker connected with `connect`: the harness drives only
+/// the connection `connect_in_process` produced, and a live connection has no log to read and no
+/// synchronous way to take a message.
+#[cfg(feature = "testing")]
+impl TestableBroker for ConnectedRedisBroker {
+    fn install_coordinator(&self, coordinator: Coordinator) {
+        if let Some(server) = self.core.loopback().server() {
+            server.install(coordinator);
+        }
+    }
+
+    /// Writes the message the way the default publisher writes its name: an `XADD`, or the
+    /// `LPUSH` or `PUBLISH` of the subscription that reads it, in that subscription's framing. A
+    /// name only pattern subscriptions read goes out with a raw `PUBLISH`, as the producers they
+    /// listen to publish it: an `XADD` would reach none of them.
+    fn inject(&self, message: OutgoingMessage<'_>) {
+        let server = self.in_process("inject");
+        let name = message.name();
+        let (payload, headers) = (message.payload(), message.headers());
+        let written = match self.core.routes().route(name) {
+            Route::Stream if self.read_by_patterns_alone(name) => {
+                server.inject_publish(name, frame(None, payload, headers), false)
+            }
+            Route::Stream => {
+                server.inject_stream(name, fields_for_publish(payload.to_vec(), headers))
+            }
+            Route::List { envelope } => {
+                server.inject_list(name, frame(envelope.as_ref(), payload, headers))
+            }
+            Route::Channel { mode, envelope } => server.inject_publish(
+                name,
+                frame(envelope.as_ref(), payload, headers),
+                mode == PubSubMode::Sharded,
+            ),
+        };
+        if let Err(err) = written {
+            panic!("the injected message to {name:?} is not one Redis takes: {err}");
+        }
+    }
+
+    /// Every write to `name`, decoded the way the subscription reading it decodes: an entry's
+    /// fields, or a list element or a channel message in its subscription's framing. A requeue's
+    /// copy and a delayed entry the sweep adds back are writes too.
+    fn published(&self, name: &str) -> Vec<RawMessage> {
+        let server = self.in_process("published");
+        let envelope = match self.core.routes().route(name) {
+            Route::Stream => None,
+            Route::List { envelope } | Route::Channel { envelope, .. } => envelope,
+        };
+        server
+            .published(name)
+            .into_iter()
+            .map(|write| {
+                let (payload, headers) = match write {
+                    Write::Fields(fields) => parts_from_fields(
+                        fields
+                            .into_iter()
+                            .map(|(field, value)| {
+                                (String::from_utf8_lossy(&field).into_owned(), value.to_vec())
+                            })
+                            .collect(),
+                    ),
+                    Write::Body(body) => unframe(envelope.as_ref(), &body),
+                };
+                RawMessage::new(name.to_owned(), payload).with_headers(headers)
+            })
+            .collect()
+    }
+
+    /// Redis's routing: a stream entry is delivered once to every consumer group reading the
+    /// stream (to one consumer of each), a list element to one consumer, and a channel message to
+    /// every subscription of the channel and every pattern subscription whose glob matches it. A
+    /// name no subscription reads exactly is reached by the pattern subscriptions alone.
+    ///
+    /// Subscriptions sharing a name are told apart by nothing but the name, so a publish is owed
+    /// by the first position of each name as many times as that name receives it.
+    fn routes(&self, destination: &str, subscriptions: &[&str]) -> Vec<usize> {
+        let opened = self
+            .core
+            .opened
+            .lock()
+            .expect("redis subscription record poisoned")
+            .clone();
+        let mut owed = Vec::new();
+        let mut owe = |name: &str, times: usize| {
+            if let Some(at) = subscriptions.iter().position(|held| *held == name) {
+                owed.extend(std::iter::repeat_n(at, times));
+            }
+        };
+        let groups: std::collections::BTreeSet<&str> = opened
+            .iter()
+            .filter_map(|sub| match sub {
+                Opened::Stream { key, group } if key == destination => Some(group.as_str()),
+                _ => None,
+            })
+            .collect();
+        let patterns = match self.core.routes().route(destination) {
+            Route::Stream => {
+                owe(destination, groups.len());
+                groups.is_empty()
+            }
+            Route::List { .. } => {
+                let read = opened
+                    .iter()
+                    .any(|sub| matches!(sub, Opened::List { key } if key == destination));
+                owe(destination, usize::from(read));
+                false
+            }
+            Route::Channel { mode, .. } => {
+                let sharded = mode == PubSubMode::Sharded;
+                let reached = opened
+                    .iter()
+                    .filter(|sub| {
+                        matches!(sub, Opened::Channel { name, sharded: held }
+                            if name == destination && *held == sharded)
+                    })
+                    .count();
+                owe(destination, reached);
+                !sharded
+            }
+        };
+        if patterns {
+            for sub in &opened {
+                if let Opened::Pattern { glob } = sub
+                    && in_process::glob_matches(glob.as_bytes(), destination.as_bytes())
+                {
+                    owe(glob, 1);
+                }
+            }
+        }
+        owed
+    }
+}
+
+#[cfg(feature = "testing")]
+impl ConnectedRedisBroker {
+    /// Whether `name` is read by a pattern subscription and by no stream group: what the harness
+    /// then publishes to the channel instead of adding to a stream.
+    fn read_by_patterns_alone(&self, name: &str) -> bool {
+        let opened = self
+            .core
+            .opened
+            .lock()
+            .expect("redis subscription record poisoned");
+        let grouped = opened
+            .iter()
+            .any(|sub| matches!(sub, Opened::Stream { key, .. } if key == name));
+        !grouped
+            && opened.iter().any(|sub| {
+                matches!(sub, Opened::Pattern { glob }
+                    if in_process::glob_matches(glob.as_bytes(), name.as_bytes()))
+            })
+    }
+
+    /// The in-process server, which is all the harness injects into and reads.
+    fn in_process(&self, what: &str) -> &Arc<in_process::Server> {
+        self.core.loopback().server().unwrap_or_else(|| {
+            panic!(
+                "TestableBroker::{what} reached a broker connected with `connect`; the harness \
+                 drives the connection `connect_in_process` produces"
+            )
+        })
     }
 }
 

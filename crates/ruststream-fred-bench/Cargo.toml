@@ -14,10 +14,9 @@ workspace = true
 
 [features]
 default = []
-# A benchmark measures what ships, and the framework's harness feature swaps this crate's
-# transport for an in-process stand-in. Nothing here enables it; the feature exists so that
-# asking for it is the compile error in `benches/paired.rs` rather than a number nobody can
-# trust.
+# A benchmark measures what ships, and this crate's `testing` feature adds the in-process mode's
+# hooks to its transport. Nothing here enables it; the feature exists so that asking for it is
+# the compile error in `benches/paired.rs` rather than a number nobody can trust.
 testing = ["ruststream-fred/testing"]
 
 # The benchmark lives in its own package so that the measured binary links this crate the way a

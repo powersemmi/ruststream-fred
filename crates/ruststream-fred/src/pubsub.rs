@@ -42,6 +42,7 @@ use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::envelope::{SharedEnvelope, frame, unframe};
+use crate::loopback::{InFlight, Tap};
 use crate::partition::{RedisPublishOptions, resolved_headers};
 use crate::pipeline::{Pipelined, PubSubForm, RoundMessage, Window};
 use crate::publisher::joins_round;
@@ -378,96 +379,6 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisPubSubPattern {
     }
 }
 
-/// Mounts the production descriptor on the in-process stand-in, which routes by channel name
-/// alone.
-///
-/// The descriptor is inert here beyond its channel: [`mode`](RedisPubSub::mode) selects between
-/// commands the stand-in does not issue, and the envelope [`codec`](RedisPubSub::codec) never
-/// runs, since deliveries carry their headers natively instead of framed into the payload, so a
-/// framing mismatch between a subscription and its publisher cannot surface in process.
-///
-/// Settlement matches the real transport: deliveries here report [`AckError::Unsupported`] and a
-/// requeue is refused rather than performed, so a test cannot assert on an acknowledgement Pub/Sub
-/// is unable to make.
-#[cfg(feature = "testing")]
-impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisPubSub {
-    type Subscriber = crate::testing::RedisTestSubscriber;
-    /// The answer the real broker gives, so a registration that compiles against Redis compiles
-    /// against the stand-in.
-    type Copies = AddressedCopies;
-
-    fn name(&self) -> &str {
-        self.channel()
-    }
-
-    fn declare_retry(self, declaration: &RetryDeclaration) -> Self {
-        self.with_declaration(declaration)
-    }
-
-    async fn subscribe(
-        self,
-        connected: &crate::testing::ConnectedRedisTestBroker,
-    ) -> Result<Self::Subscriber, RedisError> {
-        let recorded =
-            connected.record_routes(self.channel(), self.dead_letter(), &self.route())?;
-        let subscriber = connected.subscribe_channel(self.channel()).await?;
-        recorded.keep();
-        Ok(subscriber)
-    }
-
-    /// The same body the real broker's descriptor writes, so a document built in a test is the
-    /// document the service publishes.
-    #[cfg(feature = "asyncapi")]
-    fn channel_bindings(&self) -> Bindings {
-        self.describe()
-    }
-}
-
-/// The same answer the real broker gives, so a scope that starts against Redis starts here.
-#[cfg(feature = "testing")]
-impl RedeliveryAddressed<crate::testing::ConnectedRedisTestBroker> for RedisPubSub {
-    fn redelivery_address(
-        &self,
-        _connected: &crate::testing::ConnectedRedisTestBroker,
-    ) -> impl Future<Output = Result<RedeliveryAddress, RedisError>> {
-        ready(Ok(self.redelivery_channel()))
-    }
-}
-
-/// Refuses the mount, because the stand-in matches channel names exactly: a glob subscription
-/// would go silent on every channel it is meant to catch while still matching its own literal
-/// spelling, which neither delivers what production delivers nor fails where production fails.
-/// Exercise `PSUBSCRIBE` against a real server.
-#[cfg(feature = "testing")]
-impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisPubSubPattern {
-    type Subscriber = crate::testing::RedisTestSubscriber;
-    type Copies = NamedCopies;
-
-    fn name(&self) -> &str {
-        self.pattern()
-    }
-
-    // Refused without touching the connection, so the body suspends on nothing.
-    fn subscribe(
-        self,
-        _connected: &crate::testing::ConnectedRedisTestBroker,
-    ) -> impl Future<Output = Result<Self::Subscriber, RedisError>> {
-        ready(Err(RedisError::InvalidOptions(format!(
-            "pattern subscription on `{}` cannot mount on the in-process test broker: it matches \
-             channel names exactly, so the subscription would miss every channel the glob is \
-             meant to catch; test PSUBSCRIBE against a real Redis server",
-            self.pattern
-        ))))
-    }
-
-    /// The same body the real broker's descriptor writes, so a document built in a test is the
-    /// document the service publishes.
-    #[cfg(feature = "asyncapi")]
-    fn channel_bindings(&self) -> Bindings {
-        self.describe()
-    }
-}
-
 /// A Pub/Sub subscription backed by a dedicated `fred` client, so its message stream and channel
 /// state are isolated from other subscribers and from the publishing pool.
 ///
@@ -529,6 +440,8 @@ pub(crate) struct PubSubWire {
     codec: Option<SharedEnvelope>,
     /// The broker's pool, handed to every delivery for `Ctx<keys::FredPool>`.
     pool: Pool,
+    /// The subscription's registration with the in-process server; empty on a real connection.
+    tap: Tap,
 }
 
 impl Debug for PubSubWire {
@@ -543,12 +456,14 @@ impl PubSubWire {
         rx: Receiver<Message>,
         codec: Option<SharedEnvelope>,
         pool: Pool,
+        tap: Tap,
     ) -> Self {
         Self {
             client,
             rx,
             codec,
             pool,
+            tap,
         }
     }
 
@@ -564,7 +479,7 @@ impl PubSubWire {
         window: &'a Arc<Window<PubSubForm>>,
     ) -> impl Stream<Item = Result<RoundMessage<PubSubForm>, RedisError>> + Send + 'a {
         let codec = self.codec.clone();
-        let pool = &self.pool;
+        let (pool, tap) = (&self.pool, &self.tap);
         unfold((&mut self.rx, codec), move |(rx, codec)| async move {
             loop {
                 if let Some(failure) = window.take_failure() {
@@ -572,7 +487,7 @@ impl PubSubWire {
                 }
                 match rx.recv().await {
                     Ok(msg) => {
-                        let delivery = to_message(&msg, codec.as_ref(), pool);
+                        let delivery = to_message(&msg, codec.as_ref(), pool, tap);
                         window.yielded(rx.len());
                         let round = window.open();
                         return Some((
@@ -581,12 +496,20 @@ impl PubSubWire {
                         ));
                     }
                     // The receiver fell behind the broadcast buffer; skip the gap and keep reading.
-                    Err(RecvError::Lagged(_)) => {}
+                    Err(RecvError::Lagged(skipped)) => lagged(tap, skipped),
                     Err(RecvError::Closed) => return None,
                 }
             }
         })
     }
+}
+
+/// Forgets the messages a subscription that fell behind never received.
+fn lagged(tap: &Tap, skipped: u64) {
+    #[cfg(feature = "testing")]
+    tap.discard(usize::try_from(skipped).unwrap_or(usize::MAX));
+    #[cfg(not(feature = "testing"))]
+    let _ = (tap, skipped);
 }
 
 impl PubSubWire {
@@ -599,7 +522,7 @@ impl PubSubWire {
     ) -> impl Stream<Item = Result<Vec<RoundMessage<PubSubForm>>, RedisError>> + Send + 'a {
         window.fill_at(size.get());
         let codec = self.codec.clone();
-        let pool = &self.pool;
+        let (pool, tap) = (&self.pool, &self.tap);
         unfold((&mut self.rx, codec), move |(rx, codec)| async move {
             loop {
                 if let Some(failure) = window.take_failure() {
@@ -607,14 +530,17 @@ impl PubSubWire {
                 }
                 let first = match rx.recv().await {
                     Ok(msg) => msg,
-                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Lagged(skipped)) => {
+                        lagged(tap, skipped);
+                        continue;
+                    }
                     Err(RecvError::Closed) => return None,
                 };
                 let mut messages = vec![first];
                 while messages.len() < size.get() {
                     match rx.try_recv() {
                         Ok(msg) => messages.push(msg),
-                        Err(TryRecvError::Lagged(_)) => {}
+                        Err(TryRecvError::Lagged(skipped)) => lagged(tap, skipped),
                         Err(_) => break,
                     }
                 }
@@ -627,7 +553,7 @@ impl PubSubWire {
                     .iter()
                     .map(|msg| {
                         RoundMessage::new(
-                            to_message(msg, codec.as_ref(), pool),
+                            to_message(msg, codec.as_ref(), pool, tap),
                             Arc::clone(window),
                             round.clone(),
                         )
@@ -641,6 +567,23 @@ impl PubSubWire {
 
 impl Drop for PubSubWire {
     fn drop(&mut self) {
+        // What reached the subscription and was never read leaves with it: the in-process server
+        // counted each message in flight when it sent it.
+        #[cfg(feature = "testing")]
+        {
+            let mut unread = 0_usize;
+            loop {
+                match self.rx.try_recv() {
+                    Ok(_) => unread += 1,
+                    Err(TryRecvError::Lagged(skipped)) => {
+                        unread =
+                            unread.saturating_add(usize::try_from(skipped).unwrap_or(usize::MAX));
+                    }
+                    Err(_) => break,
+                }
+            }
+            self.tap.discard(unread);
+        }
         // The dedicated client owns a background connection task; close it on a detached task since
         // `drop` cannot await.
         let client = self.client.clone();
@@ -650,7 +593,12 @@ impl Drop for PubSubWire {
     }
 }
 
-fn to_message(msg: &Message, codec: Option<&SharedEnvelope>, pool: &Pool) -> RedisPubSubMessage {
+fn to_message(
+    msg: &Message,
+    codec: Option<&SharedEnvelope>,
+    pool: &Pool,
+    tap: &Tap,
+) -> RedisPubSubMessage {
     let raw = msg.value.as_bytes().unwrap_or(&[]);
     let (payload, headers) = unframe(codec, raw);
     RedisPubSubMessage {
@@ -661,6 +609,7 @@ fn to_message(msg: &Message, codec: Option<&SharedEnvelope>, pool: &Pool) -> Red
         payload,
         headers,
         pool: pool.clone(),
+        flight: tap.delivered(),
     }
 }
 
@@ -670,16 +619,16 @@ impl ruststream::Subscriber for PubSubWire {
 
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
         let codec = self.codec.clone();
-        let pool = &self.pool;
+        let (pool, tap) = (&self.pool, &self.tap);
         unfold((&mut self.rx, codec), move |(rx, codec)| async move {
             loop {
                 match rx.recv().await {
                     Ok(msg) => {
-                        let message = to_message(&msg, codec.as_ref(), pool);
+                        let message = to_message(&msg, codec.as_ref(), pool, tap);
                         return Some((Ok(message), (rx, codec)));
                     }
                     // The receiver fell behind the broadcast buffer; skip the gap and keep reading.
-                    Err(RecvError::Lagged(_)) => {}
+                    Err(RecvError::Lagged(skipped)) => lagged(tap, skipped),
                     Err(RecvError::Closed) => return None,
                 }
             }
@@ -696,6 +645,15 @@ pub struct RedisPubSubMessage {
     headers: HeaderMap,
     /// The broker's pool, which `Ctx<keys::FredPool>` hands the handler.
     pool: Pool,
+    /// The test harness's count of this delivery; empty outside the in-process mode.
+    #[cfg_attr(
+        not(feature = "testing"),
+        allow(
+            dead_code,
+            reason = "held for its release on drop, which only `testing` gives"
+        )
+    )]
+    flight: InFlight,
 }
 
 impl Debug for RedisPubSubMessage {
@@ -728,6 +686,12 @@ impl RedisPubSubMessage {
     /// The broker's connection pool, for the per-delivery context.
     pub(crate) const fn pool(&self) -> &Pool {
         &self.pool
+    }
+
+    /// Takes the harness's count of this delivery, for a window to hold until its flush.
+    #[cfg(feature = "testing")]
+    pub(crate) fn take_flight(&mut self) -> InFlight {
+        std::mem::take(&mut self.flight)
     }
 }
 
@@ -824,45 +788,6 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisPubSubPublish {
 
     /// The channel a `PUBLISH` goes out on, the delivery mode it goes out in, and how headers are
     /// framed beside the payload.
-    #[cfg(feature = "asyncapi")]
-    fn channel_bindings(&self, channel: &str) -> Bindings {
-        crate::asyncapi::channel(&crate::asyncapi::Publish::pubsub(
-            channel,
-            self.mode.as_str(),
-            crate::asyncapi::Envelope::of(self.codec.as_ref()),
-        ))
-    }
-}
-
-/// Pairs the production policy against the in-process stand-in, so a routes file's
-/// `.out_reply(Publish)` mounts on both without naming a second type.
-///
-/// Both options the policy carries are inert in process: [`mode`](RedisPubSubPublish::mode)
-/// selects between `PUBLISH` and `SPUBLISH`, neither of which the stand-in issues, and it delivers
-/// headers natively rather than framed into the payload, so the envelope
-/// [`codec`](RedisPubSubPublish::codec) never runs. A published message therefore reads back as
-/// the bare payload here and as a frame on a real server, which is what a `published(..)`
-/// assertion sees.
-///
-/// The capability surface matches: this pairs into
-/// [`RedisTestPlainPublisher`](crate::testing::RedisTestPlainPublisher), which offers [`Publisher`]
-/// and nothing more, exactly as [`RedisPubSubPublisher`] does. A slot bounded on a transaction
-/// capability therefore fails to compile here too, rather than passing in process and breaking on
-/// the production build.
-#[cfg(feature = "testing")]
-impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisPubSubPublish {
-    type Live = crate::testing::RedisTestPlainPublisher;
-
-    fn pair(
-        self,
-        connected: &crate::testing::ConnectedRedisTestBroker,
-    ) -> impl Future<Output = Result<Self::Live, PairError>> {
-        let _ = self;
-        ready(Ok(connected.pubsub_publisher()))
-    }
-
-    /// The same body the real broker's policy writes, so a document built in a test is the
-    /// document the service publishes.
     #[cfg(feature = "asyncapi")]
     fn channel_bindings(&self, channel: &str) -> Bindings {
         crate::asyncapi::channel(&crate::asyncapi::Publish::pubsub(
@@ -1001,6 +926,7 @@ mod tests {
             payload: Bytes::from_static(b"{}"),
             headers: HeaderMap::new(),
             pool: offline_pool(),
+            flight: InFlight::default(),
         };
         let cx = PubSubContext::build(&exact);
         assert_eq!(cx.channel(), "events");
@@ -1012,6 +938,7 @@ mod tests {
             payload: Bytes::from_static(b"{}"),
             headers: HeaderMap::new(),
             pool: offline_pool(),
+            flight: InFlight::default(),
         };
         assert!(PubSubContext::build(&matched).from_pattern());
     }

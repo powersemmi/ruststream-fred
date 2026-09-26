@@ -13,9 +13,11 @@ use std::time::Duration;
 use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::testing::TestApp;
 use ruststream_fred::prelude::*;
-use ruststream_fred::testing::RedisTestBroker;
 use ruststream_fred::{AtomicList, AtomicStream, PipelinedPubSub, PipelinedStream};
 use serde::{Deserialize, Serialize};
+
+/// The address the service's broker is built with; the in-process mode dials nothing.
+const URL: &str = "redis://localhost:6379";
 
 const DELAY: Duration = Duration::from_secs(30);
 
@@ -63,36 +65,36 @@ macro_rules! comes_back_once {
         #[tokio::test(start_paused = true)]
         async fn $test() {
             let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
-                RedisTestBroker::new(),
+                RedisBroker::standalone(URL),
                 |b| {
                     b.include($handler);
                 },
             );
             let tb = TestApp::start(app).await.expect("start");
 
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .message(&Order { id: 1 })
                 .to($name)
                 .publish()
                 .await
                 .expect("publish");
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .subscriber($name)
                 .assert_called_once()
                 .settled(HandlerOutcome::retry_after(DELAY));
 
             // Half the delay is not the delay.
             tb.advance(DELAY / 2).await.expect("advance");
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .subscriber($name)
                 .assert_called_once();
 
             tb.advance(DELAY).await.expect("advance");
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .subscriber($name)
                 .assert_called(2)
                 .with(&Order { id: 1 });
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .published::<Order>($name)
                 .assert_called(2)
                 .with_header(RETRY_COUNT_HEADER, "1");
@@ -168,7 +170,7 @@ macro_rules! moves_at_the_cap {
         #[tokio::test(start_paused = true)]
         async fn $test() {
             let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
-                RedisTestBroker::new(),
+                RedisBroker::standalone(URL),
                 |b| {
                     b.include($handler)
                         .max_attempts(nonzero!(2u32))
@@ -178,7 +180,7 @@ macro_rules! moves_at_the_cap {
             );
             let tb = TestApp::start(app).await.expect("start");
 
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .message(&Order { id: 2 })
                 .to($name)
                 .publish()
@@ -186,15 +188,15 @@ macro_rules! moves_at_the_cap {
                 .expect("publish");
             tb.advance(DELAY).await.expect("advance");
 
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .subscriber($name)
                 .assert_called(2);
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .published::<Order>($dead)
                 .assert_called_once()
                 .with(&Order { id: 2 })
                 .with_header(RETRY_COUNT_HEADER, "2");
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .subscriber($dead)
                 .assert_called_once();
 
@@ -249,7 +251,7 @@ async fn order_reader(order: &Order) -> HandlerOutcome {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_dead_letter_read_as_another_type_refuses_to_start() {
     let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
-        RedisTestBroker::new(),
+        RedisBroker::standalone(URL),
         |b| {
             b.include(order_reader);
             b.include(job_to_orders)
@@ -283,7 +285,7 @@ async fn job_reader(order: &Order) -> HandlerOutcome {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_default_reply_reaches_a_list_this_service_reads() {
     let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
-        RedisTestBroker::new(),
+        RedisBroker::standalone(URL),
         |b| {
             b.include(order_to_job);
             b.include(job_reader);
@@ -291,14 +293,14 @@ async fn a_default_reply_reaches_a_list_this_service_reads() {
     );
     let tb = TestApp::start(app).await.expect("start");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .message(&Order { id: 3 })
         .to("orders")
         .publish()
         .await
         .expect("publish");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .subscriber("jobs")
         .assert_called_once()
         .with(&Order { id: 3 });

@@ -16,8 +16,8 @@ workspace = true
 
 [features]
 default = []
-# User-facing test support only: the conformance harness is broker-author tooling and stays a
-# dev-dependency of this crate.
+# The in-process mode `TestApp` runs an app on: an in-process Redis under `fred`'s own mock layer.
+# The conformance harness is broker-author tooling and stays a dev-dependency of this crate.
 testing = ["ruststream/testing", "fred/mocks"]
 
 # The document-plane hooks: what this crate's descriptors and publish policies add to the

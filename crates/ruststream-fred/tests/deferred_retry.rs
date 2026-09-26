@@ -17,8 +17,10 @@ use std::time::Duration;
 use ruststream::runtime::{Outgoing, PublishContext, RETRY_COUNT_HEADER};
 use ruststream::testing::{Outcome, TestApp};
 use ruststream_fred::stream::prelude::*;
-use ruststream_fred::testing::RedisTestBroker;
 use serde::{Deserialize, Serialize};
+
+/// The address the service's broker is built with; the in-process mode dials nothing.
+const URL: &str = "redis://localhost:6379";
 
 const RETRY_DELAY: Duration = Duration::from_secs(30);
 
@@ -62,38 +64,44 @@ async fn bill_order(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
     }
 }
 
-/// The copy the runtime publishes travels the retry position's pipeline, so the transform mounted
-/// there stamps it, and it reaches the handler again through the address the subscription reports.
-#[tokio::test(start_paused = true)]
-async fn a_transform_on_the_retry_position_stamps_the_deferred_copy() {
-    let app = RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(
-        RedisTestBroker::new(),
+/// The service's app: what `main` runs, and what every case hands the harness.
+fn app() -> impl App<State = ()> {
+    RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(
+        RedisBroker::standalone(URL),
         |b| {
             b.include(bill_order)
                 .out_retry(Publish)
                 .transform(DeferredStamp);
+            b.include(invoice_order);
+            b.include(file_receipt)
+                .max_attempts(nonzero!(2u32))
+                .dead_letter("receipts.dlq");
         },
-    );
-    let tb = TestApp::start(app).await.expect("start");
+    )
+}
 
-    tb.broker::<RedisTestBroker>()
+/// The copy the runtime publishes travels the retry position's pipeline, so the transform mounted
+/// there stamps it, and it reaches the handler again through the address the subscription reports.
+#[tokio::test(start_paused = true)]
+async fn a_transform_on_the_retry_position_stamps_the_deferred_copy() {
+    let tb = TestApp::start(app()).await.expect("start");
+
+    tb.broker::<RedisBroker>()
         .publish("billing", &Order { id: 7 })
         .await
         .expect("publish");
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .subscriber("billing")
         .assert_called_once()
         .settled(HandlerOutcome::retry_after(RETRY_DELAY));
 
     tb.advance(RETRY_DELAY).await.expect("advance");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .published::<Order>("billing")
         .with_header(LEFT_THROUGH, "billing");
     assert_eq!(
-        tb.broker::<RedisTestBroker>()
-            .subscriber("billing")
-            .outcomes(),
+        tb.broker::<RedisBroker>().subscriber("billing").outcomes(),
         [Outcome::Nack, Outcome::Ack],
         "the deferred copy must reach the handler and settle",
     );
@@ -113,41 +121,40 @@ async fn invoice_order(order: &Order) -> HandlerOutcome {
     HandlerOutcome::retry_after(RETRY_DELAY)
 }
 
-/// A delay queue serves the delay itself, so the entry comes back after it with nothing published
-/// in between: one message on the stream, the one the test put there.
+/// A delay queue serves the delay itself: nothing reaches the stream while the message is parked,
+/// and once the delay has passed the queue's sweep adds it back as a new entry, its retry count
+/// raised.
 #[tokio::test(start_paused = true)]
 async fn a_delay_queue_holds_the_message_without_publishing_a_copy() {
-    let app = RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(
-        RedisTestBroker::new(),
-        |b| {
-            b.include(invoice_order);
-        },
-    );
-    let tb = TestApp::start(app).await.expect("start");
+    let tb = TestApp::start(app()).await.expect("start");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .publish("invoices", &Order { id: 9 })
         .await
         .expect("publish");
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .subscriber("invoices")
         .assert_called_once()
         .settled(HandlerOutcome::retry_after(RETRY_DELAY));
 
-    // Half the delay is not the delay: the message is still parked.
+    // Half the delay is not the delay: the message is still parked, in the queue and not on the
+    // stream.
     tb.advance(RETRY_DELAY / 2).await.expect("advance");
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .subscriber("invoices")
         .assert_called(1);
-
-    tb.advance(RETRY_DELAY).await.expect("advance");
-    tb.broker::<RedisTestBroker>()
-        .subscriber("invoices")
-        .assert_called(2);
-    // The copy path would have written a second entry here, carrying the retry-count header.
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .published::<Order>("invoices")
         .assert_called_once();
+
+    tb.advance(RETRY_DELAY).await.expect("advance");
+    tb.broker::<RedisBroker>()
+        .subscriber("invoices")
+        .assert_called(2);
+    tb.broker::<RedisBroker>()
+        .published::<Order>("invoices")
+        .assert_called(2)
+        .with_header(RETRY_COUNT_HEADER, "1");
 
     tb.shutdown().await.expect("shutdown");
 }
@@ -168,26 +175,18 @@ async fn file_receipt(order: &Order) -> HandlerOutcome {
 /// rounds the queue makes and the spent delivery leaves for the dead-letter destination.
 #[tokio::test(start_paused = true)]
 async fn a_cap_counts_the_rounds_a_delay_queue_replays() {
-    let app = RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(
-        RedisTestBroker::new(),
-        |b| {
-            b.include(file_receipt)
-                .max_attempts(nonzero!(2u32))
-                .dead_letter("receipts.dlq");
-        },
-    );
-    let tb = TestApp::start(app).await.expect("start");
+    let tb = TestApp::start(app()).await.expect("start");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .publish("receipts", &Order { id: 11 })
         .await
         .expect("publish");
     tb.advance(RETRY_DELAY).await.expect("advance");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .subscriber("receipts")
         .assert_called(2);
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .published::<Order>("receipts.dlq")
         .assert_called_once();
 

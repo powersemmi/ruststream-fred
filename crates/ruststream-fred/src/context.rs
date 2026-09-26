@@ -68,7 +68,7 @@ use crate::seek::{EntryId, RedisGroupPosition, RedisGroupSeeker};
 /// Per-delivery context for a Redis Streams delivery ([`RedisMessage`]).
 ///
 /// Built once per delivery from the message. Read its fields by [`keys`] key off a
-/// [`Context`], or bind one as a handler parameter with the core
+/// [`ruststream::runtime::Context`], or bind one as a handler parameter with the core
 /// `Ctx<K>` extractor. A body that repositions its group names this type as its context and needs
 /// nothing else: the [`keys::SeekHandle`] key carries the live handle.
 ///
@@ -346,15 +346,6 @@ impl BuildContext<RedisListMessage> for PoolContext {
 
 impl BuildContext<RedisPubSubMessage> for PoolContext {
     fn build(msg: &RedisPubSubMessage) -> Self {
-        Self::from_pool(msg.pool().clone())
-    }
-}
-
-/// The stand-in's deliveries carry its pool, so a handler taking `Ctx<keys::FredPool>` mounts on
-/// the harness as it mounts on a server.
-#[cfg(feature = "testing")]
-impl BuildContext<crate::testing::RedisTestMessage> for PoolContext {
-    fn build(msg: &crate::testing::RedisTestMessage) -> Self {
         Self::from_pool(msg.pool().clone())
     }
 }
