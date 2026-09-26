@@ -261,7 +261,7 @@ impl State {
                 server.owe(1);
             }
         }
-        self.readded(server, &key);
+        self.added_back(server, &key);
         Ok(id.text())
     }
 
