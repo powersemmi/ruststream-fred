@@ -37,6 +37,7 @@ use ruststream::{
     Lend, NamedCopies, OutgoingMessage, PairError, Partitioned, PublishPolicy, Publisher,
     RedeliveryAddress, RedeliveryAddressed, RetryDeclaration, SubscriptionSource,
 };
+use tokio::runtime::Handle;
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 
@@ -442,6 +443,8 @@ pub(crate) struct PubSubWire {
     pool: Pool,
     /// The subscription's registration with the in-process server; empty on a real connection.
     tap: Tap,
+    /// The broker's runtime, where the dedicated client is closed once the subscription stops.
+    runtime: Handle,
 }
 
 impl Debug for PubSubWire {
@@ -451,12 +454,13 @@ impl Debug for PubSubWire {
 }
 
 impl PubSubWire {
-    pub(crate) const fn new(
+    pub(crate) fn new(
         client: Client,
         rx: Receiver<Message>,
         codec: Option<SharedEnvelope>,
         pool: Pool,
         tap: Tap,
+        runtime: Handle,
     ) -> Self {
         Self {
             client,
@@ -464,6 +468,7 @@ impl PubSubWire {
             codec,
             pool,
             tap,
+            runtime,
         }
     }
 
@@ -585,9 +590,9 @@ impl Drop for PubSubWire {
             self.tap.discard(unread);
         }
         // The dedicated client owns a background connection task; close it on a detached task since
-        // `drop` cannot await.
+        // `drop` cannot await, on the broker's runtime, which is there wherever the drop happens.
         let client = self.client.clone();
-        tokio::spawn(async move {
+        self.runtime.spawn(async move {
             let _ = client.quit().await;
         });
     }

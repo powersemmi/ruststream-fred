@@ -21,7 +21,8 @@ use std::time::Duration;
 use ruststream::conformance::harness::InProcessBroker;
 use ruststream::conformance::{capabilities, harness};
 use ruststream_fred::{
-    RedisBroker, RedisList, RedisListPublish, RedisPubSub, RedisPubSubPublish, RedisStream,
+    DelayedRetry, RedisBroker, RedisList, RedisListPublish, RedisPubSub, RedisPubSubPublish,
+    RedisStream,
 };
 
 mod live;
@@ -51,6 +52,27 @@ async fn in_process_passes_lifecycle() {
         |key| RedisStream::new(key).group("conformance"),
         |connected| connected.publisher(),
     ))
+    .await;
+}
+
+/// A stream with the durable delay queue, so the ladder's delayed nack takes the broker's own path
+/// rather than the runtime's fallback. A short read block keeps the sweep that replays it prompt.
+fn delayed(key: &str) -> RedisStream {
+    RedisStream::new(key)
+        .group("conformance")
+        .delayed_retry(DelayedRetry::DurableZset {
+            key: format!("{key}.delayed"),
+            ttl: None,
+        })
+        .block(Duration::from_millis(50))
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_passes_delayed_retry_lifecycle() {
+    Box::pin(harness::lifecycle(in_process, delayed, |connected| {
+        connected.publisher()
+    }))
     .await;
 }
 
@@ -198,6 +220,20 @@ async fn passes_lifecycle() {
     Box::pin(harness::lifecycle(
         || RedisBroker::standalone(url.clone()),
         |key| RedisStream::new(key).group("conformance"),
+        |connected| connected.publisher(),
+    ))
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passes_delayed_retry_lifecycle() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    Box::pin(harness::lifecycle(
+        || RedisBroker::standalone(url.clone()),
+        delayed,
         |connected| connected.publisher(),
     ))
     .await;
