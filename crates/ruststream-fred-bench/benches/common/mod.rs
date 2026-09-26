@@ -54,6 +54,7 @@ use std::hint::black_box;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
+use std::time::Duration;
 
 use fred::clients::Client;
 use fred::interfaces::{ClientLike, KeysInterface, StreamsInterface};
@@ -64,7 +65,8 @@ use ruststream::runtime::{AppInfo, BrokerScope, Identity, RunningApp, RustStream
 use ruststream_fred::RedisBroker;
 use serde::Deserialize;
 use tokio::runtime::{Builder, Runtime};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, oneshot};
+use tokio::time::sleep;
 
 // A benchmark measures what ships. The `testing` feature adds the in-process mode's hooks to the
 // transport, so a count taken with it on is not what a service runs.
@@ -76,6 +78,8 @@ compile_error!(
 /// The stream key every scenario delivers on, and the one each handler's descriptor names.
 pub const INPUT: &str = "orders";
 
+/// The consumer group every scenario's descriptor reads through.
+pub const GROUP: &str = "workers";
 /// The stream key the reply scenario's reply type names in its `#[outgoing(..)]` attribute,
 /// which takes a literal; it is unlinked with [`INPUT`] before a run.
 pub const REPLIES: &str = "confirmations";
@@ -300,6 +304,33 @@ fn aside(work: impl AsyncFnOnce(Client) + Send) {
     });
 }
 
+/// Drives the service's runtime until the group has settled every entry: a handler counts its
+/// delivery down before the settlement (and a window's flush) that follows it, and that work is
+/// the service's too. A side thread asks the server, so the asking is not counted.
+fn settled(runtime: &Runtime) {
+    let (done, settled) = oneshot::channel::<()>();
+    thread::scope(|scope| {
+        scope.spawn(move || {
+            aside(async move |client: Client| {
+                loop {
+                    let (pending, _, _, _): (u64, Value, Value, Value) = client
+                        .xpending(INPUT, GROUP, ())
+                        .await
+                        .expect("the server reports the group's pending entries");
+                    if pending == 0 {
+                        break;
+                    }
+                    sleep(Duration::from_millis(1)).await;
+                }
+            });
+            let _ = done.send(());
+        });
+        runtime.block_on(async move {
+            let _ = settled.await;
+        });
+    });
+}
+
 /// Appends `count` bodies to [`INPUT`] in pipelined batches, and returns once the server has
 /// accepted every one of them.
 fn fill(count: usize) {
@@ -344,7 +375,10 @@ pub fn start_and_drain(pending: Pending) {
         messages,
         "the stream was consumed while it was being filled, so the measured region would be short"
     );
-    measure(|| runtime.block_on(latch.drained()));
+    measure(|| {
+        runtime.block_on(latch.drained());
+        settled(&runtime);
+    });
     runtime
         .block_on(running.shutdown())
         .expect("the service shuts down");
