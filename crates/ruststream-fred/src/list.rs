@@ -45,7 +45,7 @@ use ruststream::{
 };
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
-use crate::connection::Connection;
+use crate::connection::{Connection, ReadConnection};
 use crate::envelope::{SharedEnvelope, frame, unframe};
 use crate::loopback::{InFlight, Loopback, Tap};
 use crate::partition::{RedisPublishOptions, resolved_headers};
@@ -53,7 +53,6 @@ use crate::pipeline::{ListForm, Pipelined, RoundMessage, Window};
 use crate::publisher::joins_round;
 use crate::recovery::{self, RecoveryConfig};
 use crate::route::Route;
-use crate::subscriber::other_than;
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
 
 /// This form's publish policy, [`RedisListPublish`], under the mount-site name every form gives
@@ -442,9 +441,9 @@ impl BatchSubscriber for RedisListSubscriber {
 /// The wire side of a list subscription: one blocking pop per delivery.
 pub(crate) struct ListWire {
     connection: Arc<Connection>,
-    /// The connection every pop goes out on. A blocking pop holds its connection until it returns,
-    /// so the pops keep to one, and a window flushes on another.
-    reader: Client,
+    /// The connection every pop goes out on, apart from the pool: a blocking pop holds its
+    /// connection until it returns.
+    reader: ReadConnection,
     key: String,
     reliable: bool,
     processing: String,
@@ -472,6 +471,7 @@ impl ListWire {
     )]
     pub(crate) fn new(
         connection: Arc<Connection>,
+        reader: ReadConnection,
         key: String,
         reliable: bool,
         processing: String,
@@ -481,8 +481,8 @@ impl ListWire {
         tap: Tap,
     ) -> Self {
         Self {
-            reader: connection.pool().next().clone(),
             connection,
+            reader,
             key,
             reliable,
             processing,
@@ -528,6 +528,9 @@ impl ListWire {
         // sweep, which then finds what went stale while it waited.
         #[cfg(feature = "testing")]
         self.tap.readable().await;
+        // The read connection is the subscription's own, so the broker's shutdown does not close
+        // it: a read after the shutdown refuses here instead of delivering past it.
+        self.connection.ensure_open()?;
         let secs = block_secs(self.block);
         if self.reliable {
             if let Some(cfg) = &self.recovery {
@@ -536,6 +539,7 @@ impl ListWire {
             }
             let value: Option<Vec<u8>> = empty_on_timeout(
                 self.reader
+                    .client()
                     .blmove(
                         self.key.as_str(),
                         self.processing.as_str(),
@@ -562,7 +566,7 @@ impl ListWire {
             Ok(Some(self.reliable_message(value, handle)))
         } else {
             let popped: Option<(String, Vec<u8>)> =
-                empty_on_timeout(self.reader.brpop(self.key.as_str(), secs).await)?;
+                empty_on_timeout(self.reader.client().brpop(self.key.as_str(), secs).await)?;
             Ok(popped.map(|(_, v)| self.simple_message(&v)))
         }
     }
@@ -582,9 +586,9 @@ impl ListWire {
         )
     }
 
-    /// The window's client: a connection of the pool the flushes go out on.
+    /// The window's client: a connection of the pool, where no pop blocks.
     pub(crate) fn round_client(&self) -> Client {
-        other_than(self.connection.pool(), &self.reader)
+        self.connection.pool().next().clone()
     }
 
     /// The key this subscription reads.
@@ -599,13 +603,16 @@ impl ListWire {
     /// `RPOP key count` and waits with `BRPOP`. Both read the right end, the end a producer's
     /// `LPUSH` makes the oldest.
     async fn claim(&self, count: usize, into: &mut VecDeque<Claimed>) -> Result<(), RedisError> {
+        // The read connection is the subscription's own, so the broker's shutdown does not close
+        // it: a read after the shutdown refuses here instead of delivering past it.
+        self.connection.ensure_open()?;
         let before = into.len();
         if self.reliable {
             if let Some(cfg) = &self.recovery {
                 recovery::sweep_orphans(self.connection.pool(), cfg, &self.key, &self.processing)
                     .await?;
             }
-            let claims = self.reader.pipeline();
+            let claims = self.reader.client().pipeline();
             for _ in 0..count {
                 claims
                     .lmove::<(), _, _>(
@@ -629,6 +636,7 @@ impl ListWire {
         } else {
             let popped: Value = self
                 .reader
+                .client()
                 .rpop(self.key.as_str(), Some(count))
                 .await
                 .map_err(RedisError::stream)?;
@@ -657,6 +665,7 @@ impl ListWire {
         if self.reliable {
             empty_on_timeout(
                 self.reader
+                    .client()
                     .blmove(
                         self.key.as_str(),
                         self.processing.as_str(),
@@ -668,7 +677,7 @@ impl ListWire {
             )
         } else {
             let popped: Option<(String, Vec<u8>)> =
-                empty_on_timeout(self.reader.brpop(self.key.as_str(), secs).await)?;
+                empty_on_timeout(self.reader.client().brpop(self.key.as_str(), secs).await)?;
             Ok(popped.map(|(_, value)| value))
         }
     }

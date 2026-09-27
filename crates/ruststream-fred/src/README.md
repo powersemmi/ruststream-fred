@@ -664,7 +664,7 @@ each form's prelude carries its two, with the [`pipeline::InRound`] transform an
 
 A window flushes in three cases: the read's `COUNT` has settled, nothing is outstanding, or the
 subscription stops. The flush sends every committed segment and then one pipeline of settles on
-a connection of the pool other than the one the reads block on. A stream's settles leave as one
+a connection of the pool, apart from the one the reads block on. A stream's settles leave as one
 `XACK`, and a reliable list's as one `LREM` per entry. Under load that is one round trip per
 fetched batch. On a trickle the window leaves as soon as the last handler of the batch returns.
 
@@ -1077,7 +1077,9 @@ One constructor per topology, all synchronous and free of I/O: [`RedisBroker::st
 a URL, [`RedisBroker::cluster`] a seed list, of which one reachable node is enough,
 [`RedisBroker::sentinel`] the monitored primary's name and the sentinels that watch it, and
 [`RedisBroker::from_pool`] an already-built `fred` `Pool`. [`RedisBroker::pool`] sets how many
-connections the broker opens.
+connections the pool holds for publishes, settlements and handler commands. Each stream and list
+subscription reads on one connection of its own, and each Pub/Sub subscription listens on one,
+so a blocking read never holds up a publish.
 
 [`RedisBroker::credentials`] sets an ACL username and password on every topology, which is the
 only way to authenticate a cluster or sentinel seed list, and it overrides what a standalone URL

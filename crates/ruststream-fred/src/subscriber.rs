@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use fred::clients::{Client, Pool};
+use fred::clients::Client;
 use fred::interfaces::{ClientLike, StreamsInterface};
 use fred::types::streams::XReadValue;
 use fred::types::{CustomCommand, Value};
@@ -17,7 +17,7 @@ use futures::stream::unfold;
 use ruststream::{BatchSubscriber, Seekable, Subscriber};
 
 use crate::claim::{self, ClaimedEntry};
-use crate::connection::Connection;
+use crate::connection::{Connection, ReadConnection};
 use crate::convert::{HEADER_PREFIX, parts_from_fields};
 use crate::delay::DelayConfig;
 use crate::loopback::Tap;
@@ -68,9 +68,9 @@ fn duration_to_millis(d: Duration) -> u64 {
 /// descriptor. The read mode (fresh tail, reclaim, or claim-and-read) is fixed at construction.
 pub struct RedisSubscriber {
     connection: Arc<Connection>,
-    /// The connection every read goes out on. A blocking read holds its connection until it
-    /// returns, so the reads keep to one, and a window flushes on another.
-    reader: Client,
+    /// The connection every read goes out on, apart from the pool: a blocking read holds its
+    /// connection until it returns.
+    reader: ReadConnection,
     key: String,
     group: String,
     consumer: String,
@@ -114,6 +114,7 @@ impl RedisSubscriber {
     )]
     pub(crate) fn new(
         connection: Arc<Connection>,
+        reader: ReadConnection,
         key: String,
         group: String,
         consumer: String,
@@ -130,8 +131,8 @@ impl RedisSubscriber {
             Arc::clone(&generation),
         ));
         Self {
-            reader: connection.pool().next().clone(),
             connection,
+            reader,
             key,
             group,
             consumer,
@@ -205,9 +206,9 @@ impl RedisSubscriber {
         )
     }
 
-    /// The window's client: a connection of the pool other than the one the reads block on.
+    /// The window's client: a connection of the pool, where no read blocks.
     pub(crate) fn round_client(&self) -> Client {
-        other_than(self.connection.pool(), &self.reader)
+        self.connection.pool().next().clone()
     }
 
     /// Yields one delivery per entry, each with a slot in `window`, and reports a failed flush of
@@ -251,6 +252,9 @@ impl RedisSubscriber {
         // before the sweep, which then finds what came due while it waited.
         #[cfg(feature = "testing")]
         self.tap.readable().await;
+        // The read connection is the subscription's own, so the broker's shutdown does not close
+        // it: a read after the shutdown refuses here instead of delivering past it.
+        self.connection.ensure_open()?;
         // Replay any due delayed-retry entries before reading, so they re-enter the stream and get
         // delivered through the normal read path. Granularity is the read block interval.
         if let Some(cfg) = &self.delay {
@@ -279,6 +283,7 @@ impl RedisSubscriber {
     async fn fetch_fresh(&self, count: u64) -> Result<Vec<Entry>, RedisError> {
         let resp: RawStreams = self
             .reader
+            .client()
             .xreadgroup(
                 self.group.as_str(),
                 self.consumer.as_str(),
@@ -343,6 +348,7 @@ impl RedisSubscriber {
 
         let frame = self
             .reader
+            .client()
             .custom_raw(command, args)
             .await
             .map_err(RedisError::stream)?;
@@ -380,6 +386,7 @@ impl RedisSubscriber {
     ) -> Result<Vec<Entry>, RedisError> {
         let (cursor, entries): (String, Vec<XReadValue<String, String, Vec<u8>>>) = self
             .reader
+            .client()
             .xautoclaim_values(
                 self.key.as_str(),
                 self.group.as_str(),
@@ -435,6 +442,7 @@ impl RedisSubscriber {
     async fn pending_meta(&self, limit: u64) -> Result<HashMap<String, (u64, u64)>, RedisError> {
         let rows: Vec<(String, String, u64, u64)> = self
             .reader
+            .client()
             .xpending(
                 self.key.as_str(),
                 self.group.as_str(),
@@ -491,15 +499,6 @@ impl RedisSubscriber {
             }
         })
     }
-}
-
-/// A connection of `pool` other than `reader`, or `reader` itself on a pool of one.
-pub(crate) fn other_than(pool: &Pool, reader: &Client) -> Client {
-    pool.clients()
-        .iter()
-        .find(|client| client.id() != reader.id())
-        .unwrap_or(reader)
-        .clone()
 }
 
 /// Injects a `u64`-valued well-known header into an entry's raw field map (under the `h:` prefix),

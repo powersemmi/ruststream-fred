@@ -203,6 +203,20 @@ async fn in_process_passes_seeking() {
 
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passes_lifecycle() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    Box::pin(harness::lifecycle(
+        move || RedisBroker::standalone(url.clone()),
+        |key| RedisStream::new(key).group("conformance"),
+        |connected| connected.publisher(),
+    ))
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn passes_delayed_retry_lifecycle() {
     let Some(url) = redis_url() else {
         return;
@@ -211,6 +225,20 @@ async fn passes_delayed_retry_lifecycle() {
         move || RedisBroker::standalone(url.clone()),
         delayed,
         |connected| connected.publisher(),
+    ))
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passes_list_lifecycle() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    Box::pin(harness::lifecycle(
+        move || RedisBroker::standalone(url.clone()),
+        |key| RedisList::new(key).reliable(),
+        |connected| connected.list_publisher(RedisListPublish::new()),
     ))
     .await;
 }

@@ -5,7 +5,6 @@
 //! form owns the live `fred` pool, so subscriptions and publishers exist only once a connection
 //! does.
 
-use std::future::{Future, ready};
 use std::sync::Arc;
 #[cfg(feature = "testing")]
 use std::sync::Mutex;
@@ -31,7 +30,7 @@ use ruststream::{OutgoingMessage, RawMessage};
 use tokio::runtime::Handle;
 use tokio::sync::broadcast::Receiver;
 
-use crate::connection::Connection;
+use crate::connection::{Closing, Connection, ReadConnection};
 #[cfg(feature = "testing")]
 use crate::convert::{fields_for_publish, parts_from_fields};
 use crate::delay::DelayConfig;
@@ -247,7 +246,8 @@ impl RedisBroker {
         }
     }
 
-    /// Sets the connection-pool size. Defaults to 4.
+    /// Sets the connection-pool size: the connections publishes, settlements and handler commands
+    /// share. Defaults to 4. Each subscription reads on a connection of its own besides.
     pub const fn pool(mut self, size: usize) -> Self {
         self.pool_size = size;
         self
@@ -491,6 +491,7 @@ impl Broker for RedisBroker {
         Ok(ConnectedRedisBroker {
             core: Arc::new(RedisCore {
                 connection: Connection::new(pool),
+                closing: Arc::default(),
                 runtime: Handle::current(),
                 config,
                 default_group: self.default_group,
@@ -525,6 +526,7 @@ impl InProcess for RedisBroker {
         Ok(ConnectedRedisBroker {
             core: Arc::new(RedisCore {
                 connection: Connection::new(pool),
+                closing: Arc::default(),
                 runtime: Handle::current(),
                 config,
                 default_group: self.default_group,
@@ -603,6 +605,9 @@ pub(crate) struct RedisCore {
     /// misuse a compile error, but publishers and deliveries handed out before the shutdown alias
     /// the connection and outlive it, so they ask it before issuing a command.
     connection: Arc<Connection>,
+    /// The closes of the subscriptions' read connections still running, which the shutdown
+    /// waits for before it closes the pool.
+    closing: Arc<Closing>,
     /// The runtime `connect` ran on. Every task the broker starts for itself is spawned here, so
     /// a call from a dedicated thread's runtime (a handler under `threads(n)`) leaves no task
     /// behind that dies when that runtime stops.
@@ -762,11 +767,13 @@ impl ConnectedRedisBroker {
             .core
             .record_routes(def.key(), def.dead_letter(), &Route::Stream)?;
         ensure_group(pool, def.key(), &group, def.start().as_id()).await?;
+        let reader = self.read_connection().await?;
         let delay = def.delay_config().map(|cfg| cfg.on(self.core.loopback()));
         let tap = self.stream_tap(&def, &group, &consumer, delay.as_ref());
         recorded.keep();
         Ok(RedisSubscriber::new(
             connection,
+            reader,
             def.key().to_owned(),
             group,
             consumer,
@@ -976,19 +983,15 @@ impl ConnectedRedisBroker {
     ///
     /// # Errors
     ///
-    /// Returns [`RedisError::ShutDown`] when the connection was already torn down, or
-    /// [`RedisError::InvalidOptions`] when `def` names a recovery ZSET without a `min_idle`.
-    // Awaited like the other subscribe methods; the form differs only because this body is
-    // synchronous, so there is nothing to suspend on.
-    pub fn subscribe_list(
-        &self,
-        def: RedisList,
-    ) -> impl Future<Output = Result<RedisListSubscriber, RedisError>> {
-        ready(self.open_list(def).map(RedisListSubscriber::new))
+    /// Returns [`RedisError::ShutDown`] when the connection was already torn down,
+    /// [`RedisError::InvalidOptions`] when `def` names a recovery ZSET without a `min_idle`, or
+    /// [`RedisError::Connect`] when the connection the subscription reads on cannot connect.
+    pub async fn subscribe_list(&self, def: RedisList) -> Result<RedisListSubscriber, RedisError> {
+        self.open_list(def).await.map(RedisListSubscriber::new)
     }
 
     /// Validates `def` against this connection and hands back its wire.
-    pub(crate) fn open_list(&self, def: RedisList) -> Result<ListWire, RedisError> {
+    pub(crate) async fn open_list(&self, def: RedisList) -> Result<ListWire, RedisError> {
         let connection = self.core.connection()?;
         let recovery = def
             .recovery_config()?
@@ -1003,9 +1006,11 @@ impl ConnectedRedisBroker {
             .keep();
         let block = def.block_or_default();
         let codec = def.codec_handle();
+        let reader = self.read_connection().await?;
         let tap = self.list_tap(def.key(), recovery.as_ref());
         Ok(ListWire::new(
             connection,
+            reader,
             def.into_key(),
             reliable,
             processing,
@@ -1094,8 +1099,24 @@ impl ConnectedRedisBroker {
         self.core.pool()
     }
 
+    /// The connection a stream or list subscription reads on, apart from the pool its publishes
+    /// and settlements go out on.
+    async fn read_connection(&self) -> Result<ReadConnection, RedisError> {
+        #[cfg(feature = "testing")]
+        let blocks = self.core.loopback().server().is_none();
+        #[cfg(not(feature = "testing"))]
+        let blocks = true;
+        Ok(ReadConnection::new(
+            self.new_client().await?,
+            self.runtime().clone(),
+            Arc::clone(&self.core.closing),
+            blocks,
+        ))
+    }
+
     /// Builds and connects a dedicated `fred` client (used for Pub/Sub, which needs an isolated
-    /// message stream and channel state per subscriber).
+    /// message stream and channel state per subscriber, and for the reads of a stream or list
+    /// subscription).
     async fn new_client(&self) -> Result<Client, RedisError> {
         // The dedicated client is a second connection to the same server: refuse to dial one for
         // a connection whose owner already shut down.
@@ -1127,6 +1148,7 @@ impl ConnectedBroker for ConnectedRedisBroker {
     /// Returns [`RedisError::Connect`] when the `QUIT` roundtrip fails.
     async fn shutdown(self) -> Result<Self::Closed, Self::Error> {
         self.core.connection.close();
+        self.core.closing.finish().await;
         let connections_closed = self.core.connection.pool().clients().len();
         self.core
             .connection

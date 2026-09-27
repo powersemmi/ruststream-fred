@@ -1,7 +1,7 @@
 //! What a `.pipeline()` descriptor opens: the form's own subscription, with a window.
 
 use std::fmt::{Debug, Formatter};
-use std::future::{Future, ready};
+use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -270,23 +270,21 @@ impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker> for Pipelined<Re
 
     delegates!(ConnectedRedisBroker, key);
 
-    // Opening a list issues no command, so there is nothing to suspend on.
-    fn subscribe(
+    async fn subscribe(
         self,
         connected: &ConnectedRedisBroker,
-    ) -> impl Future<Output = Result<Self::Subscriber, RedisError>> {
-        ready(connected.open_list(self.into_descriptor()).map(|wire| {
-            let window = Window::new(
-                wire.round_form(),
-                wire.round_client(),
-                Arc::clone(connected.rounds()),
-                Mode::ATOMIC,
-                wire.key(),
-                prefetch(),
-                connected.runtime().clone(),
-            );
-            PipelinedSubscriber::new(ListReader::new(wire), window)
-        }))
+    ) -> Result<Self::Subscriber, RedisError> {
+        let wire = connected.open_list(self.into_descriptor()).await?;
+        let window = Window::new(
+            wire.round_form(),
+            wire.round_client(),
+            Arc::clone(connected.rounds()),
+            Mode::ATOMIC,
+            wire.key(),
+            prefetch(),
+            connected.runtime().clone(),
+        );
+        Ok(PipelinedSubscriber::new(ListReader::new(wire), window))
     }
 }
 

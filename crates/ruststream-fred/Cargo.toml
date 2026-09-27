@@ -65,8 +65,9 @@ async-trait = "0.1.77"
 
 [dependencies]
 ruststream = { workspace = true, default-features = false }
-# `i-scripts` is the Lua and function surface a pipelined handler queues through.
-fred = { workspace = true, features = ["i-scripts"] }
+# `i-scripts` is the Lua and function surface a pipelined handler queues through; `i-client` is
+# `CLIENT UNBLOCK`, which a dropped subscription interrupts its blocked read with.
+fred = { workspace = true, features = ["i-scripts", "i-client"] }
 bytes.workspace = true
 futures.workspace = true
 serde = { version = "1", features = ["derive"] }
