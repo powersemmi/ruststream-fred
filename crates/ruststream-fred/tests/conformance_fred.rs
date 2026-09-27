@@ -90,6 +90,17 @@ async fn in_process_passes_list_lifecycle() {
     .await;
 }
 
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_passes_pubsub_lifecycle() {
+    Box::pin(harness::lifecycle(
+        in_process,
+        |channel| RedisPubSub::new(channel),
+        |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
+    ))
+    .await;
+}
+
 // What a descriptor addressing its own copies promises: publish to the address it reports and the
 // subscription that reported it gets the message.
 
@@ -239,6 +250,20 @@ async fn passes_list_lifecycle() {
         move || RedisBroker::standalone(url.clone()),
         |key| RedisList::new(key).reliable(),
         |connected| connected.list_publisher(RedisListPublish::new()),
+    ))
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passes_pubsub_lifecycle() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    Box::pin(harness::lifecycle(
+        move || RedisBroker::standalone(url.clone()),
+        |channel| RedisPubSub::new(channel),
+        |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
     ))
     .await;
 }

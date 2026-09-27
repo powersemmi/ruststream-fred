@@ -35,11 +35,12 @@ use ruststream::codec::Codec;
 use ruststream::{
     AckError, AddressedCopies, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage,
     Lend, NamedCopies, OutgoingMessage, PairError, Partitioned, PublishPolicy, Publisher,
-    RedeliveryAddress, RedeliveryAddressed, RetryDeclaration, SubscriptionSource,
+    RedeliveryAddress, RedeliveryAddressed, RetryDeclaration, SubscriptionSource, nonzero,
 };
 use tokio::runtime::Handle;
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
+use tracing::warn;
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::envelope::{SharedEnvelope, frame, unframe};
@@ -140,6 +141,7 @@ pub struct RedisPubSub {
     /// Where the mount site sends a spent delivery, taken from its retry declaration when the
     /// subscription opens, so the broker publishes to that name as the channel it is.
     dead_letter: Option<String>,
+    buffer: NonZeroUsize,
 }
 
 impl Debug for RedisPubSub {
@@ -149,6 +151,7 @@ impl Debug for RedisPubSub {
             .field("mode", &self.mode)
             .field("codec", &self.codec.is_some())
             .field("dead_letter", &self.dead_letter)
+            .field("buffer", &self.buffer)
             .finish()
     }
 }
@@ -161,6 +164,7 @@ impl RedisPubSub {
             mode: PubSubMode::default(),
             codec: None,
             dead_letter: None,
+            buffer: DEFAULT_BUFFER,
         }
     }
 
@@ -177,10 +181,37 @@ impl RedisPubSub {
         self
     }
 
+    /// Sets how many messages the subscription holds that its handler has not taken yet.
+    ///
+    /// Redis pushes a Pub/Sub message the moment it is published, and the subscription keeps it
+    /// until the handler asks for the next one. Once `messages` are waiting, each new one drops the
+    /// oldest, and the subscription logs a warning naming how many it lost. Defaults to 1024.
+    /// The room is reserved when the subscription opens, about 800 bytes per message of buffer
+    /// whatever the payloads weigh, so the default costs a subscription about 800 KB.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream::nonzero;
+    /// use ruststream_fred::{RedisPubSub};
+    ///
+    /// // A handler that falls behind a burst of up to ten thousand events loses none of them.
+    /// let events = RedisPubSub::new("events").buffer(nonzero!(10_000));
+    /// # let _ = events;
+    /// ```
+    pub const fn buffer(mut self, messages: NonZeroUsize) -> Self {
+        self.buffer = messages;
+        self
+    }
+
     /// The channel this subscription listens on.
     #[must_use]
     pub fn channel(&self) -> &str {
         &self.channel
+    }
+
+    pub(crate) const fn buffer_size(&self) -> NonZeroUsize {
+        self.buffer
     }
 
     /// Opens a window on this subscription: the commands its handlers queue through
@@ -267,6 +298,7 @@ impl RedisPubSub {
 pub struct RedisPubSubPattern {
     pattern: String,
     codec: Option<SharedEnvelope>,
+    buffer: NonZeroUsize,
 }
 
 impl Debug for RedisPubSubPattern {
@@ -274,6 +306,7 @@ impl Debug for RedisPubSubPattern {
         f.debug_struct("RedisPubSubPattern")
             .field("pattern", &self.pattern)
             .field("codec", &self.codec.is_some())
+            .field("buffer", &self.buffer)
             .finish()
     }
 }
@@ -284,6 +317,7 @@ impl RedisPubSubPattern {
         Self {
             pattern: pattern.into(),
             codec: None,
+            buffer: DEFAULT_BUFFER,
         }
     }
 
@@ -294,10 +328,37 @@ impl RedisPubSubPattern {
         self
     }
 
+    /// Sets how many messages the subscription holds that its handler has not taken yet.
+    ///
+    /// Redis pushes a Pub/Sub message the moment it is published, and the subscription keeps it
+    /// until the handler asks for the next one. Once `messages` are waiting, each new one drops the
+    /// oldest, and the subscription logs a warning naming how many it lost. Defaults to 1024.
+    /// The room is reserved when the subscription opens, about 800 bytes per message of buffer
+    /// whatever the payloads weigh, so the default costs a subscription about 800 KB.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream::nonzero;
+    /// use ruststream_fred::{RedisPubSubPattern};
+    ///
+    /// // A handler that falls behind a burst of up to ten thousand events loses none of them.
+    /// let events = RedisPubSubPattern::new("events.*").buffer(nonzero!(10_000));
+    /// # let _ = events;
+    /// ```
+    pub const fn buffer(mut self, messages: NonZeroUsize) -> Self {
+        self.buffer = messages;
+        self
+    }
+
     /// The glob this subscription matches channels against.
     #[must_use]
     pub fn pattern(&self) -> &str {
         &self.pattern
+    }
+
+    pub(crate) const fn buffer_size(&self) -> NonZeroUsize {
+        self.buffer
     }
 
     pub(crate) fn codec_handle(&self) -> Option<SharedEnvelope> {
@@ -409,9 +470,10 @@ impl ruststream::Subscriber for RedisPubSubSubscriber {
     ///
     /// # Cancel safety
     ///
-    /// Dropping the returned stream between items is safe. Because Pub/Sub has no buffering, any
-    /// message published while no stream is polling is lost (this is Redis Pub/Sub semantics, not a
-    /// limitation of this client).
+    /// Dropping the returned stream between items is safe. What arrives while no stream is polling
+    /// waits in the subscription's [buffer](crate::RedisPubSub::buffer); past it the oldest is
+    /// lost, and while the subscription is disconnected everything is, as Redis Pub/Sub keeps
+    /// nothing for a subscriber that is not there.
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
         self.0.stream()
     }
@@ -434,8 +496,15 @@ impl BatchSubscriber for RedisPubSubSubscriber {
     }
 }
 
+/// How many messages a Pub/Sub subscription holds for its handler unless it says otherwise.
+// Why a cap at all: `fred` hands a subscription its messages over a broadcast channel whose capacity
+// is fixed when the client is built.
+pub(crate) const DEFAULT_BUFFER: NonZeroUsize = nonzero!(1024);
+
 /// The wire side of a Pub/Sub subscription: the dedicated client and the channel it feeds.
 pub(crate) struct PubSubWire {
+    /// The channel or the glob it reads, for the warning a lost message raises.
+    name: String,
     client: Client,
     rx: Receiver<Message>,
     codec: Option<SharedEnvelope>,
@@ -455,6 +524,7 @@ impl Debug for PubSubWire {
 
 impl PubSubWire {
     pub(crate) fn new(
+        name: String,
         client: Client,
         rx: Receiver<Message>,
         codec: Option<SharedEnvelope>,
@@ -463,6 +533,7 @@ impl PubSubWire {
         runtime: Handle,
     ) -> Self {
         Self {
+            name,
             client,
             rx,
             codec,
@@ -484,7 +555,7 @@ impl PubSubWire {
         window: &'a Arc<Window<PubSubForm>>,
     ) -> impl Stream<Item = Result<RoundMessage<PubSubForm>, RedisError>> + Send + 'a {
         let codec = self.codec.clone();
-        let (pool, tap) = (&self.pool, &self.tap);
+        let (pool, tap, name) = (&self.pool, &self.tap, self.name.as_str());
         unfold((&mut self.rx, codec), move |(rx, codec)| async move {
             loop {
                 if let Some(failure) = window.take_failure() {
@@ -501,7 +572,7 @@ impl PubSubWire {
                         ));
                     }
                     // The receiver fell behind the broadcast buffer; skip the gap and keep reading.
-                    Err(RecvError::Lagged(skipped)) => lagged(tap, skipped),
+                    Err(RecvError::Lagged(skipped)) => lagged(name, tap, skipped),
                     Err(RecvError::Closed) => return None,
                 }
             }
@@ -509,12 +580,18 @@ impl PubSubWire {
     }
 }
 
-/// Forgets the messages a subscription that fell behind never received.
-fn lagged(tap: &Tap, skipped: u64) {
+/// Reports the messages a subscription that fell behind its buffer lost, and forgets them.
+fn lagged(name: &str, tap: &Tap, skipped: u64) {
+    warn!(
+        subscription = name,
+        lost = skipped,
+        "a Redis Pub/Sub subscription fell behind its buffer and lost the oldest messages; raise \
+         its buffer or speed up its handler"
+    );
     #[cfg(feature = "testing")]
     tap.discard(usize::try_from(skipped).unwrap_or(usize::MAX));
     #[cfg(not(feature = "testing"))]
-    let _ = (tap, skipped);
+    let _ = tap;
 }
 
 impl PubSubWire {
@@ -527,7 +604,7 @@ impl PubSubWire {
     ) -> impl Stream<Item = Result<Vec<RoundMessage<PubSubForm>>, RedisError>> + Send + 'a {
         window.fill_at(size.get());
         let codec = self.codec.clone();
-        let (pool, tap) = (&self.pool, &self.tap);
+        let (pool, tap, name) = (&self.pool, &self.tap, self.name.as_str());
         unfold((&mut self.rx, codec), move |(rx, codec)| async move {
             loop {
                 if let Some(failure) = window.take_failure() {
@@ -536,7 +613,7 @@ impl PubSubWire {
                 let first = match rx.recv().await {
                     Ok(msg) => msg,
                     Err(RecvError::Lagged(skipped)) => {
-                        lagged(tap, skipped);
+                        lagged(name, tap, skipped);
                         continue;
                     }
                     Err(RecvError::Closed) => return None,
@@ -545,7 +622,7 @@ impl PubSubWire {
                 while messages.len() < size.get() {
                     match rx.try_recv() {
                         Ok(msg) => messages.push(msg),
-                        Err(TryRecvError::Lagged(skipped)) => lagged(tap, skipped),
+                        Err(TryRecvError::Lagged(skipped)) => lagged(name, tap, skipped),
                         Err(_) => break,
                     }
                 }
@@ -624,7 +701,7 @@ impl ruststream::Subscriber for PubSubWire {
 
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
         let codec = self.codec.clone();
-        let (pool, tap) = (&self.pool, &self.tap);
+        let (pool, tap, name) = (&self.pool, &self.tap, self.name.as_str());
         unfold((&mut self.rx, codec), move |(rx, codec)| async move {
             loop {
                 match rx.recv().await {
@@ -633,7 +710,7 @@ impl ruststream::Subscriber for PubSubWire {
                         return Some((Ok(message), (rx, codec)));
                     }
                     // The receiver fell behind the broadcast buffer; skip the gap and keep reading.
-                    Err(RecvError::Lagged(skipped)) => lagged(tap, skipped),
+                    Err(RecvError::Lagged(skipped)) => lagged(name, tap, skipped),
                     Err(RecvError::Closed) => return None,
                 }
             }

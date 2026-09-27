@@ -7,6 +7,7 @@
 //! `RedisStream::new("orders").group("workers").pipeline()`, and `AtomicStream` is the same with
 //! `.atomic()`.
 
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use ruststream::codec::Codec;
@@ -389,5 +390,21 @@ impl<Mode: WindowMode> Pipelined<RedisPubSub, Mode> {
     /// ```
     pub fn codec(self, codec: impl Codec + 'static) -> Self {
         self.map(|pubsub| pubsub.codec(codec))
+    }
+
+    /// Sets how many messages the subscription holds for its handlers, as [`RedisPubSub::buffer`]
+    /// does.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream::nonzero;
+    /// use ruststream_fred::PipelinedPubSub;
+    ///
+    /// let events = PipelinedPubSub::new("events").buffer(nonzero!(10_000));
+    /// # let _ = events;
+    /// ```
+    pub fn buffer(self, messages: NonZeroUsize) -> Self {
+        self.map(|pubsub| pubsub.buffer(messages))
     }
 }

@@ -218,6 +218,10 @@ A message reaches whichever subscribers are connected at publish time. There is 
 no consumer group, and no acknowledgement: `ack` and `nack` report `AckError::Unsupported`, and
 a delivery nobody was connected for is gone.
 
+A connected subscription holds what arrives while its handler is busy, up to its buffer: 1024
+messages unless [`RedisPubSub::buffer`] says otherwise. Past it the oldest is lost and the
+subscription logs a warning with the count.
+
 Two delivery modes do not interoperate, so [`PubSubMode`] is explicit.
 [`PubSubMode::Classic`] is `SUBSCRIBE` / `PUBLISH`, broadcast to every node of a cluster, and the
 only option on standalone and sentinel. [`PubSubMode::Sharded`] is `SSUBSCRIBE` / `SPUBLISH`
@@ -1116,10 +1120,10 @@ password on each `AUTH` or `HELLO`, and it takes precedence over static credenti
 Known limits. A transaction is unavailable on a cluster, because `MULTI` cannot span hash slots,
 and a reliable list needs its two keys under one hash tag there for the same reason.
 A reliable list without a recovery key has no orphan recovery. Pub/Sub loses anything published
-while a subscriber is disconnected, and a simple list loses anything a crashed handler was
-holding. A claiming subscription needs Redis 8.4 or later. For a setting these builders do not
-reach, such as a reconnection policy or performance tuning, build a `fred` `Pool` yourself and
-wrap it with [`RedisBroker::from_pool`]; the broker then reports no host to the generated
+while a subscriber is disconnected, and the oldest messages once a subscription's buffer
+overflows. A simple list loses anything a crashed handler was holding. A claiming subscription
+needs Redis 8.4 or later. For a setting these builders do not reach, such as a reconnection
+policy or performance tuning, build a `fred` `Pool` yourself and wrap it with [`RedisBroker::from_pool`]; the broker then reports no host to the generated
 document.
 
 # Cargo features
