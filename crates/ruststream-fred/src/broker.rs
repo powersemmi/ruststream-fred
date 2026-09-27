@@ -45,7 +45,7 @@ use crate::recovery::RecoveryConfig;
 use crate::{
     error::RedisError,
     list::{ListWire, RedisList, RedisListPublish, RedisListPublisher, RedisListSubscriber},
-    pipeline::Rounds,
+    pipeline::{Owner, Rounds},
     publisher::{RedisDefaultPublisher, RedisPublisher},
     pubsub::{
         PubSubMode, PubSubWire, RedisPubSub, RedisPubSubPattern, RedisPubSubPublish,
@@ -1093,6 +1093,16 @@ impl ConnectedRedisBroker {
     /// The runtime this connection was opened on, where the broker spawns its own tasks.
     pub(crate) fn runtime(&self) -> &Handle {
         &self.core.runtime
+    }
+
+    /// What a pipelined subscription's window takes from this connection, or
+    /// [`RedisError::ShutDown`] once it was torn down.
+    pub(crate) fn window_owner(&self) -> Result<Owner, RedisError> {
+        Ok(Owner {
+            rounds: Arc::clone(self.rounds()),
+            runtime: self.runtime().clone(),
+            connection: self.core.connection()?,
+        })
     }
 
     /// Returns a clone of the underlying pool, for advanced operations not covered by the

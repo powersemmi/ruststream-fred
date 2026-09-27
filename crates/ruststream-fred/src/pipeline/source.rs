@@ -227,11 +227,10 @@ impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker> for Pipelined<Re
         let window = Window::new(
             inner.round_form(),
             inner.round_client(),
-            Arc::clone(connected.rounds()),
             Mode::ATOMIC,
             inner.key(),
             prefetch(),
-            connected.runtime().clone(),
+            connected.window_owner()?,
         );
         Ok(PipelinedSubscriber::new(inner, window))
     }
@@ -254,11 +253,10 @@ impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker> for Pipelined<Re
         let window = Window::new(
             PubSubForm,
             inner.round_client(),
-            Arc::clone(connected.rounds()),
             Mode::ATOMIC,
             channel,
             prefetch(),
-            connected.runtime().clone(),
+            connected.window_owner()?,
         );
         Ok(PipelinedSubscriber::new(ChannelReader(inner), window))
     }
@@ -278,11 +276,10 @@ impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker> for Pipelined<Re
         let window = Window::new(
             wire.round_form(),
             wire.round_client(),
-            Arc::clone(connected.rounds()),
             Mode::ATOMIC,
             wire.key(),
             prefetch(),
-            connected.runtime().clone(),
+            connected.window_owner()?,
         );
         Ok(PipelinedSubscriber::new(ListReader::new(wire), window))
     }

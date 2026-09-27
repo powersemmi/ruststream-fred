@@ -38,7 +38,7 @@ pub(crate) use forms::{ListForm, PubSubForm, StreamForm};
 pub use message::RoundMessage;
 pub(crate) use rounds::Rounds;
 pub use source::PipelinedSubscriber;
-pub(crate) use window::{Form, Round, Segment, Window};
+pub(crate) use window::{Form, Owner, Round, Segment, Window};
 
 /// A subscription descriptor with a window, as its `.pipeline()` step returns it.
 ///

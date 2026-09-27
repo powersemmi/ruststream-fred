@@ -22,7 +22,8 @@ use ruststream::conformance::harness::InProcessBroker;
 use ruststream::conformance::{capabilities, harness};
 use ruststream::nonzero;
 use ruststream_fred::{
-    DelayedRetry, RedisBroker, RedisList, RedisListPublish, RedisPubSub, RedisPubSubPublish,
+    AtomicList, AtomicPubSub, AtomicStream, DelayedRetry, PipelinedList, PipelinedPubSub,
+    PipelinedStream, RedisBroker, RedisList, RedisListPublish, RedisPubSub, RedisPubSubPublish,
     RedisStream,
 };
 
@@ -418,6 +419,71 @@ async fn passes_seeking() {
     ))
     .await;
 }
+
+// The pipelined forms: a delivery settles into the window, and one held across the shutdown
+// settles with an error rather than into a window no flush will send.
+
+/// Runs the lifecycle over one pipelined form, in process and against the live server.
+macro_rules! pipelined_lifecycle {
+    ($in_process:ident, $live:ident, $source:expr, $publisher:expr) => {
+        #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn $in_process() {
+            Box::pin(harness::lifecycle(in_process, $source, $publisher)).await;
+        }
+
+        #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn $live() {
+            let Some(url) = redis_url() else {
+                return;
+            };
+            Box::pin(harness::lifecycle(
+                move || RedisBroker::standalone(url.clone()),
+                $source,
+                $publisher,
+            ))
+            .await;
+        }
+    };
+}
+
+pipelined_lifecycle!(
+    in_process_passes_stream_pipeline_lifecycle,
+    passes_stream_pipeline_lifecycle,
+    |key| PipelinedStream::new(key).group("conformance"),
+    |connected| connected.publisher()
+);
+pipelined_lifecycle!(
+    in_process_passes_atomic_stream_lifecycle,
+    passes_atomic_stream_lifecycle,
+    |key| AtomicStream::new(key).group("conformance"),
+    |connected| connected.publisher()
+);
+pipelined_lifecycle!(
+    in_process_passes_list_pipeline_lifecycle,
+    passes_list_pipeline_lifecycle,
+    |key| PipelinedList::new(key).reliable(),
+    |connected| connected.list_publisher(RedisListPublish::new())
+);
+pipelined_lifecycle!(
+    in_process_passes_atomic_list_lifecycle,
+    passes_atomic_list_lifecycle,
+    |key| AtomicList::new(key).reliable(),
+    |connected| connected.list_publisher(RedisListPublish::new())
+);
+pipelined_lifecycle!(
+    in_process_passes_pubsub_pipeline_lifecycle,
+    passes_pubsub_pipeline_lifecycle,
+    |channel| PipelinedPubSub::new(channel).buffer(nonzero!(64)),
+    |connected| connected.pubsub_publisher(RedisPubSubPublish::new())
+);
+pipelined_lifecycle!(
+    in_process_passes_atomic_pubsub_lifecycle,
+    passes_atomic_pubsub_lifecycle,
+    |channel| AtomicPubSub::new(channel).buffer(nonzero!(64)),
+    |connected| connected.pubsub_publisher(RedisPubSubPublish::new())
+);
 
 /// The server URL, or `None` to skip. Under `RUSTSTREAM_REQUIRE_LIVE` a missing variable fails the
 /// test instead, so a job that started a server cannot report a suite that never ran.
