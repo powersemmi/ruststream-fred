@@ -433,6 +433,16 @@ jobs:
           RUSTSTREAM_REQUIRE_LIVE: "1"
         run: cargo test -p ruststream-fred --features testing --test conformance_fred -- --test-threads=1
 
+      # The suites fed with this crate's own descriptors and publishers. The settlement suite reads
+      # the claiming mode, so it needs the 8.4 standalone beside the 7.x one.
+      - name: Run Redis contract suites
+        working-directory: ruststream-fred
+        env:
+          REDIS_TEST_URL: redis://127.0.0.1:6379
+          REDIS_84_TEST_URL: redis://127.0.0.1:6386
+          RUSTSTREAM_REQUIRE_LIVE: "1"
+        run: cargo test -p ruststream-fred --features testing --test conformance_suites -- --test-threads=1
+
       - name: Stop Redis topologies
         if: always()
         working-directory: ruststream-fred
