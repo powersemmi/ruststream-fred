@@ -963,6 +963,16 @@ impl ConnectedRedisBroker {
         &self,
         def: RedisPubSubPattern,
     ) -> Result<RedisPubSubSubscriber, RedisError> {
+        Ok(RedisPubSubSubscriber::new(
+            self.open_pubsub_pattern(def).await?,
+        ))
+    }
+
+    /// Subscribes a dedicated client to the glob `def` names and hands back its wire.
+    pub(crate) async fn open_pubsub_pattern(
+        &self,
+        def: RedisPubSubPattern,
+    ) -> Result<PubSubWire, RedisError> {
         let codec = def.codec_handle();
         let client = self.new_client(def.buffer_size()).await?;
         // Opened before the subscribe, for the reason `subscribe_pubsub` gives.
@@ -974,7 +984,7 @@ impl ConnectedRedisBroker {
         confirm_subscribed(&client).await?;
         let (rx, tap) =
             self.pubsub_tap(rx, PubSubTarget::Pattern(def.pattern()), def.buffer_size());
-        Ok(RedisPubSubSubscriber::new(PubSubWire::new(
+        Ok(PubSubWire::new(
             def.pattern().to_owned(),
             client,
             rx,
@@ -982,7 +992,7 @@ impl ConnectedRedisBroker {
             self.core.pool()?,
             tap,
             self.runtime().clone(),
-        )))
+        ))
     }
 
     /// Opens a list (work-queue) subscription described by `def`.

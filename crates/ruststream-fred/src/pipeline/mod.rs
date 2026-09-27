@@ -1,11 +1,12 @@
 //! Consumer-side pipelining: a subscription settles in a window, and a handler queues its own
 //! Redis commands into the delivery's segment of that window.
 //!
-//! `.pipeline()` on a descriptor opens the window: the settles of the deliveries in flight, and the
-//! commands their handlers queued through [`keys::Pipeline`](crate::context::keys::Pipeline), leave
-//! together, in one pipeline on a connection of the pool, once the read's `COUNT` has settled,
-//! once nothing is outstanding, or when the subscription stops. `.atomic()` after it makes each
-//! delivery's segment one `MULTI` / `EXEC`.
+//! `.pipeline()` where the handler is mounted opens the window (see [`RedisPipelineSteps`]): the
+//! settles of the deliveries in flight, and the commands their handlers queued through
+//! [`keys::Pipeline`](crate::context::keys::Pipeline), leave together, in one pipeline on a
+//! connection of the pool, once the read's `COUNT` has settled, once nothing is outstanding, or
+//! when the subscription stops. `.atomic()` after it makes each delivery's segment one `MULTI` /
+//! `EXEC`.
 //!
 //! What a handler queued follows the delivery's outcome: `ack` commits it with the settle, and
 //! every other outcome discards it.
@@ -16,6 +17,8 @@ mod forms;
 mod message;
 mod rounds;
 mod source;
+#[cfg(all(test, feature = "testing"))]
+mod tests;
 mod window;
 
 use std::fmt::{Debug, Formatter};
@@ -27,12 +30,17 @@ use fred::clients::{Client, Pipeline};
 use fred::error::Error;
 use fred::interfaces::ClientLike;
 use fred::types::{ClusterHash, CustomCommand, MultipleKeys, MultipleValues, Value};
-use ruststream::runtime::{ForReply, Outgoing, PublishContext, PublishTransform, Reads};
+use ruststream::StartAt;
+use ruststream::runtime::{
+    Declared, ForReply, Outgoing, PublishContext, PublishTransform, Reads, SubscriberBuilder,
+    SubscriberSettings,
+};
 
 use crate::partition::RedisPublishOptions;
 
 pub use descriptors::{
-    AtomicList, AtomicPubSub, AtomicStream, PipelinedList, PipelinedPubSub, PipelinedStream,
+    RedisListAtomic, RedisListPipeline, RedisPubSubAtomic, RedisPubSubPatternAtomic,
+    RedisPubSubPatternPipeline, RedisPubSubPipeline, RedisStreamAtomic, RedisStreamPipeline,
 };
 pub(crate) use forms::{ListForm, PubSubForm, StreamForm};
 pub use message::RoundMessage;
@@ -40,21 +48,40 @@ pub(crate) use rounds::Rounds;
 pub use source::PipelinedSubscriber;
 pub(crate) use window::{Form, Owner, Round, Segment, Window};
 
-/// A subscription descriptor with a window, as its `.pipeline()` step returns it.
+/// A subscription source with a window, as the `.pipeline()` mount step makes it.
 ///
-/// The descriptor is a [`RedisStream`](crate::RedisStream), a [`RedisList`](crate::RedisList) or
-/// a [`RedisPubSub`](crate::RedisPubSub). `Mode` is [`Plain`] until `.atomic()` makes it
-/// [`Atomic`].
+/// The descriptor is a [`RedisStream`](crate::RedisStream), a [`RedisList`](crate::RedisList), a
+/// [`RedisPubSub`](crate::RedisPubSub) or a [`RedisPubSubPattern`](crate::RedisPubSubPattern).
+/// `Mode` is [`Plain`] until `.atomic()` makes it [`Atomic`]. A service does not build one: it
+/// names the descriptor in `#[subscriber(..)]` and chains [`pipeline`](RedisPipelineSteps::pipeline)
+/// where it mounts the handler. The type shows up in the builder's type, under the names
+/// [`RedisStreamPipeline`](crate::RedisStreamPipeline) and its siblings.
 ///
 /// # Examples
 ///
 /// ```
-/// use ruststream_fred::RedisStream;
-/// use ruststream_fred::pipeline::AtomicStep;
+/// # mod demo {
+/// use ruststream_fred::stream::prelude::*;
+/// # #[derive(serde::Deserialize)]
+/// # struct Order { id: u64 }
 ///
-/// let windowed = RedisStream::new("orders").group("workers").pipeline();
-/// let atomic = RedisStream::new("orders").group("workers").pipeline().atomic();
-/// # let _ = (windowed, atomic);
+/// #[subscriber(RedisStream::new("orders").group("workers"))]
+/// async fn record(order: &Order, Ctx(pipeline): Ctx<keys::Pipeline>) -> HandlerOutcome {
+///     if pipeline.hset("orders:by-id", (order.id.to_string(), "seen")).await.is_err() {
+///         return HandlerOutcome::retry();
+///     }
+///     HandlerOutcome::ack()
+/// }
+///
+/// fn app() -> RustStream {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             b.include(record.pipeline());
+///         },
+///     )
+/// }
+/// # }
 /// ```
 #[must_use]
 pub struct Pipelined<Descriptor, Mode = Plain> {
@@ -89,21 +116,18 @@ impl<Descriptor, Mode> Pipelined<Descriptor, Mode> {
     }
 
     /// The descriptor the window was opened on.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ruststream_fred::RedisStream;
-    ///
-    /// let windowed = RedisStream::new("orders").group("workers").pipeline();
-    /// assert_eq!(windowed.descriptor().key(), "orders");
-    /// ```
-    pub const fn descriptor(&self) -> &Descriptor {
+    pub(crate) const fn descriptor(&self) -> &Descriptor {
         &self.descriptor
     }
 
     pub(crate) fn into_descriptor(self) -> Descriptor {
         self.descriptor
+    }
+
+    /// The same window over the descriptor `step` returns: a base setting chained at the mount
+    /// site after `.pipeline()`.
+    pub(crate) fn map(self, step: impl FnOnce(Descriptor) -> Descriptor) -> Self {
+        Self::wrap(step(self.descriptor))
     }
 }
 
@@ -146,7 +170,55 @@ impl WindowMode for Atomic {
     const ATOMIC: bool = true;
 }
 
-/// A descriptor that already has a window, which is what `.atomic()` needs.
+mod windowable {
+    /// The descriptors a window opens on, and nothing else.
+    #[diagnostic::on_unimplemented(
+        message = "`.pipeline()` opens a window on a `RedisStream`, `RedisList`, `RedisPubSub` or \
+                   `RedisPubSubPattern` subscription, and this one is `{Self}`",
+        label = "no window opens here",
+        note = "a subscription has one window: chain `.pipeline()` once, on the descriptor the \
+                attribute names"
+    )]
+    pub trait Base {}
+    impl Base for crate::RedisStream {}
+    impl Base for crate::RedisList {}
+    impl Base for crate::RedisPubSub {}
+    impl Base for crate::RedisPubSubPattern {}
+}
+
+/// A subscription source a window can open on: a descriptor of this crate, possibly under the
+/// core's `start_at(..)` wrapper.
+#[diagnostic::on_unimplemented(
+    message = "`.pipeline()` opens a window on a subscription of ruststream-fred, and `{Self}` is not one",
+    label = "no window opens on this source",
+    note = "name a `RedisStream`, `RedisList`, `RedisPubSub` or `RedisPubSubPattern` in \
+            `#[subscriber(..)]`, and chain `.pipeline()` once"
+)]
+pub trait OpensWindow {
+    /// The same source with a window.
+    type Pipelined;
+
+    /// Opens the window.
+    fn open_window(self) -> Self::Pipelined;
+}
+
+impl<Descriptor: windowable::Base> OpensWindow for Descriptor {
+    type Pipelined = Pipelined<Descriptor, Plain>;
+
+    fn open_window(self) -> Self::Pipelined {
+        Pipelined::wrap(self)
+    }
+}
+
+impl<Source: OpensWindow, Position> OpensWindow for StartAt<Source, Position> {
+    type Pipelined = StartAt<Source::Pipelined, Position>;
+
+    fn open_window(self) -> Self::Pipelined {
+        self.map_inner(OpensWindow::open_window)
+    }
+}
+
+/// A source that already has a window, which is what `.atomic()` needs.
 #[diagnostic::on_unimplemented(
     message = "`.atomic()` needs `.pipeline()` first",
     label = "this subscription has no pipeline",
@@ -154,7 +226,7 @@ impl WindowMode for Atomic {
             and a subscription without a window has no pipeline to put it in"
 )]
 pub trait Windowed {
-    /// The same descriptor with an atomic window.
+    /// The same source with an atomic window.
     type Atomic;
 
     /// Makes the window atomic.
@@ -165,20 +237,88 @@ impl<Descriptor> Windowed for Pipelined<Descriptor, Plain> {
     type Atomic = Pipelined<Descriptor, Atomic>;
 
     fn into_atomic(self) -> Self::Atomic {
-        Pipelined {
-            descriptor: self.descriptor,
-            mode: PhantomData,
-        }
+        Pipelined::wrap(self.descriptor)
     }
 }
 
-/// The `.atomic()` step of a subscription descriptor: it follows `.pipeline()`.
+impl<Source: Windowed, Position> Windowed for StartAt<Source, Position> {
+    type Atomic = StartAt<Source::Atomic, Position>;
+
+    fn into_atomic(self) -> Self::Atomic {
+        self.map_inner(Windowed::into_atomic)
+    }
+}
+
+/// The builder step behind [`RedisPipelineSteps::pipeline`].
+#[diagnostic::on_unimplemented(
+    message = "`.pipeline()` opens a window on a subscription of ruststream-fred, and this \
+               registration is not one",
+    label = "no window opens on this registration",
+    note = "name a `RedisStream`, `RedisList`, `RedisPubSub` or `RedisPubSubPattern` in \
+            `#[subscriber(..)]`, and chain `.pipeline()` once"
+)]
+pub trait PipelineStep {
+    /// The builder over the pipelined source.
+    type Out;
+
+    /// Opens the window on the builder's source.
+    fn apply_pipeline(self) -> Self::Out;
+}
+
+impl<Def, Source, State, DefCodec> PipelineStep for SubscriberBuilder<Def, Source, State, DefCodec>
+where
+    Def: Declared,
+    Source: OpensWindow,
+{
+    type Out = SubscriberBuilder<Def, Source::Pipelined, State, DefCodec>;
+
+    fn apply_pipeline(self) -> Self::Out {
+        self.map_source(OpensWindow::open_window)
+    }
+}
+
+/// The builder step behind [`RedisPipelineSteps::atomic`].
+#[diagnostic::on_unimplemented(
+    message = "`.atomic()` needs `.pipeline()` first",
+    label = "this subscription has no pipeline",
+    note = "write `.pipeline().atomic()`: a transaction is one segment of the window's pipeline, \
+            and a subscription without a window has no pipeline to put it in"
+)]
+pub trait AtomicStep {
+    /// The builder over the source with an atomic window.
+    type Out;
+
+    /// Makes the window atomic.
+    fn apply_atomic(self) -> Self::Out;
+}
+
+impl<Def, Source, State, DefCodec> AtomicStep for SubscriberBuilder<Def, Source, State, DefCodec>
+where
+    Def: Declared,
+    Source: Windowed,
+{
+    type Out = SubscriberBuilder<Def, Source::Atomic, State, DefCodec>;
+
+    fn apply_atomic(self) -> Self::Out {
+        self.map_source(Windowed::into_atomic)
+    }
+}
+
+/// The window steps of a mount site: `.pipeline()` opens a consumer window on the subscription,
+/// and `.atomic()` after it makes each delivery's segment one `MULTI` / `EXEC`.
 ///
-/// Under it a delivery's segment is `MULTI`, the commands its handler queued, the delivery's
-/// settle where the form has one, and `EXEC`, sent inside the window's pipeline, so the handler's
-/// Redis side effects and its acknowledgement happen together or not at all. It buys no rollback:
-/// Redis has none, and a command that fails inside `EXEC` (a `WRONGTYPE`, say) leaves the others
-/// executed.
+/// The steps chain on the handler where it is mounted, like the core's settings, after the
+/// descriptor the attribute named and after any base setting such as
+/// [`block`](crate::RedisSubscribeExt::block). They apply to a [`RedisStream`](crate::RedisStream),
+/// a [`RedisList`](crate::RedisList), a [`RedisPubSub`](crate::RedisPubSub) and a
+/// [`RedisPubSubPattern`](crate::RedisPubSubPattern) alike; see [the module](self) for what the
+/// window does.
+///
+/// Under `.atomic()` a delivery's segment is `MULTI`, the commands its handler queued, the
+/// delivery's settle where the form has one, and `EXEC`, sent inside the window's pipeline, so the
+/// handler's Redis side effects and its acknowledgement happen together or not at all. It buys no
+/// rollback: Redis has none, and a command that fails inside `EXEC` (a `WRONGTYPE`, say) leaves
+/// the others executed.
 ///
 /// On a cluster, Redis runs a transaction only when every key of it hashes to one slot. A
 /// segment's slot is the subscription key's, so a handler's keys share it through a hash tag
@@ -186,38 +326,88 @@ impl<Descriptor> Windowed for Pipelined<Descriptor, Plain> {
 /// redirection inside the transaction, and Redis then refuses the whole `EXEC`, so a segment is
 /// never executed in part.
 ///
+/// A handler that reads `Ctx<keys::Pipeline>` needs `.pipeline()` at its mount site. Without it
+/// the mount does not compile, and the error is the framework's general one about the handler's
+/// context not matching the subscription's (`PipelineContext: BuildContext<RedisMessage>`).
+///
 /// # Examples
 ///
 /// ```
-/// use ruststream_fred::RedisStream;
-/// use ruststream_fred::pipeline::AtomicStep;
+/// # mod demo {
+/// use ruststream_fred::stream::prelude::*;
+/// # #[derive(serde::Deserialize)]
+/// # struct Order { id: u64 }
 ///
-/// let orders = RedisStream::new("{orders}").group("workers").pipeline().atomic();
-/// # let _ = orders;
+/// #[subscriber(RedisStream::new("{orders}").group("workers"))]
+/// async fn invoice(order: &Order, Ctx(pipeline): Ctx<keys::Pipeline>) -> HandlerOutcome {
+///     if pipeline.lpush("{orders}:invoices", order.id.to_string()).await.is_err() {
+///         return HandlerOutcome::retry();
+///     }
+///     HandlerOutcome::ack()
+/// }
+///
+/// fn app() -> RustStream {
+///     RustStream::new(AppInfo::new("invoices", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             b.include(invoice.pipeline().atomic());
+///         },
+///     )
+/// }
+/// # }
 /// ```
 ///
 /// A subscription without a window has nothing to make atomic:
 ///
 /// ```compile_fail
-/// use ruststream_fred::RedisStream;
-/// use ruststream_fred::pipeline::AtomicStep;
+/// # mod demo {
+/// use ruststream_fred::stream::prelude::*;
+/// # #[derive(serde::Deserialize)]
+/// # struct Order { id: u64 }
 ///
-/// let orders = RedisStream::new("orders").group("workers").atomic();
+/// #[subscriber(RedisStream::new("orders").group("workers"))]
+/// async fn invoice(order: &Order) -> HandlerOutcome {
+///     let _ = order.id;
+///     HandlerOutcome::ack()
+/// }
+///
+/// fn app() -> RustStream {
+///     RustStream::new(AppInfo::new("invoices", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             b.include(invoice.atomic());
+///         },
+///     )
+/// }
+/// # }
 /// ```
-pub trait AtomicStep: Sized {
-    /// Makes each delivery's segment one `MULTI` / `EXEC`.
-    fn atomic(self) -> Self::Atomic
+pub trait RedisPipelineSteps: Declared {
+    /// Opens a consumer window on the subscription: its settles and the commands its handlers
+    /// queue through [`keys::Pipeline`](crate::context::keys::Pipeline) leave together, in one
+    /// pipeline on a connection of the pool.
+    ///
+    /// On a stream the window flushes once the read's `COUNT` has settled, once nothing is
+    /// outstanding, or when the subscription stops: under load one `XACK` per fetched batch. A
+    /// pipelined list reads in batches, and a reliable list's `LREM` settles ride the window.
+    /// Pub/Sub, on a channel or a pattern, settles nothing, so its window carries the handlers'
+    /// commands alone, and leaves once nothing is in flight.
+    fn pipeline(self) -> <Self::Settings as PipelineStep>::Out
     where
-        Self: Windowed,
+        Self::Settings: PipelineStep,
     {
-        self.into_atomic()
+        self.declare().apply_pipeline()
+    }
+
+    /// Makes each delivery's segment one `MULTI` / `EXEC`. Follows `.pipeline()`.
+    fn atomic(self) -> <Self::Settings as AtomicStep>::Out
+    where
+        Self::Settings: AtomicStep,
+    {
+        self.declare().apply_atomic()
     }
 }
 
-impl AtomicStep for crate::RedisStream {}
-impl AtomicStep for crate::RedisList {}
-impl AtomicStep for crate::RedisPubSub {}
-impl<Descriptor, Mode> AtomicStep for Pipelined<Descriptor, Mode> {}
+impl<D: Declared> RedisPipelineSteps for D {}
 
 mod bindable {
     /// What a publisher of this crate is named by in a binding.
@@ -236,11 +426,7 @@ mod bindable {
 ///
 /// ```
 /// # mod demo {
-/// use ruststream::prelude::*;
-/// use ruststream::subscriber;
-/// use ruststream_fred::PipelinedStream;
-/// use ruststream_fred::context::keys;
-/// use ruststream_fred::pipeline::Bindable;
+/// use ruststream_fred::stream::prelude::*;
 /// # #[derive(serde::Deserialize)]
 /// # struct Order { id: u64 }
 /// #[derive(serde::Serialize, Outgoing)]
@@ -250,7 +436,7 @@ mod bindable {
 /// }
 ///
 /// /// The audit entry leaves with the delivery's acknowledgement, and not without it.
-/// #[subscriber(PipelinedStream::new("orders").group("workers"))]
+/// #[subscriber(RedisStream::new("orders").group("workers"))]
 /// async fn record(
 ///     order: &Order,
 ///     Ctx(pipeline): Ctx<keys::Pipeline>,
@@ -261,6 +447,15 @@ mod bindable {
 ///         return HandlerOutcome::retry();
 ///     }
 ///     HandlerOutcome::ack()
+/// }
+///
+/// fn app() -> RustStream {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             b.include(record.pipeline()).out(DefaultSlot, Publish).build();
+///         },
+///     )
 /// }
 /// # }
 /// ```
@@ -339,9 +534,7 @@ impl bindable::Named for crate::RedisDefaultPublisher {
 ///
 /// ```
 /// # mod demo {
-/// use ruststream_fred::pipeline::InRound;
 /// use ruststream_fred::stream::prelude::*;
-/// use ruststream_fred::PipelinedStream;
 /// # #[derive(serde::Deserialize)]
 /// # struct Order { id: u64 }
 /// #[derive(serde::Serialize, Outgoing)]
@@ -350,7 +543,7 @@ impl bindable::Named for crate::RedisDefaultPublisher {
 ///     id: u64,
 /// }
 ///
-/// #[subscriber(PipelinedStream::new("orders").group("workers"), publish)]
+/// #[subscriber(RedisStream::new("orders").group("workers"), publish)]
 /// async fn issue(order: &Order) -> Receipt {
 ///     Receipt { id: order.id }
 /// }
@@ -359,7 +552,7 @@ impl bindable::Named for crate::RedisDefaultPublisher {
 ///     RustStream::new(AppInfo::new("receipts", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(issue).out_reply(Publish).transform(InRound);
+///             b.include(issue.pipeline()).out_reply(Publish).transform(InRound);
 ///         },
 ///     )
 /// }
@@ -399,25 +592,31 @@ impl<C> PublishTransform<ForReply<C>, RedisPublishOptions> for InRound {
 ///
 /// ```
 /// # mod demo {
-/// use ruststream::prelude::*;
-/// use ruststream::subscriber;
-/// use ruststream_fred::PipelinedStream;
-/// use ruststream_fred::context::keys;
+/// use ruststream_fred::stream::prelude::*;
 /// # #[derive(serde::Deserialize)]
 /// # struct Order { id: u64 }
 ///
 /// /// Records the order and acknowledges it in one round trip with the rest of the window.
-/// #[subscriber(PipelinedStream::new("orders").group("workers"))]
+/// #[subscriber(RedisStream::new("orders").group("workers"))]
 /// async fn record(order: &Order, Ctx(pipeline): Ctx<keys::Pipeline>) -> HandlerOutcome {
 ///     if pipeline.hset("orders:by-id", (order.id.to_string(), "seen")).await.is_err() {
 ///         return HandlerOutcome::retry();
 ///     }
 ///     HandlerOutcome::ack()
 /// }
+///
+/// fn app() -> RustStream {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             b.include(record.pipeline());
+///         },
+///     )
+/// }
 /// # }
 /// ```
 ///
-/// A subscription without `.pipeline()` has no round to hand out:
+/// A mount site without `.pipeline()` has no round to hand out, so the mount does not compile:
 ///
 /// ```compile_fail
 /// # mod demo {

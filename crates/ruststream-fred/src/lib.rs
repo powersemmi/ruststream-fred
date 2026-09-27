@@ -44,7 +44,8 @@ pub use list::{
 pub use message::{DELIVERY_COUNT_HEADER, IDLE_MS_HEADER, PARTITION_KEY_HEADER, RedisMessage};
 pub use partition::{RedisPublishOptions, RedisPublishSteps};
 pub use pipeline::{
-    AtomicList, AtomicPubSub, AtomicStream, PipelinedList, PipelinedPubSub, PipelinedStream,
+    RedisListAtomic, RedisListPipeline, RedisPubSubAtomic, RedisPubSubPatternAtomic,
+    RedisPubSubPatternPipeline, RedisPubSubPipeline, RedisStreamAtomic, RedisStreamPipeline,
 };
 pub use publisher::{
     RedisDefaultPublish, RedisDefaultPublisher, RedisPublish, RedisPublisher, RedisTransaction,

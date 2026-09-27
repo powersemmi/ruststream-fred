@@ -17,13 +17,15 @@ use std::time::Duration;
 use ruststream::runtime::{Declared, SubscriberBuilder, SubscriberSettings};
 
 use crate::list::RedisList;
+use crate::pipeline::Pipelined;
 use crate::stream::RedisStream;
 
 /// The Redis subscription options a mount site names, chained after the core's settings steps.
 ///
 /// Import it (or glob a form's prelude) to reach [`block`](Self::block) on a builder over a
-/// [`RedisStream`] or a [`RedisList`]. The trait is bound to those two sources, so the method does
-/// not appear on a builder for another broker or for a form that has no blocking read.
+/// [`RedisStream`] or a [`RedisList`], with or without the window `.pipeline()` opens. The trait
+/// is bound to those sources, so the method does not appear on a builder for another broker or
+/// for a form that has no blocking read.
 ///
 /// # Examples
 ///
@@ -79,5 +81,28 @@ where
 {
     fn block(self, block: Duration) -> Self {
         self.map_source(|source| source.block(block))
+    }
+}
+
+/// The same option on a stream whose window `.pipeline()` has opened, so the base settings read
+/// in either order around it.
+impl<Def, Mode, State, DefCodec> RedisSubscribeExt
+    for SubscriberBuilder<Def, Pipelined<RedisStream, Mode>, State, DefCodec>
+where
+    Def: Declared,
+{
+    fn block(self, block: Duration) -> Self {
+        self.map_source(|source| source.map(|stream| stream.block(block)))
+    }
+}
+
+/// The same option on a list whose window `.pipeline()` has opened.
+impl<Def, Mode, State, DefCodec> RedisSubscribeExt
+    for SubscriberBuilder<Def, Pipelined<RedisList, Mode>, State, DefCodec>
+where
+    Def: Declared,
+{
+    fn block(self, block: Duration) -> Self {
+        self.map_source(|source| source.map(|list| list.block(block)))
     }
 }

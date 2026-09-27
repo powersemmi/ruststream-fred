@@ -33,17 +33,22 @@ mod stream_prelude {
         pairs::<TransactionalPublish>();
     }
 
-    /// The windowed forms of this descriptor, the reply transform that joins a delivery's round,
-    /// and the bound a handler's bound slot takes, all reached through the one glob.
+    /// The window steps of a mount site, the reply transform that joins a delivery's round, and
+    /// the bound a handler's bound slot takes, all reached through the one glob.
     #[test]
-    fn the_windowed_forms_are_in_reach() {
+    fn the_window_steps_are_in_reach() {
         fn bindable<T: Bindable>() {}
-        let _ = PipelinedStream::new("{jobs}").group("workers");
-        let _ = AtomicStream::new("{jobs}").group("workers");
-        let _ = RedisStream::new("{jobs}")
-            .group("workers")
-            .pipeline()
-            .atomic();
+        #[subscriber(RedisStream::new("{jobs}").group("workers"))]
+        async fn windowed(id: &u64, Ctx(pipeline): Ctx<keys::Pipeline>) -> HandlerOutcome {
+            let _ = (id, pipeline);
+            HandlerOutcome::ack()
+        }
+        let _ = RustStream::new(AppInfo::new("probe", "0.1.0")).with_broker(
+            RedisBroker::standalone("redis://localhost:6379"),
+            |b| {
+                b.include(windowed.pipeline().atomic());
+            },
+        );
         let _: InRound = InRound;
         bindable::<ruststream_fred::RedisPublisher>();
     }
@@ -63,14 +68,22 @@ mod list_prelude {
         pairs::<Publish>();
     }
 
-    /// The windowed forms of this descriptor, the reply transform that joins a delivery's round,
-    /// and the bound a handler's bound slot takes, all reached through the one glob.
+    /// The window steps of a mount site, the reply transform that joins a delivery's round, and
+    /// the bound a handler's bound slot takes, all reached through the one glob.
     #[test]
-    fn the_windowed_forms_are_in_reach() {
+    fn the_window_steps_are_in_reach() {
         fn bindable<T: Bindable>() {}
-        let _ = PipelinedList::new("{jobs}").reliable();
-        let _ = AtomicList::new("{jobs}").reliable();
-        let _ = RedisList::new("{jobs}").reliable().pipeline().atomic();
+        #[subscriber(RedisList::new("{jobs}").reliable())]
+        async fn windowed(id: &u64, Ctx(pipeline): Ctx<keys::Pipeline>) -> HandlerOutcome {
+            let _ = (id, pipeline);
+            HandlerOutcome::ack()
+        }
+        let _ = RustStream::new(AppInfo::new("probe", "0.1.0")).with_broker(
+            RedisBroker::standalone("redis://localhost:6379"),
+            |b| {
+                b.include(windowed.pipeline().atomic());
+            },
+        );
         let _: InRound = InRound;
         bindable::<ruststream_fred::RedisListPublisher>();
     }
@@ -90,14 +103,30 @@ mod pubsub_prelude {
         pairs::<Publish>();
     }
 
-    /// The windowed forms of this descriptor, the reply transform that joins a delivery's round,
-    /// and the bound a handler's bound slot takes, all reached through the one glob.
+    /// The window steps of a mount site, the reply transform that joins a delivery's round, and
+    /// the bound a handler's bound slot takes, all reached through the one glob.
     #[test]
-    fn the_windowed_forms_are_in_reach() {
+    fn the_window_steps_are_in_reach() {
         fn bindable<T: Bindable>() {}
-        let _ = PipelinedPubSub::new("{jobs}");
-        let _ = AtomicPubSub::new("{jobs}");
-        let _ = RedisPubSub::new("{jobs}").pipeline().atomic();
+        #[subscriber(RedisPubSub::new("{jobs}"))]
+        async fn windowed(id: &u64, Ctx(pipeline): Ctx<keys::Pipeline>) -> HandlerOutcome {
+            let _ = (id, pipeline);
+            HandlerOutcome::ack()
+        }
+        #[subscriber(RedisPubSubPattern::new("{jobs}.*"))]
+        async fn matched(id: &u64, Ctx(pipeline): Ctx<keys::Pipeline>) -> HandlerOutcome {
+            let _ = (id, pipeline);
+            HandlerOutcome::ack()
+        }
+        let _ = RustStream::new(AppInfo::new("probe", "0.1.0")).with_broker(
+            RedisBroker::standalone("redis://localhost:6379"),
+            |b| {
+                b.include(windowed.pipeline().atomic());
+                b.include(matched.pipeline().atomic())
+                    .out_retry(Publish::default())
+                    .to("{jobs}.retry");
+            },
+        );
         let _: InRound = InRound;
         bindable::<ruststream_fred::RedisPubSubPublisher>();
     }
@@ -125,17 +154,22 @@ mod crate_prelude {
         pairs::<pubsub::Publish>();
     }
 
-    /// The windowed forms of this descriptor, the reply transform that joins a delivery's round,
-    /// and the bound a handler's bound slot takes, all reached through the one glob.
+    /// The window steps of a mount site, the reply transform that joins a delivery's round, and
+    /// the bound a handler's bound slot takes, all reached through the one glob.
     #[test]
-    fn the_windowed_forms_are_in_reach() {
+    fn the_window_steps_are_in_reach() {
         fn bindable<T: Bindable>() {}
-        let _ = PipelinedStream::new("{jobs}").group("workers");
-        let _ = AtomicStream::new("{jobs}").group("workers");
-        let _ = RedisStream::new("{jobs}")
-            .group("workers")
-            .pipeline()
-            .atomic();
+        #[subscriber(RedisStream::new("{jobs}").group("workers"))]
+        async fn windowed(id: &u64, Ctx(pipeline): Ctx<keys::Pipeline>) -> HandlerOutcome {
+            let _ = (id, pipeline);
+            HandlerOutcome::ack()
+        }
+        let _ = RustStream::new(AppInfo::new("probe", "0.1.0")).with_broker(
+            RedisBroker::standalone("redis://localhost:6379"),
+            |b| {
+                b.include(windowed.pipeline().atomic());
+            },
+        );
         let _: InRound = InRound;
         bindable::<ruststream_fred::RedisPublisher>();
     }

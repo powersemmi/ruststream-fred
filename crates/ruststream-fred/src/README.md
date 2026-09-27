@@ -614,8 +614,8 @@ replays towards a declared cap while the framework's own retry-count header does
 
 # Pipelining
 
-A `.pipeline()` subscription settles in a window, and a handler queues its own Redis commands
-into the delivery's segment of that window.
+A subscription mounted with `.pipeline()` settles in a window, and a handler queues its own Redis
+commands into the delivery's segment of that window.
 
 ```
 # mod demo {
@@ -633,7 +633,7 @@ struct Receipt {
     id: u64,
 }
 
-#[subscriber(PipelinedStream::new("orders").group("workers"), publish)]
+#[subscriber(RedisStream::new("orders").group("workers"), publish)]
 async fn record(
     order: &Order,
     Ctx(pipeline): Ctx<keys::Pipeline>,
@@ -651,7 +651,7 @@ fn app() -> impl App {
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
             // The reply joins the delivery's round and leaves after what the handler queued.
-            b.include(record).out_reply(Publish).transform(InRound);
+            b.include(record.pipeline()).out_reply(Publish).transform(InRound);
         },
     )
 }
@@ -659,13 +659,14 @@ fn app() -> impl App {
 # fn main() {}
 ```
 
-`.pipeline()` is a step of [`RedisStream`], [`RedisList`] and [`RedisPubSub`]. The
-`#[subscriber(..)]` attribute reads a descriptor's type off the constructor its chain starts
-from, so the attribute spells a pipelined subscription with [`PipelinedStream`],
-[`PipelinedList`] and [`PipelinedPubSub`], and an atomic one with [`AtomicStream`],
-[`AtomicList`] and [`AtomicPubSub`]. They take the same builder steps as the descriptor, and
-each form's prelude carries its two, with the [`pipeline::InRound`] transform and the
-[`pipeline::Bindable`] bound.
+`.pipeline()` is a step of the mount site, like `.workers(..)` or `.block(..)`: the attribute
+names the descriptor, and the handler is mounted as `record.pipeline()`, or
+`record.pipeline().atomic()`. It applies to a [`RedisStream`], a [`RedisList`], a [`RedisPubSub`]
+and a [`RedisPubSubPattern`] alike, and keeps every setting the descriptor carries. Each form's
+prelude carries the step with [`pipeline::RedisPipelineSteps`], the [`pipeline::InRound`]
+transform and the [`pipeline::Bindable`] bound. A handler that reads `Ctx<keys::Pipeline>` and is
+mounted without `.pipeline()` does not compile; the error is the framework's general one about
+the handler's context not matching the subscription's (`PipelineContext: BuildContext<..>`).
 
 A window flushes in three cases: the read's `COUNT` has settled, nothing is outstanding, or the
 subscription stops. The flush sends every committed segment and then one pipeline of settles on
