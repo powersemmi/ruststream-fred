@@ -852,7 +852,7 @@ impl ConnectedRedisBroker {
         let recorded = self
             .core
             .record_routes(def.channel(), def.dead_letter(), &def.route())?;
-        let client = self.new_client(Some(def.buffer_size())).await?;
+        let client = self.new_client(def.buffer_size()).await?;
         // Opened before the subscribe, because the messages arrive over a broadcast channel whose
         // receiver sees only what is sent after it exists. The connection is dedicated to this one
         // subscription, so opening the stream early can pick up nothing else.
@@ -911,7 +911,7 @@ impl ConnectedRedisBroker {
         &self,
         rx: Receiver<Message>,
         target: PubSubTarget<'_>,
-        buffer: NonZeroUsize,
+        buffer: Option<NonZeroUsize>,
     ) -> (Receiver<Message>, Tap) {
         #[cfg(feature = "testing")]
         {
@@ -964,7 +964,7 @@ impl ConnectedRedisBroker {
         def: RedisPubSubPattern,
     ) -> Result<RedisPubSubSubscriber, RedisError> {
         let codec = def.codec_handle();
-        let client = self.new_client(Some(def.buffer_size())).await?;
+        let client = self.new_client(def.buffer_size()).await?;
         // Opened before the subscribe, for the reason `subscribe_pubsub` gives.
         let rx = client.message_rx();
         client
@@ -1125,7 +1125,7 @@ impl ConnectedRedisBroker {
     /// subscription).
     ///
     /// `buffer` is how many messages its Pub/Sub channel holds for a reader that has not taken them
-    /// yet; `None` leaves `fred`'s own setting, for a client that receives none.
+    /// yet; `None` leaves `fred`'s own setting.
     async fn new_client(&self, buffer: Option<NonZeroUsize>) -> Result<Client, RedisError> {
         // The dedicated client is a second connection to the same server: refuse to dial one for
         // a connection whose owner already shut down.

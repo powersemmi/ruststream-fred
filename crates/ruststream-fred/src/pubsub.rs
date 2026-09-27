@@ -35,7 +35,7 @@ use ruststream::codec::Codec;
 use ruststream::{
     AckError, AddressedCopies, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage,
     Lend, NamedCopies, OutgoingMessage, PairError, Partitioned, PublishPolicy, Publisher,
-    RedeliveryAddress, RedeliveryAddressed, RetryDeclaration, SubscriptionSource, nonzero,
+    RedeliveryAddress, RedeliveryAddressed, RetryDeclaration, SubscriptionSource,
 };
 use tokio::runtime::Handle;
 use tokio::sync::broadcast::Receiver;
@@ -141,7 +141,8 @@ pub struct RedisPubSub {
     /// Where the mount site sends a spent delivery, taken from its retry declaration when the
     /// subscription opens, so the broker publishes to that name as the channel it is.
     dead_letter: Option<String>,
-    buffer: NonZeroUsize,
+    /// `None` keeps the capacity `fred` gives a client's broadcast channels by default.
+    buffer: Option<NonZeroUsize>,
 }
 
 impl Debug for RedisPubSub {
@@ -164,7 +165,7 @@ impl RedisPubSub {
             mode: PubSubMode::default(),
             codec: None,
             dead_letter: None,
-            buffer: DEFAULT_BUFFER,
+            buffer: None,
         }
     }
 
@@ -184,23 +185,28 @@ impl RedisPubSub {
     /// Sets how many messages the subscription holds that its handler has not taken yet.
     ///
     /// Redis pushes a Pub/Sub message the moment it is published, and the subscription keeps it
-    /// until the handler asks for the next one. Once `messages` are waiting, each new one drops the
-    /// oldest, and the subscription logs a warning naming how many it lost. Defaults to 1024.
-    /// The room is reserved when the subscription opens, about 800 bytes per message of buffer
-    /// whatever the payloads weigh, so the default costs a subscription about 800 KB.
+    /// until the handler asks for the next one. The buffer bounds how many may wait. Once it is
+    /// full, each new message drops the oldest, and the subscription logs a warning with the
+    /// channel and the count it lost. The default is `fred`'s own
+    /// (`PerformanceConfig::broadcast_channel_capacity`, 32 messages in `fred` 10.1).
+    ///
+    /// Raise it for a handler that falls behind bursts: set it to the largest burst the handler
+    /// must absorb. The room is reserved when the subscription opens, about 600 bytes per message
+    /// of buffer whatever the payloads weigh, because `fred` sizes all eight of a client's
+    /// notification channels by it.
     ///
     /// # Examples
     ///
     /// ```
     /// use ruststream::nonzero;
-    /// use ruststream_fred::{RedisPubSub};
+    /// use ruststream_fred::RedisPubSub;
     ///
     /// // A handler that falls behind a burst of up to ten thousand events loses none of them.
     /// let events = RedisPubSub::new("events").buffer(nonzero!(10_000));
     /// # let _ = events;
     /// ```
     pub const fn buffer(mut self, messages: NonZeroUsize) -> Self {
-        self.buffer = messages;
+        self.buffer = Some(messages);
         self
     }
 
@@ -210,7 +216,7 @@ impl RedisPubSub {
         &self.channel
     }
 
-    pub(crate) const fn buffer_size(&self) -> NonZeroUsize {
+    pub(crate) const fn buffer_size(&self) -> Option<NonZeroUsize> {
         self.buffer
     }
 
@@ -298,7 +304,8 @@ impl RedisPubSub {
 pub struct RedisPubSubPattern {
     pattern: String,
     codec: Option<SharedEnvelope>,
-    buffer: NonZeroUsize,
+    /// `None` keeps the capacity `fred` gives a client's broadcast channels by default.
+    buffer: Option<NonZeroUsize>,
 }
 
 impl Debug for RedisPubSubPattern {
@@ -317,7 +324,7 @@ impl RedisPubSubPattern {
         Self {
             pattern: pattern.into(),
             codec: None,
-            buffer: DEFAULT_BUFFER,
+            buffer: None,
         }
     }
 
@@ -331,23 +338,28 @@ impl RedisPubSubPattern {
     /// Sets how many messages the subscription holds that its handler has not taken yet.
     ///
     /// Redis pushes a Pub/Sub message the moment it is published, and the subscription keeps it
-    /// until the handler asks for the next one. Once `messages` are waiting, each new one drops the
-    /// oldest, and the subscription logs a warning naming how many it lost. Defaults to 1024.
-    /// The room is reserved when the subscription opens, about 800 bytes per message of buffer
-    /// whatever the payloads weigh, so the default costs a subscription about 800 KB.
+    /// until the handler asks for the next one. The buffer bounds how many may wait. Once it is
+    /// full, each new message drops the oldest, and the subscription logs a warning with the
+    /// channel and the count it lost. The default is `fred`'s own
+    /// (`PerformanceConfig::broadcast_channel_capacity`, 32 messages in `fred` 10.1).
+    ///
+    /// Raise it for a handler that falls behind bursts: set it to the largest burst the handler
+    /// must absorb. The room is reserved when the subscription opens, about 600 bytes per message
+    /// of buffer whatever the payloads weigh, because `fred` sizes all eight of a client's
+    /// notification channels by it.
     ///
     /// # Examples
     ///
     /// ```
     /// use ruststream::nonzero;
-    /// use ruststream_fred::{RedisPubSubPattern};
+    /// use ruststream_fred::RedisPubSubPattern;
     ///
     /// // A handler that falls behind a burst of up to ten thousand events loses none of them.
     /// let events = RedisPubSubPattern::new("events.*").buffer(nonzero!(10_000));
     /// # let _ = events;
     /// ```
     pub const fn buffer(mut self, messages: NonZeroUsize) -> Self {
-        self.buffer = messages;
+        self.buffer = Some(messages);
         self
     }
 
@@ -357,7 +369,7 @@ impl RedisPubSubPattern {
         &self.pattern
     }
 
-    pub(crate) const fn buffer_size(&self) -> NonZeroUsize {
+    pub(crate) const fn buffer_size(&self) -> Option<NonZeroUsize> {
         self.buffer
     }
 
@@ -495,11 +507,6 @@ impl BatchSubscriber for RedisPubSubSubscriber {
         self.0.batches(size)
     }
 }
-
-/// How many messages a Pub/Sub subscription holds for its handler unless it says otherwise.
-// Why a cap at all: `fred` hands a subscription its messages over a broadcast channel whose capacity
-// is fixed when the client is built.
-pub(crate) const DEFAULT_BUFFER: NonZeroUsize = nonzero!(1024);
 
 /// The wire side of a Pub/Sub subscription: the dedicated client and the channel it feeds.
 pub(crate) struct PubSubWire {

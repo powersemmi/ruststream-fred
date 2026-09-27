@@ -43,7 +43,7 @@ use fred::clients::{Client, Pool};
 use fred::error::Error;
 use fred::interfaces::ClientLike;
 use fred::mocks::MockCommand;
-use fred::types::config::{Config, Server as ServerAddress};
+use fred::types::config::{Config, PerformanceConfig, Server as ServerAddress};
 use fred::types::{Message, MessageKind, Value, Version};
 use ruststream::testing::Coordinator;
 use tokio::runtime::Handle;
@@ -375,14 +375,19 @@ impl Server {
         id
     }
 
-    /// Registers a Pub/Sub subscription and hands back the channel its messages arrive on.
+    /// Registers a Pub/Sub subscription and hands back the channel its messages arrive on, as
+    /// large as the client's own: the subscription's `buffer`, or `fred`'s default without one.
     pub(crate) fn attach_pubsub(
         &self,
         target: Subscription,
-        buffer: NonZeroUsize,
+        buffer: Option<NonZeroUsize>,
     ) -> (broadcast::Receiver<Message>, ReaderId) {
         let id = self.next_reader();
-        let (tx, rx) = broadcast::channel(buffer.get());
+        let capacity = buffer.map_or_else(
+            || PerformanceConfig::default().broadcast_channel_capacity,
+            NonZeroUsize::get,
+        );
+        let (tx, rx) = broadcast::channel(capacity);
         self.lock()
             .readers
             .insert(id, Reader::Channel { target, tx });

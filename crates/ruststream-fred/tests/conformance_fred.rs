@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use ruststream::conformance::harness::InProcessBroker;
 use ruststream::conformance::{capabilities, harness};
+use ruststream::nonzero;
 use ruststream_fred::{
     DelayedRetry, RedisBroker, RedisList, RedisListPublish, RedisPubSub, RedisPubSubPublish,
     RedisStream,
@@ -33,6 +34,12 @@ const URL: &str = "redis://localhost:6379";
 /// The production broker a service builds, run in process.
 fn in_process() -> InProcessBroker<RedisBroker> {
     InProcessBroker::new(RedisBroker::standalone(URL))
+}
+
+/// A Pub/Sub subscription with room for the lifecycle's burst: its message-shape step publishes 36
+/// messages before it reads one, more than `fred`'s default buffer of 32 holds.
+fn burst_pubsub(channel: &str) -> RedisPubSub {
+    RedisPubSub::new(channel).buffer(nonzero!(64))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -93,11 +100,9 @@ async fn in_process_passes_list_lifecycle() {
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_process_passes_pubsub_lifecycle() {
-    Box::pin(harness::lifecycle(
-        in_process,
-        |channel| RedisPubSub::new(channel),
-        |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
-    ))
+    Box::pin(harness::lifecycle(in_process, burst_pubsub, |connected| {
+        connected.pubsub_publisher(RedisPubSubPublish::new())
+    }))
     .await;
 }
 
@@ -262,7 +267,7 @@ async fn passes_pubsub_lifecycle() {
     };
     Box::pin(harness::lifecycle(
         move || RedisBroker::standalone(url.clone()),
-        |channel| RedisPubSub::new(channel),
+        burst_pubsub,
         |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
     ))
     .await;
