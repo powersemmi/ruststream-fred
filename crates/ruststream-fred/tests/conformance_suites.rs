@@ -1,6 +1,6 @@
 //! The contract suites a broker crate supplies its own input to: the retry address of the bare
 //! name, the keyed order and per-message options of the crate's publishers, the credential scans,
-//! the settlement meanings and the in-process transport held to the server.
+//! the settlement meanings, the shutdown flush and the in-process transport held to the server.
 //!
 //! Each runs in process, through `InProcessBroker`, and live against the server behind
 //! `REDIS_TEST_URL` (and `REDIS_84_TEST_URL` for the claiming read mode, which Redis 8.4 added).
@@ -15,7 +15,8 @@ use ruststream::conformance::harness::InProcessBroker;
 use ruststream::conformance::helpers::unique_subject;
 use ruststream::conformance::in_process::{self, Refusal};
 use ruststream::conformance::message_shape::{self, OptionCases};
-use ruststream::conformance::{capabilities, retry, settlement};
+use ruststream::conformance::{capabilities, lifecycle, retry, settlement};
+use ruststream::testing::Backlog;
 use ruststream::{HeaderMap, IncomingMessage};
 use ruststream_fred::{
     RedisBroker, RedisList, RedisListPublish, RedisPubSub, RedisPubSubPublish, RedisPublish,
@@ -311,6 +312,40 @@ async fn passes_batch_seeking() {
         || RedisBroker::standalone(url.clone()),
         |key| stream(key).block(Duration::from_millis(50)),
         |connected| connected.publisher(),
+    ))
+    .await;
+}
+
+// What a shutdown finishes. A consumer group and a list keep what reaches them for a reader that
+// comes later; a channel keeps nothing. The in-process server lives with one connection, so the
+// second connection this suite opens would reach another one: it runs live only.
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_flushes() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let broker = || RedisBroker::standalone(url.clone());
+    Box::pin(lifecycle::shutdown_flushes(
+        broker,
+        stream,
+        |c| c.publisher(),
+        Backlog::Delivered,
+    ))
+    .await;
+    Box::pin(lifecycle::shutdown_flushes(
+        broker,
+        list,
+        |c| c.list_publisher(RedisListPublish::new()),
+        Backlog::Delivered,
+    ))
+    .await;
+    Box::pin(lifecycle::shutdown_flushes(
+        broker,
+        pubsub,
+        |c| c.pubsub_publisher(RedisPubSubPublish::new()),
+        Backlog::Missed,
     ))
     .await;
 }

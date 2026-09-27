@@ -9,7 +9,6 @@ use std::future::{Future, ready};
 use std::sync::Arc;
 #[cfg(feature = "testing")]
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use fred::clients::{Client, Pool};
 use fred::interfaces::{ClientLike, EventInterface, PubsubInterface, StreamsInterface};
@@ -32,6 +31,7 @@ use ruststream::{OutgoingMessage, RawMessage};
 use tokio::runtime::Handle;
 use tokio::sync::broadcast::Receiver;
 
+use crate::connection::Connection;
 #[cfg(feature = "testing")]
 use crate::convert::{fields_for_publish, parts_from_fields};
 use crate::delay::DelayConfig;
@@ -490,12 +490,11 @@ impl Broker for RedisBroker {
         };
         Ok(ConnectedRedisBroker {
             core: Arc::new(RedisCore {
-                pool,
+                connection: Connection::new(pool),
                 runtime: Handle::current(),
                 config,
                 default_group: self.default_group,
                 clustered,
-                closed: AtomicBool::new(false),
                 routes: Routes::default(),
                 rounds: Arc::default(),
                 loopback: Loopback::default(),
@@ -525,12 +524,11 @@ impl InProcess for RedisBroker {
         let (pool, config, server) = in_process::connect(&config, pool_size, clustered).await?;
         Ok(ConnectedRedisBroker {
             core: Arc::new(RedisCore {
-                pool,
+                connection: Connection::new(pool),
                 runtime: Handle::current(),
                 config,
                 default_group: self.default_group,
                 clustered,
-                closed: AtomicBool::new(false),
                 routes: Routes::default(),
                 rounds: Arc::default(),
                 loopback: Loopback::to(server),
@@ -601,7 +599,10 @@ fn has_port(host: &str) -> bool {
 
 /// The live connection shared by the connected broker and every handle derived from it.
 pub(crate) struct RedisCore {
-    pool: Pool,
+    /// The pool, and whether [`ConnectedBroker::shutdown`] closed it. The ladder makes owner-side
+    /// misuse a compile error, but publishers and deliveries handed out before the shutdown alias
+    /// the connection and outlive it, so they ask it before issuing a command.
+    connection: Arc<Connection>,
     /// The runtime `connect` ran on. Every task the broker starts for itself is spawned here, so
     /// a call from a dedicated thread's runtime (a handler under `threads(n)`) leaves no task
     /// behind that dies when that runtime stops.
@@ -614,10 +615,6 @@ pub(crate) struct RedisCore {
     /// them on one hash slot: a `MULTI` block cannot span slots at all, and a reliable list's
     /// claim is a `BLMOVE` between its queue and its processing list.
     clustered: bool,
-    /// Flipped by [`ConnectedBroker::shutdown`]. The ladder makes owner-side misuse a compile
-    /// error, but publishers handed out before the shutdown alias the connection and outlive it,
-    /// so their operations check this flag rather than issuing a command against a dead pool.
-    closed: AtomicBool,
     /// How each name this connection's subscriptions read or dead-letter to is written, for the
     /// default publisher.
     routes: Routes,
@@ -673,10 +670,14 @@ impl RedisCore {
 
     /// The live pool, or [`RedisError::ShutDown`] once the connection was torn down.
     pub(crate) fn pool(&self) -> Result<Pool, RedisError> {
-        if self.closed.load(Ordering::Acquire) {
-            return Err(RedisError::ShutDown);
-        }
-        Ok(self.pool.clone())
+        self.connection.live().cloned()
+    }
+
+    /// The shared connection a subscription hands its deliveries, or [`RedisError::ShutDown`]
+    /// once it was torn down.
+    pub(crate) fn connection(&self) -> Result<Arc<Connection>, RedisError> {
+        self.connection.live()?;
+        Ok(Arc::clone(&self.connection))
     }
 
     /// Cluster cannot offer multi-key transactions, because buffered keys may hash to different
@@ -722,8 +723,8 @@ impl RedisCore {
 impl std::fmt::Debug for RedisCore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RedisCore")
-            .field("pool", &self.pool)
-            .field("closed", &self.closed.load(Ordering::Relaxed))
+            .field("pool", self.connection.pool())
+            .field("closed", &self.connection.is_closed())
             .finish_non_exhaustive()
     }
 }
@@ -750,21 +751,22 @@ impl ConnectedRedisBroker {
     /// [`RedisError::InvalidOptions`] when `def` names no consumer group, or
     /// [`RedisError::Subscribe`] when the group cannot be created.
     pub async fn subscribe(&self, def: RedisStream) -> Result<RedisSubscriber, RedisError> {
-        let pool = self.core.pool()?;
+        let connection = self.core.connection()?;
+        let pool = connection.pool();
         let group = def.group_or_err()?.to_owned();
         let consumer = def.consumer_or_auto();
         if let ReadMode::Claiming { .. } = def.mode() {
-            require_claim_support(self.core.server_version(&pool).as_ref(), def.key())?;
+            require_claim_support(self.core.server_version(pool).as_ref(), def.key())?;
         }
         let recorded = self
             .core
             .record_routes(def.key(), def.dead_letter(), &Route::Stream)?;
-        ensure_group(&pool, def.key(), &group, def.start().as_id()).await?;
+        ensure_group(pool, def.key(), &group, def.start().as_id()).await?;
         let delay = def.delay_config().map(|cfg| cfg.on(self.core.loopback()));
         let tap = self.stream_tap(&def, &group, &consumer, delay.as_ref());
         recorded.keep();
         Ok(RedisSubscriber::new(
-            pool,
+            connection,
             def.key().to_owned(),
             group,
             consumer,
@@ -987,7 +989,7 @@ impl ConnectedRedisBroker {
 
     /// Validates `def` against this connection and hands back its wire.
     pub(crate) fn open_list(&self, def: RedisList) -> Result<ListWire, RedisError> {
-        let pool = self.core.pool()?;
+        let connection = self.core.connection()?;
         let recovery = def
             .recovery_config()?
             .map(|cfg| cfg.on(self.core.loopback()));
@@ -1003,7 +1005,7 @@ impl ConnectedRedisBroker {
         let codec = def.codec_handle();
         let tap = self.list_tap(def.key(), recovery.as_ref());
         Ok(ListWire::new(
-            pool,
+            connection,
             def.into_key(),
             reliable,
             processing,
@@ -1124,10 +1126,11 @@ impl ConnectedBroker for ConnectedRedisBroker {
     ///
     /// Returns [`RedisError::Connect`] when the `QUIT` roundtrip fails.
     async fn shutdown(self) -> Result<Self::Closed, Self::Error> {
-        self.core.closed.store(true, Ordering::Release);
-        let connections_closed = self.core.pool.clients().len();
+        self.core.connection.close();
+        let connections_closed = self.core.connection.pool().clients().len();
         self.core
-            .pool
+            .connection
+            .pool()
             .quit()
             .await
             .map_err(|err| RedisError::Connect(Box::new(err)))?;

@@ -12,8 +12,8 @@ topology synchronously and does no I/O, so a service fits the synchronous `#[rus
 builder; [`Broker::connect`](ruststream::Broker::connect) yields the [`ConnectedRedisBroker`]
 every subscription and publisher is reached from, and
 [`ConnectedBroker::shutdown`](ruststream::ConnectedBroker::shutdown) yields the terminal
-[`ClosedRedisBroker`]. A publisher that outlives the connection reports
-[`RedisError::ShutDown`] instead of succeeding against a dead pool.
+[`ClosedRedisBroker`]. A publisher, a seeker or a delivery settled after the shutdown gets
+[`RedisError::ShutDown`] at once instead of waiting on a dead pool.
 
 Installation, the transport templates and the list of brokers are on the site:
 <https://powersemmi.github.io/ruststream-fred/>. The framework's own surface (routers, the

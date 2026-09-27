@@ -201,6 +201,20 @@ async fn in_process_passes_seeking() {
     .await;
 }
 
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passes_delayed_retry_lifecycle() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    Box::pin(harness::lifecycle(
+        move || RedisBroker::standalone(url.clone()),
+        delayed,
+        |connected| connected.publisher(),
+    ))
+    .await;
+}
+
 // The live halves of the address promise: a real `XADD` to the reported stream key, `LPUSH` to the
 // reported list key and `PUBLISH` to the reported channel have to reach the subscription that
 // named them.
@@ -319,6 +333,29 @@ async fn passes_owned_transactions() {
     Box::pin(capabilities::owned_transactions(
         || RedisBroker::standalone(url.clone()),
         |key| RedisStream::new(key).group("conformance"),
+        |connected| connected.publisher(),
+    ))
+    .await;
+}
+
+// Repositioning is a single-key operation (`XGROUP SETID`), so it works on every topology; the
+// suite runs on standalone like the others, and the cluster leg is covered by
+// `cluster_seek_replays_history` in the integration tests, where the stream key's slot matters.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passes_seeking() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    Box::pin(capabilities::seeking(
+        || RedisBroker::standalone(url.clone()),
+        |key| {
+            // A short blocking read: the cursor moves immediately, but a subscription parked in
+            // `XREADGROUP BLOCK` picks it up only on its next read.
+            RedisStream::new(key)
+                .group("conformance")
+                .block(Duration::from_millis(50))
+        },
         |connected| connected.publisher(),
     ))
     .await;

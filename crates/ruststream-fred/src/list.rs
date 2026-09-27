@@ -45,6 +45,7 @@ use ruststream::{
 };
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
+use crate::connection::Connection;
 use crate::envelope::{SharedEnvelope, frame, unframe};
 use crate::loopback::{InFlight, Loopback, Tap};
 use crate::partition::{RedisPublishOptions, resolved_headers};
@@ -440,7 +441,7 @@ impl BatchSubscriber for RedisListSubscriber {
 
 /// The wire side of a list subscription: one blocking pop per delivery.
 pub(crate) struct ListWire {
-    pool: Pool,
+    connection: Arc<Connection>,
     /// The connection every pop goes out on. A blocking pop holds its connection until it returns,
     /// so the pops keep to one, and a window flushes on another.
     reader: Client,
@@ -470,7 +471,7 @@ impl ListWire {
         reason = "internal constructor mirroring the descriptor"
     )]
     pub(crate) fn new(
-        pool: Pool,
+        connection: Arc<Connection>,
         key: String,
         reliable: bool,
         processing: String,
@@ -480,8 +481,8 @@ impl ListWire {
         tap: Tap,
     ) -> Self {
         Self {
-            reader: pool.next().clone(),
-            pool,
+            reader: connection.pool().next().clone(),
+            connection,
             key,
             reliable,
             processing,
@@ -498,7 +499,7 @@ impl ListWire {
             payload,
             headers,
             ack: None,
-            pool: self.pool.clone(),
+            connection: Arc::clone(&self.connection),
             flight: self.tap.delivered(),
         }
     }
@@ -508,7 +509,7 @@ impl ListWire {
         RedisListMessage {
             payload,
             headers,
-            pool: self.pool.clone(),
+            connection: Arc::clone(&self.connection),
             ack: Some(ListAck {
                 main_key: self.key.clone(),
                 processing_key: self.processing.clone(),
@@ -530,7 +531,8 @@ impl ListWire {
         let secs = block_secs(self.block);
         if self.reliable {
             if let Some(cfg) = &self.recovery {
-                recovery::sweep_orphans(&self.pool, cfg, &self.key, &self.processing).await?;
+                recovery::sweep_orphans(self.connection.pool(), cfg, &self.key, &self.processing)
+                    .await?;
             }
             let value: Option<Vec<u8>> = empty_on_timeout(
                 self.reader
@@ -548,7 +550,8 @@ impl ListWire {
             };
             let handle = match &self.recovery {
                 Some(cfg) => {
-                    let member = recovery::record_claim(&self.pool, cfg, &value).await?;
+                    let member =
+                        recovery::record_claim(self.connection.pool(), cfg, &value).await?;
                     Some(RecoveryHandle {
                         zset_key: cfg.zset_key.clone(),
                         member,
@@ -581,7 +584,7 @@ impl ListWire {
 
     /// The window's client: a connection of the pool the flushes go out on.
     pub(crate) fn round_client(&self) -> Client {
-        other_than(&self.pool, &self.reader)
+        other_than(self.connection.pool(), &self.reader)
     }
 
     /// The key this subscription reads.
@@ -599,7 +602,8 @@ impl ListWire {
         let before = into.len();
         if self.reliable {
             if let Some(cfg) = &self.recovery {
-                recovery::sweep_orphans(&self.pool, cfg, &self.key, &self.processing).await?;
+                recovery::sweep_orphans(self.connection.pool(), cfg, &self.key, &self.processing)
+                    .await?;
             }
             let claims = self.reader.pipeline();
             for _ in 0..count {
@@ -677,7 +681,7 @@ impl ListWire {
         let Some(cfg) = &self.recovery else {
             return Ok(());
         };
-        let tracking = self.pool.next().pipeline();
+        let tracking = self.connection.pool().next().pipeline();
         let mut any = false;
         for (value, handle) in claimed {
             let (score, member) = cfg.tracked(value);
@@ -870,7 +874,7 @@ pub struct RedisListMessage {
     ack: Option<ListAck>,
     /// The connection the entry was read on: what settles it, and what `Ctx<keys::FredPool>`
     /// hands the handler.
-    pool: Pool,
+    connection: Arc<Connection>,
     /// The test harness's count of this delivery; empty outside the in-process mode.
     #[cfg_attr(
         not(feature = "testing"),
@@ -884,8 +888,8 @@ pub struct RedisListMessage {
 
 impl RedisListMessage {
     /// The broker's connection pool, for the per-delivery context.
-    pub(crate) const fn pool(&self) -> &Pool {
-        &self.pool
+    pub(crate) fn pool(&self) -> &Pool {
+        self.connection.pool()
     }
 
     /// Takes the harness's count of this delivery, for a window to hold until its flush.
@@ -929,19 +933,22 @@ impl IncomingMessage for RedisListMessage {
         let Some(handle) = self.ack else {
             return Err(AckError::Unsupported);
         };
-        settle(&self.pool, &handle).await
+        self.connection.ensure_open_to_settle()?;
+        settle(self.connection.pool(), &handle).await
     }
 
     async fn nack(self, requeue: bool) -> Result<(), AckError> {
         let Some(handle) = self.ack else {
             return Err(AckError::Unsupported);
         };
+        self.connection.ensure_open_to_settle()?;
+        let pool = self.connection.pool();
         if requeue {
             // Return the original entry verbatim to the main list, before removing it from
             // processing (a crash in between leaves a duplicate rather than a loss).
-            lpush(&self.pool, handle.main_key.as_str(), handle.value.clone()).await?;
+            lpush(pool, handle.main_key.as_str(), handle.value.clone()).await?;
         }
-        settle(&self.pool, &handle).await
+        settle(pool, &handle).await
     }
 }
 

@@ -17,6 +17,7 @@ use futures::stream::unfold;
 use ruststream::{BatchSubscriber, Seekable, Subscriber};
 
 use crate::claim::{self, ClaimedEntry};
+use crate::connection::Connection;
 use crate::convert::{HEADER_PREFIX, parts_from_fields};
 use crate::delay::DelayConfig;
 use crate::loopback::Tap;
@@ -66,7 +67,7 @@ fn duration_to_millis(d: Duration) -> u64 {
 /// Constructed by [`crate::ConnectedRedisBroker::subscribe`] from a [`crate::RedisStream`]
 /// descriptor. The read mode (fresh tail, reclaim, or claim-and-read) is fixed at construction.
 pub struct RedisSubscriber {
-    pool: Pool,
+    connection: Arc<Connection>,
     /// The connection every read goes out on. A blocking read holds its connection until it
     /// returns, so the reads keep to one, and a window flushes on another.
     reader: Client,
@@ -112,7 +113,7 @@ impl RedisSubscriber {
         reason = "internal constructor mirroring the descriptor"
     )]
     pub(crate) fn new(
-        pool: Pool,
+        connection: Arc<Connection>,
         key: String,
         group: String,
         consumer: String,
@@ -123,14 +124,14 @@ impl RedisSubscriber {
     ) -> Self {
         let generation = Arc::new(AtomicU64::new(0));
         let seeker = Arc::new(RedisGroupSeeker::new(
-            pool.clone(),
+            Arc::clone(&connection),
             key.as_str(),
             group.as_str(),
             Arc::clone(&generation),
         ));
         Self {
-            reader: pool.next().clone(),
-            pool,
+            reader: connection.pool().next().clone(),
+            connection,
             key,
             group,
             consumer,
@@ -158,7 +159,7 @@ impl RedisSubscriber {
         let parsed: EntryId = id.parse()?;
         let (payload, headers) = parts_from_fields(entry.fields);
         Ok(RedisMessage::new(
-            self.pool.clone(),
+            self.connection.pool().clone(),
             self.key.clone(),
             self.group.clone(),
             id,
@@ -206,7 +207,7 @@ impl RedisSubscriber {
 
     /// The window's client: a connection of the pool other than the one the reads block on.
     pub(crate) fn round_client(&self) -> Client {
-        other_than(&self.pool, &self.reader)
+        other_than(self.connection.pool(), &self.reader)
     }
 
     /// Yields one delivery per entry, each with a slot in `window`, and reports a failed flush of
@@ -253,7 +254,7 @@ impl RedisSubscriber {
         // Replay any due delayed-retry entries before reading, so they re-enter the stream and get
         // delivered through the normal read path. Granularity is the read block interval.
         if let Some(cfg) = &self.delay {
-            cfg.sweep_due(&self.pool, &self.key).await?;
+            cfg.sweep_due(self.connection.pool(), &self.key).await?;
         }
         // Captured before the read, not after: a blocking read selects its entries against the
         // cursor as it stood when the read started, so a seek that lands mid-read invalidates

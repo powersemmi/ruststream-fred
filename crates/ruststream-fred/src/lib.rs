@@ -5,6 +5,7 @@
 mod asyncapi;
 mod broker;
 mod claim;
+mod connection;
 mod convert;
 mod delay;
 mod envelope;
