@@ -1,7 +1,7 @@
 <h1 align="center">ruststream-fred</h1>
 
 <p align="center">
-  <i>The Redis and Valkey broker for the <a href="https://github.com/powersemmi/ruststream">RustStream</a> messaging framework: Streams with consumer groups, lists, Pub/Sub, standalone / cluster / sentinel topologies, and an in-process test broker.</i>
+  <i>The Redis and Valkey broker for the <a href="https://github.com/powersemmi/ruststream">RustStream</a> messaging framework: Streams with consumer groups, lists, Pub/Sub, standalone / cluster / sentinel topologies, and an in-process mode that runs a service's own app in its tests.</i>
 </p>
 
 <p align="center">
@@ -19,78 +19,33 @@
 
 ---
 
-`ruststream-fred` implements the RustStream broker contract over [`fred`](https://crates.io/crates/fred). Redis Streams are the durable transport; lists and Pub/Sub sit beside them for work queues and fan-out. Handlers, routers, codecs, and middleware come from the framework; this crate supplies the transport - and nothing broker-specific leaks back into the framework.
+`ruststream-fred` connects a RustStream service to Redis and Valkey over
+[`fred`](https://crates.io/crates/fred). Handlers, routing, codecs and middleware come from the
+framework; this crate is the transport.
 
 ## Features
 
-- **Redis Streams with consumer groups.** Subscribe through a group off the fresh tail
-  (`RedisStream::new`), reclaim a crashed consumer's pending entries (`RedisStream::reclaim`), or do
-  both in one read on Redis 8.4 and later (`RedisStream::claiming`, `XREADGROUP ... CLAIM`).
-  Payload and headers round-trip as stream entry fields.
-- **Lists and Pub/Sub beside them.** `RedisList` is a competing-consumers work queue: `BRPOP`
-  at-most-once, or `reliable()` for at-least-once through a per-consumer processing list.
-  `RedisPubSub` is fire-and-forget fan-out on one channel, `Classic` broadcast or `Sharded`
-  (`SSUBSCRIBE`, Redis 7+) so it scales across a cluster, and `RedisPubSubPattern` is the glob form
-  (`PSUBSCRIBE`), classic-only by construction.
-- **Settlement follows the transport.** On a stream `ack` is `XACK`; `nack(requeue = true)`
-  re-appends a copy to the stream then acks the original (at-least-once); `nack(requeue = false)`
-  acks to drop. A reliable list `LREM`s the entry off its processing list on ack and returns it to
-  the main list on requeue. Simple lists and Pub/Sub have nothing to settle, so they report
-  `AckError::Unsupported` rather than silently succeeding.
-- **Retries capped where the handler is mounted.** `b.include(h).max_attempts(nonzero!(5))
-  .dead_letter("orders.dlq")` reads the same on every transport. On the two read modes that claim
-  the cap counts Redis's own delivery count, so a message a dead worker never acked counts towards
-  it; everywhere else the count travels on the copies the runtime publishes. A delay
-  (`retry_after`) is served by Redis itself on a claiming subscription or through the opt-in ZSET
-  delay queue, and by a copy otherwise.
-- **Batches on every transport.** A batch handler names its size where it is mounted
-  (`batch(nonzero!(n))`); on a stream that number is the `COUNT` of the `XREADGROUP` that fetches
-  the batch, while lists and Pub/Sub pop one entry at a time and assemble the batch on the client.
-  Redis's own read option, `block(..)`, chains after the size on the stream and list forms.
-- **One prelude per transport.** `stream::prelude`, `list::prelude`, and `pubsub::prelude` each
-  carry the core prelude, that form's descriptor and options, and that form's publish policy under
-  the uniform name `Publish` (streams add `TransactionalPublish` for the same policy), so a mount
-  reads the same whichever form it is on. `ruststream_fred::prelude` spans all three: it keeps the
-  prefixed names and re-exports the three form modules for a file that mixes them.
-- **Standalone, cluster, and sentinel.** One crate, named constructors pick the topology:
-  `RedisBroker::standalone`, `::cluster`, `::sentinel`.
-- **Authentication and TLS on every topology.** `.credentials` / `.password` set the auth fields
-  beyond what a standalone URL can express; optional features add TLS (`tls-rustls`,
-  `tls-rustls-ring`, `tls-native-tls`), sentinel-specific auth (`sentinel-auth`), and a dynamic
-  `credential-provider` for IAM-style rotation.
-- **Typed lifecycle.** `RedisBroker::standalone(url)` is synchronous and does no I/O; the consuming
-  `connect` yields a `ConnectedRedisBroker` that every subscription and publisher hangs off, and its
-  consuming `shutdown` yields the terminal witness. The runtime drives the ladder at startup, so the
-  broker composes with `#[ruststream::app]`. An existing `fred` pool plugs in via
-  `RedisBroker::from_pool`.
-- **Publishers as policy plus connection.** `RedisPublish`, `RedisPubSubPublish`, and
-  `RedisListPublish` are pure declarations, constructible anywhere; a mount site binds one with
-  `.out(marker, policy)`, and the runtime pairs it with the connected broker, so publishing before
-  connect is not representable.
-- **The partition key is a per-message setting.** `.partition_key(key)` is a step on the publish, so
-  it keys one message and leaves the mount site's codec and its slot attribution alone. It feeds the
-  runtime's keyed worker lanes (`workers(n, by_key)`) and reaches the consumer as the
-  `redis-partition-key` header, on all three transports.
-- **Both transaction kinds.** On standalone and sentinel the stream publisher carries the borrowed
-  kind (one transaction on the handle) and the owned kind (`publisher.transaction()` returns a
-  buffer-owning value, so any number can be open concurrently). Both commit their buffer as one
-  `MULTI` / `EXEC` block, so subscribers see the whole batch or none of it.
-- **Repositioning a group.** The streams subscriber implements the `Seekable` capability: a
-  `start_at(..)` clause opens a subscription at a chosen point, and the delivery's own typed context
-  carries the group's seeker under a `SeekHandle` key, so a handler moves the cursor while the
-  service runs. A Redis cursor belongs to the consumer group, so a seek repositions every consumer
-  of that group, a scope the `RedisGroupPosition` / `RedisGroupSeeker` names carry.
-- **In-process test broker.** The `testing` feature ships `RedisTestBroker`, an in-process transport
-  whose connected form implements `ruststream::testing::TestableBroker`, so it drives the `TestApp`
-  harness and passes the framework's conformance suite without a server. Every descriptor and every
-  publish policy mounts on it, so a test wires what the service ships rather than a bare key string
-  and a test-only policy.
+- **Redis Streams with consumer groups,** including reclaiming a crashed consumer's pending
+  entries.
+- **Lists and Pub/Sub beside them:** a list as a work queue, at-most-once or reliable, and Pub/Sub
+  fan-out, classic, sharded or by pattern.
+- **Settlement that follows the transport:** `XACK` on a stream, a processing list for a reliable
+  list, and `AckError::Unsupported` where Redis has nothing to settle.
+- **Retry caps and dead letters** declared where the handler is mounted, on every transport.
+- **Batches on every transport,** read with one `XREADGROUP` on a stream.
+- **Pipelining on every form:** `.pipeline()` sends a fetch's settles and the handler's own
+  commands in one round trip, and `.atomic()` makes them one `MULTI` / `EXEC`.
+- **Standalone, cluster and sentinel,** with authentication and TLS on each.
+- **Transactions** as one `MULTI` / `EXEC` block, and repositioning a consumer group with
+  `start_at(..)`.
+- **Tests on the production app without a server:** `TestApp` runs the service's own app with its
+  `RedisBroker` connected to an in-process Redis.
 
 ## Install
 
 ```toml
 [dependencies]
-ruststream = { version = ">=0.7.0-rc.9, <0.8.0", features = ["macros", "json"] }
+ruststream = { version = ">=0.7.0-rc.11, <0.8.0", features = ["macros", "json"] }
 ruststream-fred = "0.7"
 serde = { version = "1", features = ["derive"] }
 
@@ -98,19 +53,8 @@ serde = { version = "1", features = ["derive"] }
 ruststream-fred = { version = "0.7", features = ["testing"] }
 ```
 
-## Scaffold a service
-
-Generate a runnable starter with [`cargo generate`](https://github.com/cargo-generate/cargo-generate),
-one template per Redis transport:
-
-```bash
-# consumer-group streams (durable, acknowledged)
-cargo generate --git https://github.com/powersemmi/ruststream-fred templates/redis-stream
-# pub/sub fan-out (fire-and-forget)
-cargo generate --git https://github.com/powersemmi/ruststream-fred templates/redis-pubsub
-# list work queue (competing consumers)
-cargo generate --git https://github.com/powersemmi/ruststream-fred templates/redis-list
-```
+Optional features: TLS (`tls-rustls`, `tls-rustls-ring`, `tls-native-tls`), `sentinel-auth` and
+`credential-provider`.
 
 ## Write a service
 
@@ -118,7 +62,7 @@ cargo generate --git https://github.com/powersemmi/ruststream-fred templates/red
 use ruststream_fred::stream::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Outgoing, Serialize)]
 struct Order {
     id: u64,
 }
@@ -128,8 +72,6 @@ struct Confirmation {
     id: u64,
 }
 
-// The subscription reads through the `workers` consumer group, so the entry is `XACK`ed once the
-// handler returns, and the value it returns is published to the `confirmations` stream.
 #[subscriber(RedisStream::new("orders").group("workers"), publish("confirmations"))]
 async fn confirm(order: &Order) -> Confirmation {
     Confirmation { id: order.id }
@@ -140,75 +82,60 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
-            // `.out_reply(..)` binds the policy the returned value leaves through. A policy holds
-            // no connection, so the runtime pairs it with the broker once that connects.
             b.include(confirm).out_reply(Publish);
         },
     )
 }
 ```
 
-Two vocabularies meet at that mount, and they do not share names. This file globs `stream::prelude`,
-where `Publish` is the form's own policy - `list::prelude` and `pubsub::prelude` spell theirs with
-the same word, so moving a handler between transports rewrites the descriptor and not the mount. A
-handler that takes an injected publisher imports `ruststream::prelude::*` instead and bounds the
-slot with a capability (`Out<impl Publisher>`, `Out<impl TransactionalPublisher>`), so its body
-never names a Redis type.
+`#[ruststream::app]` generates `main`, so the binary understands `run` and `asyncapi gen`.
 
-Runnable examples live in `crates/ruststream-fred/examples/`, one per subject: `fred_streams`,
-`fred_list`, `fred_pubsub`, `fred_transaction`, `fred_seek`, `fred_dead_letter`, `fred_auth`.
+Scaffold a fresh project from a template, one per transport:
+
+```bash
+cargo generate --git https://github.com/powersemmi/ruststream-fred templates/redis-stream
+cargo generate --git https://github.com/powersemmi/ruststream-fred templates/redis-pubsub
+cargo generate --git https://github.com/powersemmi/ruststream-fred templates/redis-list
+```
 
 ## Test it
 
-`RedisTestBroker` runs the handler in process - no server, no docker, no network. The `TestApp`
-harness performs the app's real startup and drives each publish to a standstill before returning,
-so the assertions need no waiting. `Order` derives `Serialize` here as well, so the harness can
-inject one:
+`TestApp` runs the service's own app with `RedisBroker` in process, with no server.
 
 ```rust
 use ruststream::testing::TestApp;
-use ruststream_fred::testing::RedisTestBroker;
 
-let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-    RedisTestBroker::new(),
-    |b| {
-        // The same handler, the same mount and the same policy: only the broker is the
-        // in-process one. This crate ships no test-only policy type.
-        b.include(confirm).out_reply(Publish);
-    },
-);
+let tb = TestApp::start(app()).await?;
 
-let tb = TestApp::start(app).await?;
-
-tb.broker::<RedisTestBroker>()
-    .publish("orders", &Order { id: 7 })
+tb.broker::<RedisBroker>()
+    .message(&Order { id: 7 })
+    .to("orders")
+    .publish()
     .await?;
 
-tb.broker::<RedisTestBroker>()
+tb.broker::<RedisBroker>()
     .subscriber("orders")
     .assert_called_once()
     .settled(HandlerOutcome::ack());
-tb.broker::<RedisTestBroker>()
+tb.broker::<RedisBroker>()
     .published::<Confirmation>("confirmations")
     .assert_called_once();
 
-tb.shutdown().await?;
 ```
 
-Full compiling example: `crates/ruststream-fred/examples/fred_testing.rs`. Consumer-group cursors,
-`XAUTOCLAIM` redelivery, idle reclaim and `MAXLEN` trimming are deliberately not simulated;
-exercise those against a real server with `just test-brokers`. A `RedisStream::claiming`
-subscription does mount here, pending entries list and delivery count included, so a retry cap is
-testable in process, and so is the ZSET delay queue.
+## Documentation
+
+- This crate: <https://docs.rs/ruststream-fred>
+- The framework: <https://powersemmi.github.io/ruststream/latest>
+
+## Minimum supported Rust version
+
+The MSRV is **1.88**, edition 2024.
 
 ## Contributing
 
-```bash
-just check          # fmt, clippy, and feature checks
-just test           # the suite; the live Redis tests skip without REDIS_TEST_URL
-just test-brokers   # the same suite against a Redis started with docker compose
-```
+See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## License
 
-Apache-2.0.
+Licensed under the [Apache-2.0](./LICENSE) license.
