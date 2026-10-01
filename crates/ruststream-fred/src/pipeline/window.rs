@@ -25,6 +25,7 @@ use ruststream::{AckError, IncomingMessage};
 use tokio::runtime::Handle;
 
 use super::{Rounds, pipeline_on};
+use crate::connection::Connection;
 use crate::error::RedisError;
 #[cfg(feature = "testing")]
 use crate::loopback::InFlight;
@@ -424,6 +425,9 @@ pub(crate) struct Window<F: Form> {
     owed: Mutex<Owed<F::Op>>,
     /// The broker's runtime, where a flush no caller can wait for is sent.
     runtime: Handle,
+    /// The broker's connection with its shutdown flag: a settlement after the shutdown errors
+    /// instead of joining a window no flush will ever send.
+    connection: Arc<Connection>,
 }
 
 impl<F: Form> Debug for Window<F> {
@@ -440,16 +444,28 @@ struct Flush<Op> {
     ops: Vec<Op>,
 }
 
+/// What a window takes from the broker it opens on: the registry of rounds, the runtime a flush
+/// nobody waits for runs on, and the connection whose shutdown ends the window's settlements.
+pub(crate) struct Owner {
+    pub(crate) rounds: Arc<Rounds>,
+    pub(crate) runtime: Handle,
+    pub(crate) connection: Arc<Connection>,
+}
+
 impl<F: Form> Window<F> {
     pub(crate) fn new(
         form: F,
         client: Client,
-        rounds: Arc<Rounds>,
         atomic: bool,
         name: impl Into<Arc<str>>,
         capacity: usize,
-        runtime: Handle,
+        owner: Owner,
     ) -> Self {
+        let Owner {
+            rounds,
+            runtime,
+            connection,
+        } = owner;
         let name = name.into();
         let hash_slot = fred::util::redis_keyslot(name.as_bytes());
         Self {
@@ -478,6 +494,7 @@ impl<F: Form> Window<F> {
                 flushing: 0,
             }),
             runtime,
+            connection,
         }
     }
 
@@ -537,6 +554,7 @@ impl<F: Form> Window<F> {
         commit: bool,
         settle: impl FnOnce(&F, &mut Vec<F::Op>) -> Result<(), AckError>,
     ) -> Result<(), AckError> {
+        self.connection.ensure_open_to_settle()?;
         let closed = self.segments.close(round.slot, commit);
         if closed.is_some() {
             self.segments.rounds.leave(round);
@@ -768,7 +786,7 @@ impl<F: Form> Window<F> {
 
 #[cfg(test)]
 mod tests {
-    use fred::clients::Client;
+    use fred::clients::{Client, Pool};
     use ruststream::AckError;
 
     use super::*;
@@ -778,11 +796,16 @@ mod tests {
         Arc::new(Window::new(
             PubSubForm,
             Client::default(),
-            Arc::new(Rounds::default()),
             false,
             "orders",
             8,
-            Handle::current(),
+            Owner {
+                rounds: Arc::new(Rounds::default()),
+                runtime: Handle::current(),
+                connection: Connection::new(
+                    Pool::from_clients(vec![Client::default()]).expect("a pool of one"),
+                ),
+            },
         ))
     }
 

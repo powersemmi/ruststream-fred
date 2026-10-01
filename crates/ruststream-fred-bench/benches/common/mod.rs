@@ -10,11 +10,13 @@
 //!
 //! A scenario runs the service a user writes: the app, built on [`RedisBroker::standalone`] and
 //! started through [`RustStream::start`], against the standalone server of the compose stand
-//! (`REDIS_TEST_URL`, or [`DEFAULT_ADDRESS`] when it is not set). The subscription is a
-//! [`RedisStream`](ruststream_fred::RedisStream) consumer group and a reply goes through
-//! [`RedisPublish`](ruststream_fred::RedisPublish), the connected broker's default policy, so
-//! every command a scenario sends is one a service sends: `XREADGROUP` to read, `XACK` to settle,
-//! `XADD` to reply.
+//! (`REDIS_TEST_URL`, or [`DEFAULT_ADDRESS`] when it is not set). The subscription is one of the
+//! crate's forms, named by the scenario's [`Feed`]: a [`RedisStream`](ruststream_fred::RedisStream)
+//! consumer group, a reliable [`RedisList`](ruststream_fred::RedisList), a
+//! [`RedisPubSub`](ruststream_fred::RedisPubSub) channel or a
+//! [`RedisPubSubPattern`](ruststream_fred::RedisPubSubPattern), with or without the window
+//! `.pipeline()` opens. A reply goes through [`RedisPublish`](ruststream_fred::RedisPublish), the
+//! connected broker's default policy, so every command a scenario sends is one a service sends.
 //!
 //! # What is counted
 //!
@@ -38,11 +40,13 @@
 //! the subscription and taking the first delivery.
 //!
 //! What a body measures is the start and the drain, in two regions. Between them a second thread,
-//! with a runtime and a `fred` client of its own, appends the messages to the stream in pipelined
-//! batches and waits until the server has accepted every one. The service's runtime is not driven
-//! while it does, so nothing is consumed before the drain starts, and the fill is in neither
-//! region. Every run starts from a clean server: the setup unlinks the input and reply streams,
-//! and the consumer group with them, before the service is built.
+//! with a runtime and a `fred` client of its own, feeds the messages in pipelined batches (`XADD`,
+//! `LPUSH` or `PUBLISH`, by the feed) and waits until the server has accepted every one. The
+//! service's runtime is not driven while it does, so nothing is consumed before the drain starts,
+//! and the fill is in neither region. A Pub/Sub message the server pushes meanwhile waits in the
+//! socket and in the subscription's buffer, which a Pub/Sub scenario sizes for the whole run. Every
+//! run starts from a clean server: the setup unlinks the input and reply keys and the processing
+//! list, and the consumer group with them, before the service is built.
 
 // Each benchmark target compiles this module on its own and uses the part it needs; what another
 // target uses looks unused here.
@@ -51,16 +55,20 @@
 use std::convert::Infallible;
 use std::env;
 use std::hint::black_box;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
 use fred::clients::Client;
-use fred::interfaces::{ClientLike, KeysInterface, StreamsInterface};
+use fred::interfaces::{
+    ClientLike, KeysInterface, ListInterface, PubsubInterface, StreamsInterface,
+};
 use fred::types::Value;
 use fred::types::config::Config;
 use gungraun::{Callgrind, Dhat, DhatMetric, EntryPoint, EventKind, LibraryBenchmarkConfig};
+use ruststream::nonzero;
 use ruststream::runtime::{AppInfo, BrokerScope, Identity, RunningApp, RustStream};
 use ruststream_fred::RedisBroker;
 use serde::Deserialize;
@@ -78,8 +86,38 @@ compile_error!(
 /// The stream key every scenario delivers on, and the one each handler's descriptor names.
 pub const INPUT: &str = "orders";
 
-/// The consumer group every scenario's descriptor reads through.
+/// The consumer group every stream scenario's descriptor reads through.
 pub const GROUP: &str = "workers";
+
+/// The processing list a reliable list scenario claims into: the descriptor's default name.
+pub const PROCESSING: &str = "orders.processing";
+
+/// The counter a pipelined scenario's handler increments through its window.
+pub const SEEN: &str = "orders.seen";
+
+/// The glob a pattern scenario subscribes to, and the channel it is fed on, which matches it.
+pub const PATTERN: &str = "orders.*";
+pub const MATCHED: &str = "orders.feed";
+
+/// Where a pattern scenario's retry copies would go: a pattern names no channel of its own.
+pub const PATTERN_RETRY: &str = "orders.retry";
+
+/// Room for a whole run in a Pub/Sub subscription's buffer: the fill publishes every message
+/// before the service's runtime reads one, and Pub/Sub drops what overflows.
+pub const PUBSUB_BUFFER: NonZeroUsize = nonzero!(4096);
+
+/// Where a scenario's messages arrive: which command fills it, and what settling means.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Feed {
+    /// [`INPUT`] as a stream, settled once the group owes nothing.
+    Stream,
+    /// [`INPUT`] as a reliable list, settled once [`PROCESSING`] is empty.
+    List,
+    /// [`INPUT`] as a channel, with nothing to settle.
+    Channel,
+    /// [`MATCHED`], read through [`PATTERN`], with nothing to settle.
+    Pattern,
+}
 /// The stream key the reply scenario's reply type names in its `#[outgoing(..)]` attribute,
 /// which takes a literal; it is unlinked with [`INPUT`] before a run.
 pub const REPLIES: &str = "confirmations";
@@ -252,17 +290,25 @@ pub struct Pending {
     latch: Latch,
     start: Box<dyn FnOnce(&Runtime) -> RunningApp>,
     messages: usize,
+    feed: Feed,
 }
 
 /// The mount a scenario passes in: what `with_broker` does with the scope.
 pub type Mount<'a> = &'a mut BrokerScope<RedisBroker, Identity, (), Latch>;
 
-/// Builds a one-handler service on the production broker, ready to be started by the body.
+/// Builds a one-handler service on the production broker reading a stream, ready to be started
+/// by the body.
+pub fn pending(messages: usize, mount: impl FnOnce(Mount<'_>)) -> Pending {
+    pending_on(Feed::Stream, messages, mount)
+}
+
+/// Builds a one-handler service on the production broker reading `feed`, ready to be started by
+/// the body.
 ///
 /// The server is cleaned first, so a run never reads what the one before it left behind.
-pub fn pending(messages: usize, mount: impl FnOnce(Mount<'_>)) -> Pending {
+pub fn pending_on(feed: Feed, messages: usize, mount: impl FnOnce(Mount<'_>)) -> Pending {
     aside(async move |client: Client| {
-        for key in [INPUT, REPLIES] {
+        for key in [INPUT, REPLIES, PROCESSING, SEEN] {
             let _: i64 = client.unlink(key).await.expect("the key is unlinked");
         }
     });
@@ -276,6 +322,7 @@ pub fn pending(messages: usize, mount: impl FnOnce(Mount<'_>)) -> Pending {
         latch,
         start: Box::new(move |runtime| runtime.block_on(app.start()).expect("the service starts")),
         messages,
+        feed,
     }
 }
 
@@ -304,20 +351,32 @@ fn aside(work: impl AsyncFnOnce(Client) + Send) {
     });
 }
 
-/// Drives the service's runtime until the group has settled every entry: a handler counts its
+/// Drives the service's runtime until the feed has settled every delivery: a handler counts its
 /// delivery down before the settlement (and a window's flush) that follows it, and that work is
-/// the service's too. A side thread asks the server, so the asking is not counted.
-fn settled(runtime: &Runtime) {
+/// the service's too. A side thread asks the server, so the asking is not counted. Pub/Sub
+/// settles nothing, so there is nothing to wait for.
+fn settled(runtime: &Runtime, feed: Feed) {
+    if matches!(feed, Feed::Channel | Feed::Pattern) {
+        return;
+    }
     let (done, settled) = oneshot::channel::<()>();
     thread::scope(|scope| {
         scope.spawn(move || {
             aside(async move |client: Client| {
                 loop {
-                    let (pending, _, _, _): (u64, Value, Value, Value) = client
-                        .xpending(INPUT, GROUP, ())
-                        .await
-                        .expect("the server reports the group's pending entries");
-                    if pending == 0 {
+                    let owed: u64 = if feed == Feed::Stream {
+                        let (pending, _, _, _): (u64, Value, Value, Value) = client
+                            .xpending(INPUT, GROUP, ())
+                            .await
+                            .expect("the server reports the group's pending entries");
+                        pending
+                    } else {
+                        client
+                            .llen(PROCESSING)
+                            .await
+                            .expect("the server reports the processing list's length")
+                    };
+                    if owed == 0 {
                         break;
                     }
                     sleep(Duration::from_millis(1)).await;
@@ -331,9 +390,9 @@ fn settled(runtime: &Runtime) {
     });
 }
 
-/// Appends `count` bodies to [`INPUT`] in pipelined batches, and returns once the server has
+/// Feeds `count` bodies to the scenario in pipelined batches, and returns once the server has
 /// accepted every one of them.
-fn fill(count: usize) {
+fn fill(feed: Feed, count: usize) {
     aside(async move |client: Client| {
         let body = json_body();
         let mut sent = 0;
@@ -341,11 +400,16 @@ fn fill(count: usize) {
             let batch = FILL_BATCH.min(count - sent);
             let pipeline = client.pipeline();
             for _ in 0..batch {
-                let fields = vec![(PAYLOAD_FIELD.to_owned(), body.clone())];
-                let _: () = pipeline
-                    .xadd(INPUT, false, None::<()>, "*", fields)
-                    .await
-                    .expect("the entry is queued");
+                let queued = match feed {
+                    Feed::Stream => {
+                        let fields = vec![(PAYLOAD_FIELD.to_owned(), body.clone())];
+                        pipeline.xadd(INPUT, false, None::<()>, "*", fields).await
+                    }
+                    Feed::List => pipeline.lpush(INPUT, body.clone()).await,
+                    Feed::Channel => pipeline.publish(INPUT, body.clone()).await,
+                    Feed::Pattern => pipeline.publish(MATCHED, body.clone()).await,
+                };
+                let (): () = queued.expect("the message is queued");
             }
             let _: Vec<Value> = pipeline
                 .all()
@@ -366,18 +430,19 @@ pub fn start_and_drain(pending: Pending) {
         latch,
         start,
         messages,
+        feed,
     } = pending;
     let running = measure(|| start(&runtime));
     latch.expect(messages);
-    fill(messages);
+    fill(feed, messages);
     assert_eq!(
         latch.remaining(),
         messages,
-        "the stream was consumed while it was being filled, so the measured region would be short"
+        "the feed was consumed while it was being filled, so the measured region would be short"
     );
     measure(|| {
         runtime.block_on(latch.drained());
-        settled(&runtime);
+        settled(&runtime, feed);
     });
     runtime
         .block_on(running.shutdown())

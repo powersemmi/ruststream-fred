@@ -5,6 +5,7 @@
 //! form owns the live `fred` pool, so subscriptions and publishers exist only once a connection
 //! does.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 #[cfg(feature = "testing")]
 use std::sync::Mutex;
@@ -19,7 +20,7 @@ use fred::types::config::CredentialProvider;
     feature = "tls-native-tls"
 ))]
 use fred::types::config::TlsConfig;
-use fred::types::config::{Config, ServerConfig};
+use fred::types::config::{Config, PerformanceConfig, ServerConfig};
 use fred::types::{ClusterHash, CustomCommand, Message, Value, Version};
 use fred::util::redis_keyslot;
 #[cfg(feature = "testing")]
@@ -44,7 +45,7 @@ use crate::recovery::RecoveryConfig;
 use crate::{
     error::RedisError,
     list::{ListWire, RedisList, RedisListPublish, RedisListPublisher, RedisListSubscriber},
-    pipeline::Rounds,
+    pipeline::{Owner, Rounds},
     publisher::{RedisDefaultPublisher, RedisPublisher},
     pubsub::{
         PubSubMode, PubSubWire, RedisPubSub, RedisPubSubPattern, RedisPubSubPublish,
@@ -851,7 +852,7 @@ impl ConnectedRedisBroker {
         let recorded = self
             .core
             .record_routes(def.channel(), def.dead_letter(), &def.route())?;
-        let client = self.new_client().await?;
+        let client = self.new_client(def.buffer_size()).await?;
         // Opened before the subscribe, because the messages arrive over a broadcast channel whose
         // receiver sees only what is sent after it exists. The connection is dedicated to this one
         // subscription, so opening the stream early can pick up nothing else.
@@ -881,10 +882,12 @@ impl ConnectedRedisBroker {
                 name: def.channel(),
                 sharded,
             },
+            def.buffer_size(),
         );
         let pool = self.core.pool()?;
         recorded.keep();
         Ok(PubSubWire::new(
+            def.channel().to_owned(),
             client,
             rx,
             codec,
@@ -908,6 +911,7 @@ impl ConnectedRedisBroker {
         &self,
         rx: Receiver<Message>,
         target: PubSubTarget<'_>,
+        buffer: Option<NonZeroUsize>,
     ) -> (Receiver<Message>, Tap) {
         #[cfg(feature = "testing")]
         {
@@ -935,14 +939,14 @@ impl ConnectedRedisBroker {
             };
             self.core.opened(opened);
             if let Some(server) = self.core.loopback().server() {
-                let (rx, reader) = server.attach_pubsub(subscription);
+                let (rx, reader) = server.attach_pubsub(subscription, buffer);
                 return (rx, Tap::registered(Arc::clone(server), reader));
             }
             (rx, Tap::default())
         }
         #[cfg(not(feature = "testing"))]
         {
-            let _ = target;
+            let _ = (target, buffer);
             (rx, Tap::default())
         }
     }
@@ -959,8 +963,18 @@ impl ConnectedRedisBroker {
         &self,
         def: RedisPubSubPattern,
     ) -> Result<RedisPubSubSubscriber, RedisError> {
+        Ok(RedisPubSubSubscriber::new(
+            self.open_pubsub_pattern(def).await?,
+        ))
+    }
+
+    /// Subscribes a dedicated client to the glob `def` names and hands back its wire.
+    pub(crate) async fn open_pubsub_pattern(
+        &self,
+        def: RedisPubSubPattern,
+    ) -> Result<PubSubWire, RedisError> {
         let codec = def.codec_handle();
-        let client = self.new_client().await?;
+        let client = self.new_client(def.buffer_size()).await?;
         // Opened before the subscribe, for the reason `subscribe_pubsub` gives.
         let rx = client.message_rx();
         client
@@ -968,15 +982,17 @@ impl ConnectedRedisBroker {
             .await
             .map_err(RedisError::subscribe)?;
         confirm_subscribed(&client).await?;
-        let (rx, tap) = self.pubsub_tap(rx, PubSubTarget::Pattern(def.pattern()));
-        Ok(RedisPubSubSubscriber::new(PubSubWire::new(
+        let (rx, tap) =
+            self.pubsub_tap(rx, PubSubTarget::Pattern(def.pattern()), def.buffer_size());
+        Ok(PubSubWire::new(
+            def.pattern().to_owned(),
             client,
             rx,
             codec,
             self.core.pool()?,
             tap,
             self.runtime().clone(),
-        )))
+        ))
     }
 
     /// Opens a list (work-queue) subscription described by `def`.
@@ -1089,6 +1105,16 @@ impl ConnectedRedisBroker {
         &self.core.runtime
     }
 
+    /// What a pipelined subscription's window takes from this connection, or
+    /// [`RedisError::ShutDown`] once it was torn down.
+    pub(crate) fn window_owner(&self) -> Result<Owner, RedisError> {
+        Ok(Owner {
+            rounds: Arc::clone(self.rounds()),
+            runtime: self.runtime().clone(),
+            connection: self.core.connection()?,
+        })
+    }
+
     /// Returns a clone of the underlying pool, for advanced operations not covered by the
     /// wrapper.
     ///
@@ -1107,7 +1133,7 @@ impl ConnectedRedisBroker {
         #[cfg(not(feature = "testing"))]
         let blocks = true;
         Ok(ReadConnection::new(
-            self.new_client().await?,
+            self.new_client(None).await?,
             self.runtime().clone(),
             Arc::clone(&self.core.closing),
             blocks,
@@ -1117,11 +1143,18 @@ impl ConnectedRedisBroker {
     /// Builds and connects a dedicated `fred` client (used for Pub/Sub, which needs an isolated
     /// message stream and channel state per subscriber, and for the reads of a stream or list
     /// subscription).
-    async fn new_client(&self) -> Result<Client, RedisError> {
+    ///
+    /// `buffer` is how many messages its Pub/Sub channel holds for a reader that has not taken them
+    /// yet; `None` leaves `fred`'s own setting.
+    async fn new_client(&self, buffer: Option<NonZeroUsize>) -> Result<Client, RedisError> {
         // The dedicated client is a second connection to the same server: refuse to dial one for
         // a connection whose owner already shut down.
         let _ = self.core.pool()?;
-        let client = Client::new(self.core.config.clone(), None, None, None);
+        let performance = buffer.map(|buffer| PerformanceConfig {
+            broadcast_channel_capacity: buffer.get(),
+            ..PerformanceConfig::default()
+        });
+        let client = Client::new(self.core.config.clone(), performance, None, None);
         // `init` spawns the task that drives the connection on the runtime it is polled on; it is
         // polled on the broker's own runtime, so the connection outlives a caller's runtime. The
         // price is one task spawned per subscription opened.

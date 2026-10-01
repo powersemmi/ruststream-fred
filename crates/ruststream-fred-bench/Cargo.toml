@@ -57,3 +57,27 @@ harness = false
 [[bench]]
 name = "batch"
 harness = false
+
+[[bench]]
+name = "list"
+harness = false
+
+[[bench]]
+name = "pubsub"
+harness = false
+
+[[bench]]
+name = "pipeline_stream"
+harness = false
+
+[[bench]]
+name = "pipeline_list"
+harness = false
+
+[[bench]]
+name = "pipeline_pubsub"
+harness = false
+
+[[bench]]
+name = "pipeline_pattern"
+harness = false
