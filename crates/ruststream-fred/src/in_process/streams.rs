@@ -569,6 +569,7 @@ impl State {
         claim: Option<Duration>,
         now: Instant,
     ) -> Result<Vec<Value>, Error> {
+        let takes_new = self.takes_new(key, group_name, consumer);
         let stream = self
             .keys
             .stream_mut(key, now, false)?
@@ -626,7 +627,11 @@ impl State {
         let fresh: Vec<(Id, Fields)> = stream
             .entries
             .range(group.cursor.next()..)
-            .take(count.saturating_sub(replies.len()))
+            .take(if takes_new {
+                count.saturating_sub(replies.len())
+            } else {
+                0
+            })
             .map(|(id, fields)| (*id, Arc::clone(fields)))
             .collect();
         for (id, fields) in fresh {

@@ -58,8 +58,8 @@ use streams::Id;
 /// ... CLAIM` included.
 pub(crate) const VERSION: Version = Version::new(8, 4, 0);
 
-/// One subscription registered with the model.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// One subscription registered with the model, ordered by when it registered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct ReaderId(u64);
 
 /// What a subscription reads, as the model tracks it.
@@ -506,7 +506,9 @@ impl State {
                 }
                 // A read of a key of another type fails at once on a server, so it is not waited.
                 self.keys.stream(key, now).is_err()
-                    || (*fresh && self.keys.has_new_entries(key, group, now))
+                    || (*fresh
+                        && self.leads(reader, key, group)
+                        && self.keys.has_new_entries(key, group, now))
             }
             Some(Reader::List { key, recovery }) => {
                 recovery
@@ -578,6 +580,45 @@ impl State {
             }
         }
         readers
+    }
+
+    /// The subscription a group's new entries go to: the earliest registered one that reads new
+    /// entries of `key` through `group`. On a server the blocked reader that issued its read
+    /// first wins an entry; here the earliest subscription always does, one order the server
+    /// may pick, so which subscription receives an entry is known before it is published.
+    fn leader(&self, key: &Bytes, group: &Bytes) -> Option<(ReaderId, &Bytes)> {
+        self.readers
+            .iter()
+            .filter_map(|(id, reader)| match reader {
+                Reader::Stream {
+                    key: read,
+                    group: through,
+                    consumer,
+                    fresh: true,
+                    ..
+                } if read == key && through == group => Some((*id, consumer)),
+                _ => None,
+            })
+            .min_by_key(|(id, _)| *id)
+    }
+
+    /// Whether `reader` is the subscription `key`'s new entries through `group` go to.
+    fn leads(&self, reader: ReaderId, key: &Bytes, group: &Bytes) -> bool {
+        self.leader(key, group).is_some_and(|(id, _)| id == reader)
+    }
+
+    /// Whether a read by `consumer` takes new entries of `key` through `group`: a subscription
+    /// other than the group's leader does not, while a command a handler issues under a name no
+    /// subscription holds reads as it would on a server.
+    fn takes_new(&self, key: &Bytes, group: &Bytes, consumer: &Bytes) -> bool {
+        let follower = self.readers.values().any(|reader| {
+            matches!(reader, Reader::Stream { key: read, group: through, consumer: name, fresh: true, .. }
+                if read == key && through == group && name == consumer)
+        });
+        !follower
+            || self
+                .leader(key, group)
+                .is_none_or(|(_, leader)| leader == consumer)
     }
 
     /// Whether `consumer` is a registered subscription of `key` through `group`.

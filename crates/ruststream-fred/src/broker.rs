@@ -1205,7 +1205,8 @@ impl TestableBroker for ConnectedRedisBroker {
     /// name no subscription reads exactly is reached by the pattern subscriptions alone.
     ///
     /// Subscriptions sharing a name are told apart by nothing but the name, so a publish is owed
-    /// by the first position of each name as many times as that name receives it.
+    /// by the first position of each name as many times as that name receives it. In process
+    /// that is where it goes: a group's new entries go to its earliest open subscription.
     fn routes(&self, destination: &str, subscriptions: &[&str]) -> Vec<usize> {
         let opened = self
             .core

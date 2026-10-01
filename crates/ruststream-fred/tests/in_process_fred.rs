@@ -711,6 +711,40 @@ async fn consumers_of_one_group_share_the_entries() {
     assert!(stays_quiet(&mut first).await && stays_quiet(&mut second).await);
 }
 
+/// In process a group's new entries go to its earliest open subscription, which is the one the
+/// broker's routing names, and to the next one once it closes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_earliest_consumer_of_a_group_takes_its_new_entries() {
+    let broker = connected().await;
+    let mut first = broker
+        .subscribe(RedisStream::new("led").group("workers").consumer("a"))
+        .await
+        .expect("subscribe a");
+    let mut second = broker
+        .subscribe(RedisStream::new("led").group("workers").consumer("b"))
+        .await
+        .expect("subscribe b");
+    let publisher = broker.publisher();
+    publisher
+        .publish(OutgoingMessage::new("led", b"to a"), None)
+        .await
+        .expect("publish");
+
+    let mut second = Box::pin(second.stream());
+    assert!(
+        stays_quiet(&mut second).await,
+        "the later consumer took the entry"
+    );
+    assert_eq!(next_payload(&mut Box::pin(first.stream())).await, b"to a");
+
+    drop(first);
+    publisher
+        .publish(OutgoingMessage::new("led", b"to b"), None)
+        .await
+        .expect("publish");
+    assert_eq!(next_payload(&mut second).await, b"to b");
+}
+
 /// Every group reads every entry of the stream.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_group_reads_every_entry() {
