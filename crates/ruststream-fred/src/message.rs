@@ -211,6 +211,7 @@ impl IncomingMessage for RedisMessage {
 
     async fn ack(mut self) -> Result<(), AckError> {
         let handle = self.ack.take().expect("RedisMessage settled twice");
+        self.seeker.ensure_open_to_settle()?;
         xack(&handle).await
     }
 
@@ -227,6 +228,7 @@ impl IncomingMessage for RedisMessage {
 
     async fn nack(mut self, requeue: bool) -> Result<(), AckError> {
         let handle = self.ack.take().expect("RedisMessage settled twice");
+        self.seeker.ensure_open_to_settle()?;
         if requeue && let RequeueMode::LeavePending { .. } = self.requeue {
             // The claiming mode retries through the pending entries list: no copy is appended and
             // the original is not acked, so the subscription's next read claims it back once it
@@ -265,6 +267,7 @@ impl IncomingMessage for RedisMessage {
     /// [`AckError::Broker`] when the `ZADD` or `XACK` fails.
     async fn nack_after(mut self, delay: Duration) -> Result<(), AckError> {
         let handle = self.ack.take().expect("RedisMessage settled twice");
+        self.seeker.ensure_open_to_settle()?;
         let Some(cfg) = self.delay.as_ref() else {
             if let RequeueMode::LeavePending { .. } = self.requeue {
                 drop(handle);
@@ -324,6 +327,7 @@ mod tests {
     use std::sync::atomic::AtomicU64;
 
     use super::*;
+    use crate::connection::Connection;
     use crate::context::keys::{ConsumerGroup, EntryId as EntryIdKey, Position, SeekHandle};
     use crate::context::{StreamBatchContext, StreamContext};
     use fred::clients::Pool;
@@ -338,7 +342,7 @@ mod tests {
     fn delivery(id: &str) -> RedisMessage {
         let pool = offline_pool();
         let seeker = Arc::new(RedisGroupSeeker::new(
-            pool.clone(),
+            Connection::new(pool.clone()),
             "orders",
             "workers",
             Arc::new(AtomicU64::new(0)),

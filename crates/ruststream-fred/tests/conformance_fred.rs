@@ -20,9 +20,10 @@ use std::time::Duration;
 
 use ruststream::conformance::harness::InProcessBroker;
 use ruststream::conformance::{capabilities, harness};
+use ruststream::nonzero;
 use ruststream_fred::{
-    DelayedRetry, RedisBroker, RedisList, RedisListPublish, RedisPubSub, RedisPubSubPublish,
-    RedisStream,
+    DelayedRetry, RedisBroker, RedisList, RedisListPublish, RedisPubSub, RedisPubSubPattern,
+    RedisPubSubPublish, RedisStream,
 };
 
 mod live;
@@ -35,10 +36,19 @@ fn in_process() -> InProcessBroker<RedisBroker> {
     InProcessBroker::new(RedisBroker::standalone(URL))
 }
 
+/// A Pub/Sub subscription with room for the lifecycle's burst: its message-shape step publishes 36
+/// messages before it reads one, more than `fred`'s default buffer of 32 holds.
+fn burst_pubsub(channel: &str) -> RedisPubSub {
+    RedisPubSub::new(channel).buffer(nonzero!(64))
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_process_passes_conformance_suite() {
     // The suite subscribes by bare name, which reads through the broker-wide default group.
-    harness::run_suite(|| RedisBroker::standalone(URL).default_group("conformance")).await;
+    Box::pin(harness::run_suite(|| {
+        RedisBroker::standalone(URL).default_group("conformance")
+    }))
+    .await;
 }
 
 // The in-process legs. Each names the descriptor and the publisher a service would, so the
@@ -79,22 +89,74 @@ async fn in_process_passes_delayed_retry_lifecycle() {
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_process_passes_list_lifecycle() {
-    harness::lifecycle(
+    Box::pin(harness::lifecycle(
         in_process,
         |key| RedisList::new(key).reliable(),
         |connected| connected.list_publisher(RedisListPublish::new()),
-    )
+    ))
     .await;
 }
 
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_process_passes_pubsub_lifecycle() {
-    harness::lifecycle(
+    Box::pin(harness::lifecycle(in_process, burst_pubsub, |connected| {
+        connected.pubsub_publisher(RedisPubSubPublish::new())
+    }))
+    .await;
+}
+
+/// A pattern with room for the lifecycle's burst, matching the suite's channel and no other: the
+/// name holds no glob character.
+fn burst_pattern(channel: &str) -> RedisPubSubPattern {
+    RedisPubSubPattern::new(channel).buffer(nonzero!(64))
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_passes_pattern_lifecycle() {
+    Box::pin(harness::lifecycle(in_process, burst_pattern, |connected| {
+        connected.pubsub_publisher(RedisPubSubPublish::new())
+    }))
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_passes_pattern_batches() {
+    Box::pin(capabilities::batches(
         in_process,
-        |channel| RedisPubSub::new(channel),
+        |channel| RedisPubSubPattern::new(channel),
         |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
-    )
+    ))
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passes_pattern_lifecycle() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    Box::pin(harness::lifecycle(
+        move || RedisBroker::standalone(url.clone()),
+        burst_pattern,
+        |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
+    ))
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passes_pattern_batches() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    Box::pin(capabilities::batches(
+        || RedisBroker::standalone(url.clone()),
+        |channel| RedisPubSubPattern::new(channel),
+        |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
+    ))
     .await;
 }
 
@@ -115,33 +177,33 @@ async fn in_process_addresses_stream_copies() {
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_process_addresses_list_copies() {
-    harness::redelivery_address(
+    Box::pin(harness::redelivery_address(
         in_process,
         |key| RedisList::new(key).reliable(),
         |connected| connected.list_publisher(RedisListPublish::new()),
-    )
+    ))
     .await;
 }
 
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_process_addresses_pubsub_copies() {
-    harness::redelivery_address(
+    Box::pin(harness::redelivery_address(
         in_process,
         |channel| RedisPubSub::new(channel),
         |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
-    )
+    ))
     .await;
 }
 
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_process_passes_batches() {
-    capabilities::batches(
+    Box::pin(capabilities::batches(
         in_process,
         |key| RedisStream::new(key).group("conformance"),
         |connected| connected.publisher(),
-    )
+    ))
     .await;
 }
 
@@ -151,22 +213,22 @@ async fn in_process_passes_batches() {
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_process_passes_pubsub_batches() {
-    capabilities::batches(
+    Box::pin(capabilities::batches(
         in_process,
         |channel| RedisPubSub::new(channel),
         |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
-    )
+    ))
     .await;
 }
 
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_process_passes_list_batches() {
-    capabilities::batches(
+    Box::pin(capabilities::batches(
         in_process,
         |key| RedisList::new(key),
         |connected| connected.list_publisher(RedisListPublish::new()),
-    )
+    ))
     .await;
 }
 
@@ -184,11 +246,11 @@ async fn in_process_passes_transactions() {
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_process_passes_owned_transactions() {
-    capabilities::owned_transactions(
+    Box::pin(capabilities::owned_transactions(
         in_process,
         |key| RedisStream::new(key).group("conformance"),
         |connected| connected.publisher(),
-    )
+    ))
     .await;
 }
 
@@ -215,10 +277,8 @@ async fn passes_lifecycle() {
     let Some(url) = redis_url() else {
         return;
     };
-    // Boxed like the transaction suites: the live subscriber holds its own buffers, so the
-    // ladder's future is too large to keep on the stack.
     Box::pin(harness::lifecycle(
-        || RedisBroker::standalone(url.clone()),
+        move || RedisBroker::standalone(url.clone()),
         |key| RedisStream::new(key).group("conformance"),
         |connected| connected.publisher(),
     ))
@@ -232,14 +292,12 @@ async fn passes_delayed_retry_lifecycle() {
         return;
     };
     Box::pin(harness::lifecycle(
-        || RedisBroker::standalone(url.clone()),
+        move || RedisBroker::standalone(url.clone()),
         delayed,
         |connected| connected.publisher(),
     ))
     .await;
 }
-
-// The live halves of the two extra ladders.
 
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -247,11 +305,11 @@ async fn passes_list_lifecycle() {
     let Some(url) = redis_url() else {
         return;
     };
-    harness::lifecycle(
-        || RedisBroker::standalone(url.clone()),
+    Box::pin(harness::lifecycle(
+        move || RedisBroker::standalone(url.clone()),
         |key| RedisList::new(key).reliable(),
         |connected| connected.list_publisher(RedisListPublish::new()),
-    )
+    ))
     .await;
 }
 
@@ -261,11 +319,11 @@ async fn passes_pubsub_lifecycle() {
     let Some(url) = redis_url() else {
         return;
     };
-    harness::lifecycle(
-        || RedisBroker::standalone(url.clone()),
-        |channel| RedisPubSub::new(channel),
+    Box::pin(harness::lifecycle(
+        move || RedisBroker::standalone(url.clone()),
+        burst_pubsub,
         |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
-    )
+    ))
     .await;
 }
 
@@ -293,11 +351,11 @@ async fn addresses_list_copies() {
     let Some(url) = redis_url() else {
         return;
     };
-    harness::redelivery_address(
+    Box::pin(harness::redelivery_address(
         || RedisBroker::standalone(url.clone()),
         |key| RedisList::new(key).reliable(),
         |connected| connected.list_publisher(RedisListPublish::new()),
-    )
+    ))
     .await;
 }
 
@@ -307,11 +365,11 @@ async fn addresses_pubsub_copies() {
     let Some(url) = redis_url() else {
         return;
     };
-    harness::redelivery_address(
+    Box::pin(harness::redelivery_address(
         || RedisBroker::standalone(url.clone()),
         |channel| RedisPubSub::new(channel),
         |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
-    )
+    ))
     .await;
 }
 
@@ -321,32 +379,42 @@ async fn passes_batches() {
     let Some(url) = redis_url() else {
         return;
     };
-    capabilities::batches(
+    Box::pin(capabilities::batches(
         || RedisBroker::standalone(url.clone()),
         |key| RedisStream::new(key).group("conformance"),
         |connected| connected.publisher(),
-    )
+    ))
     .await;
 }
 
-// The same suite over a transport with no native batches of its own: Pub/Sub assembles its
-// batches on the client, and what it owes is what the stream owes - a batch never longer than the
-// size the subscription opened with, and publish order preserved across batches.
-//
-// The list transport takes the same delegation and is checked the same way by
-// `list_batches_are_capped_at_the_size_they_opened_with` in the integration tests instead: the suite
-// names one fixed subject, and on Redis a list and a stream under one name are the same key.
+// The same suite over the transports with no native batches of their own: Pub/Sub and lists
+// assemble their batches on the client, and what they owe is what the stream owes - a batch never
+// longer than the size the subscription opened with, and publish order preserved across batches.
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn passes_pubsub_batches() {
     let Some(url) = redis_url() else {
         return;
     };
-    capabilities::batches(
+    Box::pin(capabilities::batches(
         || RedisBroker::standalone(url.clone()),
         |channel| RedisPubSub::new(channel),
         |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
-    )
+    ))
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passes_list_batches() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    Box::pin(capabilities::batches(
+        || RedisBroker::standalone(url.clone()),
+        |key| RedisList::new(key),
+        |connected| connected.list_publisher(RedisListPublish::new()),
+    ))
     .await;
 }
 
@@ -374,11 +442,11 @@ async fn passes_owned_transactions() {
     let Some(url) = redis_url() else {
         return;
     };
-    capabilities::owned_transactions(
+    Box::pin(capabilities::owned_transactions(
         || RedisBroker::standalone(url.clone()),
         |key| RedisStream::new(key).group("conformance"),
         |connected| connected.publisher(),
-    )
+    ))
     .await;
 }
 
@@ -391,8 +459,6 @@ async fn passes_seeking() {
     let Some(url) = redis_url() else {
         return;
     };
-    // Boxed: this suite drives the whole subscription state machine, and its future is large
-    // enough that clippy rejects holding it on the stack.
     Box::pin(capabilities::seeking(
         || RedisBroker::standalone(url.clone()),
         |key| {

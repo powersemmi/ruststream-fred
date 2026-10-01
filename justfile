@@ -72,6 +72,8 @@ bench-code *ARGS: brokers-up
     mkdir -p target
     RUSTFLAGS="" REDIS_TEST_URL=redis://127.0.0.1:6379 \
         cargo bench -p ruststream-fred-bench --bench consume --bench reply --bench batch \
+        --bench list --bench pubsub --bench pipeline_stream --bench pipeline_list \
+        --bench pipeline_pubsub --bench pipeline_pattern \
         -- --output-format=json {{ ARGS }} > target/bench-code.json
     python3 scripts/bench_results.py --code target/bench-code.json docs/benchmarks/results.json
 

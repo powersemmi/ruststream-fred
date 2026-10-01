@@ -2,9 +2,10 @@
 //! delivery's round, and they leave with the delivery's `XACK`, in one round trip with the rest of
 //! the window, and only if the delivery is acknowledged.
 //!
-//! The audit entry is a slot publish bound to the round, and the receipt is a reply the `InRound`
-//! transform puts there too. `AtomicStream` in place of `PipelinedStream` makes each delivery's
-//! commands and its acknowledgement one `MULTI` / `EXEC`.
+//! The window opens where the handler is mounted, with `.pipeline()`. The audit entry is a slot
+//! publish bound to the round, and the receipt is a reply the `InRound` transform puts there too.
+//! `.pipeline().atomic()` in place of `.pipeline()` makes each delivery's commands and its
+//! acknowledgement one `MULTI` / `EXEC`.
 //!
 //! Start a Redis server first (`docker run -p 6379:6379 redis:7`), then:
 //!
@@ -39,7 +40,7 @@ struct Receipt {
     id: u64,
 }
 
-#[subscriber(PipelinedStream::new("orders").group("workers"), publish)]
+#[subscriber(RedisStream::new("orders").group("workers"), publish)]
 async fn handle(
     order: &Order,
     Ctx(pipeline): Ctx<keys::Pipeline>,
@@ -69,7 +70,7 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
-            b.include(handle)
+            b.include(handle.pipeline())
                 .out_reply(Publish)
                 .transform(InRound)
                 .out(DefaultSlot, Publish)
