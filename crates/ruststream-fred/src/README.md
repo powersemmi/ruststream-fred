@@ -12,8 +12,8 @@ topology synchronously and does no I/O, so a service fits the synchronous `#[rus
 builder; [`Broker::connect`](ruststream::Broker::connect) yields the [`ConnectedRedisBroker`]
 every subscription and publisher is reached from, and
 [`ConnectedBroker::shutdown`](ruststream::ConnectedBroker::shutdown) yields the terminal
-[`ClosedRedisBroker`]. A publisher that outlives the connection reports
-[`RedisError::ShutDown`] instead of succeeding against a dead pool.
+[`ClosedRedisBroker`]. A publisher, a seeker or a delivery settled after the shutdown gets
+[`RedisError::ShutDown`] at once instead of waiting on a dead pool.
 
 Installation, the transport templates and the list of brokers are on the site:
 <https://powersemmi.github.io/ruststream-fred/>. The framework's own surface (routers, the
@@ -217,6 +217,11 @@ no per-entry one.
 A message reaches whichever subscribers are connected at publish time. There is no durability,
 no consumer group, and no acknowledgement: `ack` and `nack` report `AckError::Unsupported`, and
 a delivery nobody was connected for is gone.
+
+A connected subscription holds what arrives while its handler is busy, up to its buffer: `fred`'s
+default (32 messages in `fred` 10.1) unless [`RedisPubSub::buffer`] sets another. Past it the
+oldest is lost and the subscription logs a warning with the channel and the count. A handler that
+must absorb larger bursts sets a buffer as large as the burst.
 
 Two delivery modes do not interoperate, so [`PubSubMode`] is explicit.
 [`PubSubMode::Classic`] is `SUBSCRIBE` / `PUBLISH`, broadcast to every node of a cluster, and the
@@ -609,8 +614,8 @@ replays towards a declared cap while the framework's own retry-count header does
 
 # Pipelining
 
-A `.pipeline()` subscription settles in a window, and a handler queues its own Redis commands
-into the delivery's segment of that window.
+A subscription mounted with `.pipeline()` settles in a window, and a handler queues its own Redis
+commands into the delivery's segment of that window.
 
 ```
 # mod demo {
@@ -628,7 +633,7 @@ struct Receipt {
     id: u64,
 }
 
-#[subscriber(PipelinedStream::new("orders").group("workers"), publish)]
+#[subscriber(RedisStream::new("orders").group("workers"), publish)]
 async fn record(
     order: &Order,
     Ctx(pipeline): Ctx<keys::Pipeline>,
@@ -646,7 +651,7 @@ fn app() -> impl App {
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
             // The reply joins the delivery's round and leaves after what the handler queued.
-            b.include(record).out_reply(Publish).transform(InRound);
+            b.include(record.pipeline()).out_reply(Publish).transform(InRound);
         },
     )
 }
@@ -654,17 +659,18 @@ fn app() -> impl App {
 # fn main() {}
 ```
 
-`.pipeline()` is a step of [`RedisStream`], [`RedisList`] and [`RedisPubSub`]. The
-`#[subscriber(..)]` attribute reads a descriptor's type off the constructor its chain starts
-from, so the attribute spells a pipelined subscription with [`PipelinedStream`],
-[`PipelinedList`] and [`PipelinedPubSub`], and an atomic one with [`AtomicStream`],
-[`AtomicList`] and [`AtomicPubSub`]. They take the same builder steps as the descriptor, and
-each form's prelude carries its two, with the [`pipeline::InRound`] transform and the
-[`pipeline::Bindable`] bound.
+`.pipeline()` is a step of the mount site, like `.workers(..)` or `.block(..)`: the attribute
+names the descriptor, and the handler is mounted as `record.pipeline()`, or
+`record.pipeline().atomic()`. It applies to a [`RedisStream`], a [`RedisList`], a [`RedisPubSub`]
+and a [`RedisPubSubPattern`] alike, and keeps every setting the descriptor carries. Each form's
+prelude carries the step with [`pipeline::RedisPipelineSteps`], the [`pipeline::InRound`]
+transform and the [`pipeline::Bindable`] bound. A handler that reads `Ctx<keys::Pipeline>` and is
+mounted without `.pipeline()` does not compile; the error is the framework's general one about
+the handler's context not matching the subscription's (`PipelineContext: BuildContext<..>`).
 
 A window flushes in three cases: the read's `COUNT` has settled, nothing is outstanding, or the
 subscription stops. The flush sends every committed segment and then one pipeline of settles on
-a connection of the pool other than the one the reads block on. A stream's settles leave as one
+a connection of the pool, apart from the one the reads block on. A stream's settles leave as one
 `XACK`, and a reliable list's as one `LREM` per entry. Under load that is one round trip per
 fetched batch. On a trickle the window leaves as soon as the last handler of the batch returns.
 
@@ -1077,7 +1083,9 @@ One constructor per topology, all synchronous and free of I/O: [`RedisBroker::st
 a URL, [`RedisBroker::cluster`] a seed list, of which one reachable node is enough,
 [`RedisBroker::sentinel`] the monitored primary's name and the sentinels that watch it, and
 [`RedisBroker::from_pool`] an already-built `fred` `Pool`. [`RedisBroker::pool`] sets how many
-connections the broker opens.
+connections the pool holds for publishes, settlements and handler commands. Each stream and list
+subscription reads on one connection of its own, and each Pub/Sub subscription listens on one,
+so a blocking read never holds up a publish.
 
 [`RedisBroker::credentials`] sets an ACL username and password on every topology, which is the
 only way to authenticate a cluster or sentinel seed list, and it overrides what a standalone URL
@@ -1114,11 +1122,11 @@ password on each `AUTH` or `HELLO`, and it takes precedence over static credenti
 Known limits. A transaction is unavailable on a cluster, because `MULTI` cannot span hash slots,
 and a reliable list needs its two keys under one hash tag there for the same reason.
 A reliable list without a recovery key has no orphan recovery. Pub/Sub loses anything published
-while a subscriber is disconnected, and a simple list loses anything a crashed handler was
-holding. A claiming subscription needs Redis 8.4 or later. For a setting these builders do not
-reach, such as a reconnection policy or performance tuning, build a `fred` `Pool` yourself and
-wrap it with [`RedisBroker::from_pool`]; the broker then reports no host to the generated
-document.
+while a subscriber is disconnected, and the oldest messages once a subscription's buffer
+overflows. A simple list loses anything a crashed handler was holding. A claiming subscription
+needs Redis 8.4 or later. For a setting these builders do not reach, such as a reconnection
+policy or performance tuning, build a `fred` `Pool` yourself and wrap it with
+[`RedisBroker::from_pool`]; the broker then reports no host to the generated document.
 
 # Cargo features
 

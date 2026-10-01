@@ -13,7 +13,6 @@ use std::time::Duration;
 use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::testing::TestApp;
 use ruststream_fred::prelude::*;
-use ruststream_fred::{AtomicList, AtomicStream, PipelinedPubSub, PipelinedStream};
 use serde::{Deserialize, Serialize};
 
 /// The address the service's broker is built with; the in-process mode dials nothing.
@@ -61,7 +60,7 @@ async fn channel_once(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
 
 /// Mounts `handler` alone and checks the round trip of one delayed copy on `name`.
 macro_rules! comes_back_once {
-    ($test:ident, $handler:ident, $name:literal) => {
+    ($test:ident, $handler:expr, $name:literal) => {
         #[tokio::test(start_paused = true)]
         async fn $test() {
             let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
@@ -166,7 +165,7 @@ async fn channel_dead(order: &Order) -> HandlerOutcome {
 /// Mounts `handler` under a cap of two, beside the reader of its dead-letter destination, and
 /// checks the second delivery moves there.
 macro_rules! moves_at_the_cap {
-    ($test:ident, $handler:ident, $name:literal, $reader:ident, $dead:literal) => {
+    ($test:ident, $handler:expr, $name:literal, $reader:ident, $dead:literal) => {
         #[tokio::test(start_paused = true)]
         async fn $test() {
             let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
@@ -311,19 +310,19 @@ async fn a_default_reply_reaches_a_list_this_service_reads() {
 // The same with a window: a retry's settle rides the window, and the copy and the move leave
 // through the form's own publish.
 
-#[subscriber(PipelinedStream::new("orders").group("workers"))]
+#[subscriber(RedisStream::new("orders").group("workers"))]
 async fn windowed_stream_once(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
     let _ = order;
     once(ctx.headers().get(RETRY_COUNT_HEADER).is_some())
 }
 
-#[subscriber(AtomicList::new("jobs").reliable())]
+#[subscriber(RedisList::new("jobs").reliable())]
 async fn atomic_list_once(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
     let _ = order;
     once(ctx.headers().get(RETRY_COUNT_HEADER).is_some())
 }
 
-#[subscriber(PipelinedPubSub::new("events"))]
+#[subscriber(RedisPubSub::new("events"))]
 async fn windowed_channel_once(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
     let _ = order;
     once(ctx.headers().get(RETRY_COUNT_HEADER).is_some())
@@ -331,33 +330,33 @@ async fn windowed_channel_once(order: &Order, ctx: &mut Context<'_>) -> HandlerO
 
 comes_back_once!(
     a_windowed_stream_delivery_comes_back_once,
-    windowed_stream_once,
+    windowed_stream_once.pipeline(),
     "orders"
 );
 comes_back_once!(
     an_atomic_list_delivery_comes_back_once,
-    atomic_list_once,
+    atomic_list_once.pipeline().atomic(),
     "jobs"
 );
 comes_back_once!(
     a_windowed_channel_delivery_comes_back_once,
-    windowed_channel_once,
+    windowed_channel_once.pipeline(),
     "events"
 );
 
-#[subscriber(AtomicStream::new("orders").group("workers"))]
+#[subscriber(RedisStream::new("orders").group("workers"))]
 async fn atomic_stream_never(order: &Order) -> HandlerOutcome {
     let _ = order;
     HandlerOutcome::retry_after(DELAY)
 }
 
-#[subscriber(AtomicList::new("jobs").reliable())]
+#[subscriber(RedisList::new("jobs").reliable())]
 async fn atomic_list_never(order: &Order) -> HandlerOutcome {
     let _ = order;
     HandlerOutcome::retry_after(DELAY)
 }
 
-#[subscriber(PipelinedPubSub::new("events"))]
+#[subscriber(RedisPubSub::new("events"))]
 async fn windowed_channel_never(order: &Order) -> HandlerOutcome {
     let _ = order;
     HandlerOutcome::retry_after(DELAY)
@@ -365,22 +364,138 @@ async fn windowed_channel_never(order: &Order) -> HandlerOutcome {
 
 moves_at_the_cap!(
     an_atomic_stream_moves_at_the_cap,
-    atomic_stream_never,
+    atomic_stream_never.pipeline().atomic(),
     "orders",
     stream_dead,
     "orders.dead"
 );
 moves_at_the_cap!(
     an_atomic_list_moves_at_the_cap,
-    atomic_list_never,
+    atomic_list_never.pipeline().atomic(),
     "jobs",
     reliable_dead,
     "jobs.dead"
 );
 moves_at_the_cap!(
     a_windowed_channel_moves_at_the_cap,
-    windowed_channel_never,
+    windowed_channel_never.pipeline(),
     "events",
     channel_dead,
     "events.dead"
 );
+
+// A pattern names no channel a copy could go to, so its mount site names one. Here that channel
+// matches the pattern, so the copy comes back to the subscription that asked for it.
+
+#[subscriber(RedisPubSubPattern::new("signals.*"))]
+async fn windowed_pattern_once(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
+    let _ = order;
+    once(ctx.headers().get(RETRY_COUNT_HEADER).is_some())
+}
+
+#[subscriber(RedisPubSubPattern::new("signals.*"))]
+async fn atomic_pattern_once(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
+    let _ = order;
+    once(ctx.headers().get(RETRY_COUNT_HEADER).is_some())
+}
+
+/// Mounts `handler` on the `signals.*` pattern with its copies sent to `signals.retry`, and
+/// checks the one delayed copy comes back there.
+macro_rules! pattern_comes_back_once {
+    ($test:ident, $handler:expr) => {
+        #[tokio::test(start_paused = true)]
+        async fn $test() {
+            let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
+                RedisBroker::standalone(URL),
+                |b| {
+                    b.include($handler)
+                        .out_retry(pubsub::Publish::default())
+                        .to("signals.retry");
+                },
+            );
+            let tb = TestApp::start(app).await.expect("start");
+
+            tb.broker::<RedisBroker>()
+                .message(&Order { id: 1 })
+                .to("signals.eu")
+                .publish()
+                .await
+                .expect("publish");
+            tb.broker::<RedisBroker>()
+                .subscriber("signals.*")
+                .assert_called_once()
+                .settled(HandlerOutcome::retry_after(DELAY));
+
+            tb.advance(DELAY).await.expect("advance");
+            tb.broker::<RedisBroker>()
+                .subscriber("signals.*")
+                .assert_called(2)
+                .with(&Order { id: 1 });
+            tb.broker::<RedisBroker>()
+                .published::<Order>("signals.retry")
+                .assert_called_once()
+                .with_header(RETRY_COUNT_HEADER, "1");
+
+            tb.shutdown().await.expect("shutdown");
+        }
+    };
+}
+
+pattern_comes_back_once!(
+    a_windowed_pattern_delivery_comes_back_once,
+    windowed_pattern_once.pipeline()
+);
+pattern_comes_back_once!(
+    an_atomic_pattern_delivery_comes_back_once,
+    atomic_pattern_once.pipeline().atomic()
+);
+
+#[subscriber(RedisPubSubPattern::new("alarms.*"))]
+async fn windowed_pattern_never(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::retry_after(DELAY)
+}
+
+#[subscriber(RedisPubSub::new("dead.alarms"))]
+async fn alarms_dead(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::ack()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_windowed_pattern_moves_at_the_cap() {
+    let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
+        RedisBroker::standalone(URL),
+        |b| {
+            b.include(windowed_pattern_never.pipeline())
+                .max_attempts(nonzero!(2u32))
+                .dead_letter("dead.alarms")
+                .out_retry(pubsub::Publish::default())
+                .to("alarms.retry");
+            b.include(alarms_dead);
+        },
+    );
+    let tb = TestApp::start(app).await.expect("start");
+
+    tb.broker::<RedisBroker>()
+        .message(&Order { id: 2 })
+        .to("alarms.eu")
+        .publish()
+        .await
+        .expect("publish");
+    tb.advance(DELAY).await.expect("advance");
+
+    tb.broker::<RedisBroker>()
+        .subscriber("alarms.*")
+        .assert_called(2);
+    tb.broker::<RedisBroker>()
+        .published::<Order>("dead.alarms")
+        .assert_called_once()
+        .with(&Order { id: 2 })
+        .with_header(RETRY_COUNT_HEADER, "2");
+    tb.broker::<RedisBroker>()
+        .subscriber("dead.alarms")
+        .assert_called_once();
+
+    tb.shutdown().await.expect("shutdown");
+}

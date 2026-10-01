@@ -39,6 +39,7 @@ git clone https://github.com/powersemmi/ruststream-fred.git
 | `just typo`, `just zizmor` | uv | the uv documentation |
 | rendering a scaffold under `templates/` | cargo-generate | `cargo install cargo-generate --locked` |
 | `just bench` | Python 3 | the system package manager |
+| `just bench-code` | valgrind and the benchmark runner | the system package manager, then `cargo install --locked gungraun-runner --version =0.19.4` |
 | the documentation site | Python 3.12 | `pip install -r docs/requirements.txt`, then `properdocs serve` |
 
 ## Checking a change
@@ -60,7 +61,9 @@ core's `main`. `cargo generate --path templates/redis-stream --name smoke` rende
 
 `just bench` measures what this crate and the framework's runtime cost over the raw `fred` client
 on the same stand and rewrites `docs/benchmarks/results.json`. It takes minutes and wants the
-machine to itself.
+machine to itself. `just bench-code` counts what this crate's own code costs per message, in
+instructions and allocations, on the production broker against the same stand, and rewrites the
+code table of the same document.
 
 ## Testing against a local core
 

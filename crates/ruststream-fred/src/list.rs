@@ -45,14 +45,14 @@ use ruststream::{
 };
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
+use crate::connection::{Connection, ReadConnection};
 use crate::envelope::{SharedEnvelope, frame, unframe};
 use crate::loopback::{InFlight, Loopback, Tap};
 use crate::partition::{RedisPublishOptions, resolved_headers};
-use crate::pipeline::{ListForm, Pipelined, RoundMessage, Window};
+use crate::pipeline::{ListForm, RoundMessage, Window};
 use crate::publisher::joins_round;
 use crate::recovery::{self, RecoveryConfig};
 use crate::route::Route;
-use crate::subscriber::other_than;
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
 
 /// This form's publish policy, [`RedisListPublish`], under the mount-site name every form gives
@@ -86,10 +86,10 @@ pub mod prelude {
     // `keys` arrives as the module, not as a glob: its members are short words a service also uses
     // for its own types, and `Ctx<keys::FredPool>` reads as what it is at the use site.
     pub use crate::context::{PipelineContext, PoolContext, keys};
-    pub use crate::pipeline::{AtomicStep, Bindable, InRound};
+    pub use crate::pipeline::{Bindable, InRound, RedisPipelineSteps};
     pub use crate::{
-        AtomicList, PARTITION_KEY_HEADER, PipelinedList, RedisBroker, RedisPublishOptions,
-        RedisPublishSteps, RedisSubscribeExt,
+        PARTITION_KEY_HEADER, RedisBroker, RedisPublishOptions, RedisPublishSteps,
+        RedisSubscribeExt,
     };
 
     #[cfg(any(
@@ -177,27 +177,6 @@ impl RedisList {
             recovery_ttl: None,
             dead_letter: None,
         }
-    }
-
-    /// Opens a window on this subscription: its settles and the commands its handlers queue
-    /// through [`keys::Pipeline`](crate::context::keys::Pipeline) leave together, in one pipeline
-    /// on a connection of the pool.
-    ///
-    /// A pipelined list reads in batches: a reliable list claims with one pipeline of `LMOVE`, a
-    /// simple one pops with `RPOP key count`, and both wait with their blocking pop on an empty
-    /// queue. A reliable list's `LREM` settles ride the window; a simple list settles nothing, so
-    /// its window carries the handlers' commands alone. See [`pipeline`](crate::pipeline).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ruststream_fred::RedisList;
-    ///
-    /// let jobs = RedisList::new("jobs").reliable().pipeline();
-    /// # let _ = jobs;
-    /// ```
-    pub const fn pipeline(self) -> Pipelined<Self> {
-        Pipelined::wrap(self)
     }
 
     /// Switches to reliable (at-least-once) mode: entries move to a processing list and are removed
@@ -440,10 +419,10 @@ impl BatchSubscriber for RedisListSubscriber {
 
 /// The wire side of a list subscription: one blocking pop per delivery.
 pub(crate) struct ListWire {
-    pool: Pool,
-    /// The connection every pop goes out on. A blocking pop holds its connection until it returns,
-    /// so the pops keep to one, and a window flushes on another.
-    reader: Client,
+    connection: Arc<Connection>,
+    /// The connection every pop goes out on, apart from the pool: a blocking pop holds its
+    /// connection until it returns.
+    reader: ReadConnection,
     key: String,
     reliable: bool,
     processing: String,
@@ -470,7 +449,8 @@ impl ListWire {
         reason = "internal constructor mirroring the descriptor"
     )]
     pub(crate) fn new(
-        pool: Pool,
+        connection: Arc<Connection>,
+        reader: ReadConnection,
         key: String,
         reliable: bool,
         processing: String,
@@ -480,8 +460,8 @@ impl ListWire {
         tap: Tap,
     ) -> Self {
         Self {
-            reader: pool.next().clone(),
-            pool,
+            connection,
+            reader,
             key,
             reliable,
             processing,
@@ -498,7 +478,7 @@ impl ListWire {
             payload,
             headers,
             ack: None,
-            pool: self.pool.clone(),
+            connection: Arc::clone(&self.connection),
             flight: self.tap.delivered(),
         }
     }
@@ -508,7 +488,7 @@ impl ListWire {
         RedisListMessage {
             payload,
             headers,
-            pool: self.pool.clone(),
+            connection: Arc::clone(&self.connection),
             ack: Some(ListAck {
                 main_key: self.key.clone(),
                 processing_key: self.processing.clone(),
@@ -527,13 +507,18 @@ impl ListWire {
         // sweep, which then finds what went stale while it waited.
         #[cfg(feature = "testing")]
         self.tap.readable().await;
+        // The read connection is the subscription's own, so the broker's shutdown does not close
+        // it: a read after the shutdown refuses here instead of delivering past it.
+        self.connection.ensure_open()?;
         let secs = block_secs(self.block);
         if self.reliable {
             if let Some(cfg) = &self.recovery {
-                recovery::sweep_orphans(&self.pool, cfg, &self.key, &self.processing).await?;
+                recovery::sweep_orphans(self.connection.pool(), cfg, &self.key, &self.processing)
+                    .await?;
             }
             let value: Option<Vec<u8>> = empty_on_timeout(
                 self.reader
+                    .client()
                     .blmove(
                         self.key.as_str(),
                         self.processing.as_str(),
@@ -548,7 +533,8 @@ impl ListWire {
             };
             let handle = match &self.recovery {
                 Some(cfg) => {
-                    let member = recovery::record_claim(&self.pool, cfg, &value).await?;
+                    let member =
+                        recovery::record_claim(self.connection.pool(), cfg, &value).await?;
                     Some(RecoveryHandle {
                         zset_key: cfg.zset_key.clone(),
                         member,
@@ -559,7 +545,7 @@ impl ListWire {
             Ok(Some(self.reliable_message(value, handle)))
         } else {
             let popped: Option<(String, Vec<u8>)> =
-                empty_on_timeout(self.reader.brpop(self.key.as_str(), secs).await)?;
+                empty_on_timeout(self.reader.client().brpop(self.key.as_str(), secs).await)?;
             Ok(popped.map(|(_, v)| self.simple_message(&v)))
         }
     }
@@ -579,9 +565,9 @@ impl ListWire {
         )
     }
 
-    /// The window's client: a connection of the pool the flushes go out on.
+    /// The window's client: a connection of the pool, where no pop blocks.
     pub(crate) fn round_client(&self) -> Client {
-        other_than(&self.pool, &self.reader)
+        self.connection.pool().next().clone()
     }
 
     /// The key this subscription reads.
@@ -596,12 +582,16 @@ impl ListWire {
     /// `RPOP key count` and waits with `BRPOP`. Both read the right end, the end a producer's
     /// `LPUSH` makes the oldest.
     async fn claim(&self, count: usize, into: &mut VecDeque<Claimed>) -> Result<(), RedisError> {
+        // The read connection is the subscription's own, so the broker's shutdown does not close
+        // it: a read after the shutdown refuses here instead of delivering past it.
+        self.connection.ensure_open()?;
         let before = into.len();
         if self.reliable {
             if let Some(cfg) = &self.recovery {
-                recovery::sweep_orphans(&self.pool, cfg, &self.key, &self.processing).await?;
+                recovery::sweep_orphans(self.connection.pool(), cfg, &self.key, &self.processing)
+                    .await?;
             }
-            let claims = self.reader.pipeline();
+            let claims = self.reader.client().pipeline();
             for _ in 0..count {
                 claims
                     .lmove::<(), _, _>(
@@ -625,6 +615,7 @@ impl ListWire {
         } else {
             let popped: Value = self
                 .reader
+                .client()
                 .rpop(self.key.as_str(), Some(count))
                 .await
                 .map_err(RedisError::stream)?;
@@ -653,6 +644,7 @@ impl ListWire {
         if self.reliable {
             empty_on_timeout(
                 self.reader
+                    .client()
                     .blmove(
                         self.key.as_str(),
                         self.processing.as_str(),
@@ -664,7 +656,7 @@ impl ListWire {
             )
         } else {
             let popped: Option<(String, Vec<u8>)> =
-                empty_on_timeout(self.reader.brpop(self.key.as_str(), secs).await)?;
+                empty_on_timeout(self.reader.client().brpop(self.key.as_str(), secs).await)?;
             Ok(popped.map(|(_, value)| value))
         }
     }
@@ -677,7 +669,7 @@ impl ListWire {
         let Some(cfg) = &self.recovery else {
             return Ok(());
         };
-        let tracking = self.pool.next().pipeline();
+        let tracking = self.connection.pool().next().pipeline();
         let mut any = false;
         for (value, handle) in claimed {
             let (score, member) = cfg.tracked(value);
@@ -870,7 +862,7 @@ pub struct RedisListMessage {
     ack: Option<ListAck>,
     /// The connection the entry was read on: what settles it, and what `Ctx<keys::FredPool>`
     /// hands the handler.
-    pool: Pool,
+    connection: Arc<Connection>,
     /// The test harness's count of this delivery; empty outside the in-process mode.
     #[cfg_attr(
         not(feature = "testing"),
@@ -884,8 +876,8 @@ pub struct RedisListMessage {
 
 impl RedisListMessage {
     /// The broker's connection pool, for the per-delivery context.
-    pub(crate) const fn pool(&self) -> &Pool {
-        &self.pool
+    pub(crate) fn pool(&self) -> &Pool {
+        self.connection.pool()
     }
 
     /// Takes the harness's count of this delivery, for a window to hold until its flush.
@@ -929,19 +921,22 @@ impl IncomingMessage for RedisListMessage {
         let Some(handle) = self.ack else {
             return Err(AckError::Unsupported);
         };
-        settle(&self.pool, &handle).await
+        self.connection.ensure_open_to_settle()?;
+        settle(self.connection.pool(), &handle).await
     }
 
     async fn nack(self, requeue: bool) -> Result<(), AckError> {
         let Some(handle) = self.ack else {
             return Err(AckError::Unsupported);
         };
+        self.connection.ensure_open_to_settle()?;
+        let pool = self.connection.pool();
         if requeue {
             // Return the original entry verbatim to the main list, before removing it from
             // processing (a crash in between leaves a duplicate rather than a loss).
-            lpush(&self.pool, handle.main_key.as_str(), handle.value.clone()).await?;
+            lpush(pool, handle.main_key.as_str(), handle.value.clone()).await?;
         }
-        settle(&self.pool, &handle).await
+        settle(pool, &handle).await
     }
 }
 

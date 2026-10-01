@@ -22,7 +22,7 @@ ruststream-fred = { path = "crates/ruststream-fred" }
 # range that does not mention one, so `>=0.7.0` would refuse the published `0.7.0-rc.10` candidate.
 # This form admits the candidate now and the final 0.7.0 when it lands. The floor names rc.10
 # because that is the core line this crate is built and tested against.
-ruststream = { version = ">=0.7.0-rc.10, <0.8.0", default-features = false }
+ruststream = { version = ">=0.7.0-rc.11, <0.8.0", default-features = false }
 
 fred = "10"
 bytes = "1"

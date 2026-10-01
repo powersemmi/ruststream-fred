@@ -22,8 +22,10 @@ use fred::types::config::Options;
 use fred::types::{ClusterHash, CustomCommand, Value};
 use futures::future::join_all;
 use ruststream::{AckError, IncomingMessage};
+use tokio::runtime::Handle;
 
 use super::{Rounds, pipeline_on};
+use crate::connection::Connection;
 use crate::error::RedisError;
 #[cfg(feature = "testing")]
 use crate::loopback::InFlight;
@@ -421,6 +423,11 @@ pub(crate) struct Window<F: Form> {
     /// The subscription, named in a flush failure.
     name: Arc<str>,
     owed: Mutex<Owed<F::Op>>,
+    /// The broker's runtime, where a flush no caller can wait for is sent.
+    runtime: Handle,
+    /// The broker's connection with its shutdown flag: a settlement after the shutdown errors
+    /// instead of joining a window no flush will ever send.
+    connection: Arc<Connection>,
 }
 
 impl<F: Form> Debug for Window<F> {
@@ -437,15 +444,28 @@ struct Flush<Op> {
     ops: Vec<Op>,
 }
 
+/// What a window takes from the broker it opens on: the registry of rounds, the runtime a flush
+/// nobody waits for runs on, and the connection whose shutdown ends the window's settlements.
+pub(crate) struct Owner {
+    pub(crate) rounds: Arc<Rounds>,
+    pub(crate) runtime: Handle,
+    pub(crate) connection: Arc<Connection>,
+}
+
 impl<F: Form> Window<F> {
     pub(crate) fn new(
         form: F,
         client: Client,
-        rounds: Arc<Rounds>,
         atomic: bool,
         name: impl Into<Arc<str>>,
         capacity: usize,
+        owner: Owner,
     ) -> Self {
+        let Owner {
+            rounds,
+            runtime,
+            connection,
+        } = owner;
         let name = name.into();
         let hash_slot = fred::util::redis_keyslot(name.as_bytes());
         Self {
@@ -473,6 +493,8 @@ impl<F: Form> Window<F> {
                 #[cfg(feature = "testing")]
                 flushing: 0,
             }),
+            runtime,
+            connection,
         }
     }
 
@@ -532,6 +554,7 @@ impl<F: Form> Window<F> {
         commit: bool,
         settle: impl FnOnce(&F, &mut Vec<F::Op>) -> Result<(), AckError>,
     ) -> Result<(), AckError> {
+        self.connection.ensure_open_to_settle()?;
         let closed = self.segments.close(round.slot, commit);
         if closed.is_some() {
             self.segments.rounds.leave(round);
@@ -628,18 +651,19 @@ impl<F: Form> Window<F> {
         let due = pending && owed.outstanding == 0 && owed.waiting == 0;
         let flush = due.then(|| Self::take(owed));
         drop(guard);
-        // A destructor cannot wait: the flush runs on the runtime, and where there is none it
-        // runs when the subscription stops. A flush sent releases the held counts once it lands.
-        if let Some(flush) = flush {
-            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        // A destructor cannot wait: the flush runs on the broker's runtime, which outlives the
+        // runtime of whoever dropped the delivery. A flush sent releases the held counts once it
+        // lands.
+        match flush {
+            Some(flush) => {
                 let window = Arc::clone(self);
-                runtime.spawn(async move { window.send(flush).await });
-                return;
+                self.runtime.spawn(async move { window.send(flush).await });
             }
-            self.give_back_owed(flush);
+            #[cfg(feature = "testing")]
+            None => self.release_if_sent(),
+            #[cfg(not(feature = "testing"))]
+            None => {}
         }
-        #[cfg(feature = "testing")]
-        self.release_if_sent();
     }
 
     /// Holds the harness's count of a delivery settling into the window.
@@ -668,17 +692,9 @@ impl<F: Form> Window<F> {
         drop(released);
     }
 
-    /// Puts a flush that could not be sent back into what the window owes.
-    fn give_back_owed(&self, mut flush: Flush<F::Op>) {
-        let mut owed = self.owed();
-        #[cfg(feature = "testing")]
-        {
-            owed.flushing -= 1;
-        }
-        flush.committed.append(&mut owed.committed);
-        flush.ops.append(&mut owed.ops);
-        owed.committed = flush.committed;
-        owed.ops = flush.ops;
+    /// Runs `task` on the broker's runtime, for work a destructor starts and cannot wait for.
+    pub(crate) fn spawn(&self, task: impl Future<Output = ()> + Send + 'static) {
+        self.runtime.spawn(task);
     }
 
     /// Takes what the window owes, for a flush on stop.
@@ -770,7 +786,7 @@ impl<F: Form> Window<F> {
 
 #[cfg(test)]
 mod tests {
-    use fred::clients::Client;
+    use fred::clients::{Client, Pool};
     use ruststream::AckError;
 
     use super::*;
@@ -780,10 +796,16 @@ mod tests {
         Arc::new(Window::new(
             PubSubForm,
             Client::default(),
-            Arc::new(Rounds::default()),
             false,
             "orders",
             8,
+            Owner {
+                rounds: Arc::new(Rounds::default()),
+                runtime: Handle::current(),
+                connection: Connection::new(
+                    Pool::from_clients(vec![Client::default()]).expect("a pool of one"),
+                ),
+            },
         ))
     }
 

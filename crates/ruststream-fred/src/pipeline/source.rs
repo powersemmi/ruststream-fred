@@ -1,7 +1,7 @@
-//! What a `.pipeline()` descriptor opens: the form's own subscription, with a window.
+//! What a `.pipeline()` subscription opens: the form's own subscription, with a window.
 
 use std::fmt::{Debug, Formatter};
-use std::future::{Future, ready};
+use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -9,8 +9,8 @@ use futures::Stream;
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::Bindings;
 use ruststream::{
-    AddressedCopies, BatchSubscriber, RedeliveryAddress, RedeliveryAddressed, RetryDeclaration,
-    Seekable, Subscriber, SubscriptionSource,
+    AddressedCopies, BatchSubscriber, NamedCopies, RedeliveryAddress, RedeliveryAddressed,
+    RetryDeclaration, Seekable, Subscriber, SubscriptionSource,
 };
 
 use super::forms::{ListForm, PubSubForm, StreamForm};
@@ -19,7 +19,7 @@ use super::{Pipelined, RoundMessage, WindowMode};
 use crate::broker::ConnectedRedisBroker;
 use crate::error::RedisError;
 use crate::list::{ListReader, RedisList};
-use crate::pubsub::{PubSubWire, RedisPubSub};
+use crate::pubsub::{PubSubWire, RedisPubSub, RedisPubSubPattern};
 use crate::seek::RedisGroupSeeker;
 use crate::stream::RedisStream;
 use crate::subscriber::{PREFETCH, RedisSubscriber};
@@ -57,11 +57,9 @@ impl<Inner, F: Form> PipelinedSubscriber<Inner, F> {
 impl<Inner, F: Form> Drop for PipelinedSubscriber<Inner, F> {
     fn drop(&mut self) {
         // A subscription stops by being dropped, and a destructor cannot wait: the flush of what
-        // the window still owes runs on the runtime, and where there is none it cannot run at all.
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            let window = Arc::clone(&self.window);
-            runtime.spawn(async move { window.drain().await });
-        }
+        // the window still owes runs on the broker's runtime, wherever the drop happens.
+        let window = Arc::clone(&self.window);
+        self.window.spawn(async move { window.drain().await });
     }
 }
 
@@ -229,10 +227,10 @@ impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker> for Pipelined<Re
         let window = Window::new(
             inner.round_form(),
             inner.round_client(),
-            Arc::clone(connected.rounds()),
             Mode::ATOMIC,
             inner.key(),
             prefetch(),
+            connected.window_owner()?,
         );
         Ok(PipelinedSubscriber::new(inner, window))
     }
@@ -255,12 +253,51 @@ impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker> for Pipelined<Re
         let window = Window::new(
             PubSubForm,
             inner.round_client(),
-            Arc::clone(connected.rounds()),
             Mode::ATOMIC,
             channel,
             prefetch(),
+            connected.window_owner()?,
         );
         Ok(PipelinedSubscriber::new(ChannelReader(inner), window))
+    }
+}
+
+/// A pattern reads every channel its glob matches and names none a publish could reach, so the
+/// mount site names where a retry copy goes, as on the pattern subscription without a window.
+impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker>
+    for Pipelined<RedisPubSubPattern, Mode>
+{
+    type Subscriber = PipelinedSubscriber<ChannelReader, PubSubForm>;
+    type Copies = NamedCopies;
+
+    fn name(&self) -> &str {
+        self.descriptor().pattern()
+    }
+
+    async fn subscribe(
+        self,
+        connected: &ConnectedRedisBroker,
+    ) -> Result<Self::Subscriber, RedisError> {
+        let pattern = self.descriptor().pattern().to_owned();
+        let inner = connected
+            .open_pubsub_pattern(self.into_descriptor())
+            .await?;
+        // Pub/Sub reads one message at a time, as on a channel: the window leaves when nothing
+        // is in flight.
+        let window = Window::new(
+            PubSubForm,
+            inner.round_client(),
+            Mode::ATOMIC,
+            pattern,
+            prefetch(),
+            connected.window_owner()?,
+        );
+        Ok(PipelinedSubscriber::new(ChannelReader(inner), window))
+    }
+
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        SubscriptionSource::<ConnectedRedisBroker>::channel_bindings(self.descriptor())
     }
 }
 
@@ -270,22 +307,20 @@ impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker> for Pipelined<Re
 
     delegates!(ConnectedRedisBroker, key);
 
-    // Opening a list issues no command, so there is nothing to suspend on.
-    fn subscribe(
+    async fn subscribe(
         self,
         connected: &ConnectedRedisBroker,
-    ) -> impl Future<Output = Result<Self::Subscriber, RedisError>> {
-        ready(connected.open_list(self.into_descriptor()).map(|wire| {
-            let window = Window::new(
-                wire.round_form(),
-                wire.round_client(),
-                Arc::clone(connected.rounds()),
-                Mode::ATOMIC,
-                wire.key(),
-                prefetch(),
-            );
-            PipelinedSubscriber::new(ListReader::new(wire), window)
-        }))
+    ) -> Result<Self::Subscriber, RedisError> {
+        let wire = connected.open_list(self.into_descriptor()).await?;
+        let window = Window::new(
+            wire.round_form(),
+            wire.round_client(),
+            Mode::ATOMIC,
+            wire.key(),
+            prefetch(),
+            connected.window_owner()?,
+        );
+        Ok(PipelinedSubscriber::new(ListReader::new(wire), window))
     }
 }
 
