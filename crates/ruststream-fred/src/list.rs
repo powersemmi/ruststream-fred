@@ -49,7 +49,7 @@ use crate::connection::{Connection, ReadConnection};
 use crate::envelope::{SharedEnvelope, frame, unframe};
 use crate::loopback::{InFlight, Loopback, Tap};
 use crate::partition::{RedisPublishOptions, resolved_headers};
-use crate::pipeline::{ListForm, Pipelined, RoundMessage, Window};
+use crate::pipeline::{ListForm, RoundMessage, Window};
 use crate::publisher::joins_round;
 use crate::recovery::{self, RecoveryConfig};
 use crate::route::Route;
@@ -86,10 +86,10 @@ pub mod prelude {
     // `keys` arrives as the module, not as a glob: its members are short words a service also uses
     // for its own types, and `Ctx<keys::FredPool>` reads as what it is at the use site.
     pub use crate::context::{PipelineContext, PoolContext, keys};
-    pub use crate::pipeline::{AtomicStep, Bindable, InRound};
+    pub use crate::pipeline::{Bindable, InRound, RedisPipelineSteps};
     pub use crate::{
-        AtomicList, PARTITION_KEY_HEADER, PipelinedList, RedisBroker, RedisPublishOptions,
-        RedisPublishSteps, RedisSubscribeExt,
+        PARTITION_KEY_HEADER, RedisBroker, RedisPublishOptions, RedisPublishSteps,
+        RedisSubscribeExt,
     };
 
     #[cfg(any(
@@ -177,27 +177,6 @@ impl RedisList {
             recovery_ttl: None,
             dead_letter: None,
         }
-    }
-
-    /// Opens a window on this subscription: its settles and the commands its handlers queue
-    /// through [`keys::Pipeline`](crate::context::keys::Pipeline) leave together, in one pipeline
-    /// on a connection of the pool.
-    ///
-    /// A pipelined list reads in batches: a reliable list claims with one pipeline of `LMOVE`, a
-    /// simple one pops with `RPOP key count`, and both wait with their blocking pop on an empty
-    /// queue. A reliable list's `LREM` settles ride the window; a simple list settles nothing, so
-    /// its window carries the handlers' commands alone. See [`pipeline`](crate::pipeline).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ruststream_fred::RedisList;
-    ///
-    /// let jobs = RedisList::new("jobs").reliable().pipeline();
-    /// # let _ = jobs;
-    /// ```
-    pub const fn pipeline(self) -> Pipelined<Self> {
-        Pipelined::wrap(self)
     }
 
     /// Switches to reliable (at-least-once) mode: entries move to a processing list and are removed
