@@ -5,10 +5,14 @@
 mod asyncapi;
 mod broker;
 mod claim;
+mod connection;
 mod convert;
 mod delay;
 mod envelope;
 mod error;
+#[cfg(feature = "testing")]
+mod in_process;
+mod loopback;
 mod message;
 mod partition;
 mod publisher;
@@ -40,7 +44,8 @@ pub use list::{
 pub use message::{DELIVERY_COUNT_HEADER, IDLE_MS_HEADER, PARTITION_KEY_HEADER, RedisMessage};
 pub use partition::{RedisPublishOptions, RedisPublishSteps};
 pub use pipeline::{
-    AtomicList, AtomicPubSub, AtomicStream, PipelinedList, PipelinedPubSub, PipelinedStream,
+    RedisListAtomic, RedisListPipeline, RedisPubSubAtomic, RedisPubSubPatternAtomic,
+    RedisPubSubPatternPipeline, RedisPubSubPipeline, RedisStreamAtomic, RedisStreamPipeline,
 };
 pub use publisher::{
     RedisDefaultPublish, RedisDefaultPublisher, RedisPublish, RedisPublisher, RedisTransaction,
@@ -64,6 +69,3 @@ pub use fred::types::config::CredentialProvider;
     feature = "tls-native-tls"
 ))]
 pub use fred::types::config::{TlsConfig, TlsConnector};
-
-#[cfg(feature = "testing")]
-pub mod testing;

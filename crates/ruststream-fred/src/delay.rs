@@ -31,6 +31,7 @@ use ruststream::{AckError, HeaderMap};
 use crate::convert::fields_for_publish;
 use crate::envelope::{frame, unframe};
 use crate::error::RedisError;
+use crate::loopback::Loopback;
 
 /// How many due entries one sweep pass claims and re-publishes before yielding back to the read
 /// loop. Bounds the work a single fetch does so a large backlog cannot stall fresh delivery.
@@ -74,6 +75,8 @@ pub enum DelayedRetry {
 pub(crate) struct DelayConfig {
     zset_key: String,
     ttl: Option<Duration>,
+    /// The connection the queue lives on, whose clock the scores are read off in process.
+    loopback: Loopback,
 }
 
 impl DelayConfig {
@@ -82,12 +85,37 @@ impl DelayConfig {
             DelayedRetry::DurableZset { key, ttl } => Self {
                 zset_key: key.clone(),
                 ttl: *ttl,
+                loopback: Loopback::default(),
             },
+        }
+    }
+
+    /// The same queue on the connection `loopback` names.
+    pub(crate) fn on(mut self, loopback: &Loopback) -> Self {
+        self.loopback.clone_from(loopback);
+        self
+    }
+
+    /// The wall clock the scores are written and swept against, in epoch milliseconds: the
+    /// system's, or in process the in-process server's.
+    fn now_ms(&self) -> u64 {
+        #[cfg(feature = "testing")]
+        {
+            self.loopback.now_ms()
+        }
+        #[cfg(not(feature = "testing"))]
+        {
+            let _ = &self.loopback;
+            now_ms()
         }
     }
 }
 
 /// Current wall-clock time as epoch milliseconds (the ZSET score space).
+#[cfg_attr(
+    feature = "testing",
+    allow(dead_code, reason = "the loopback reads the clock under `testing`")
+)]
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -135,8 +163,8 @@ fn decode_member(member: &[u8]) -> Option<(Bytes, HeaderMap)> {
 }
 
 /// The framework retry count a re-published copy carries next: the one on the delivery, plus this
-/// round. Shared with the in-process stand-in, so a delay queue raises the same count there.
-pub(crate) fn next_retry_count(headers: &HeaderMap) -> u64 {
+/// round.
+fn next_retry_count(headers: &HeaderMap) -> u64 {
     headers
         .get_str(RETRY_COUNT_HEADER)
         .and_then(|v| v.parse::<u64>().ok())
@@ -146,23 +174,6 @@ pub(crate) fn next_retry_count(headers: &HeaderMap) -> u64 {
 
 fn broker_err(err: fred::error::Error) -> AckError {
     AckError::Broker(Box::new(err))
-}
-
-/// `ZADD`s a delayed copy of the message (retry count incremented) at `now + delay`, refreshing the
-/// optional key TTL. The caller `XACK`s the original afterwards, so a crash in between leaves the
-/// scheduled copy (a duplicate) rather than losing the message.
-/// The `ZADD` a delayed redelivery owes: the score it is due at and the member that carries it,
-/// with the retry-count header raised.
-pub(crate) fn scheduled(
-    id: &str,
-    payload: &[u8],
-    headers: &HeaderMap,
-    delay: Duration,
-) -> (f64, Vec<u8>) {
-    let fire_at = now_ms().saturating_add(delay_millis(delay));
-    let mut next = headers.clone();
-    next.insert(RETRY_COUNT_HEADER, next_retry_count(headers).to_string());
-    (as_score(fire_at), encode_member(id, payload, &next))
 }
 
 impl DelayConfig {
@@ -175,83 +186,92 @@ impl DelayConfig {
     pub(crate) fn ttl_millis(&self) -> Option<i64> {
         self.ttl.map(ttl_millis)
     }
-}
 
-pub(crate) async fn schedule(
-    pool: &Pool,
-    cfg: &DelayConfig,
-    id: &str,
-    payload: &[u8],
-    headers: &HeaderMap,
-    delay: Duration,
-) -> Result<(), AckError> {
-    let fire_at = now_ms().saturating_add(delay_millis(delay));
+    /// The `ZADD` a delayed redelivery owes: the score it is due at and the member that carries
+    /// it, with the retry-count header raised.
+    pub(crate) fn scheduled(
+        &self,
+        id: &str,
+        payload: &[u8],
+        headers: &HeaderMap,
+        delay: Duration,
+    ) -> (f64, Vec<u8>) {
+        let fire_at = self.now_ms().saturating_add(delay_millis(delay));
+        let mut next = headers.clone();
+        next.insert(RETRY_COUNT_HEADER, next_retry_count(headers).to_string());
+        (as_score(fire_at), encode_member(id, payload, &next))
+    }
 
-    let mut next = headers.clone();
-    next.insert(RETRY_COUNT_HEADER, next_retry_count(headers).to_string());
-    let member = encode_member(id, payload, &next);
-
-    let _: i64 = pool
-        .zadd(
-            cfg.zset_key.as_str(),
-            None,
-            None,
-            false,
-            false,
-            (as_score(fire_at), member),
-        )
-        .await
-        .map_err(broker_err)?;
-    if let Some(ttl) = cfg.ttl {
+    /// `ZADD`s a delayed copy of the message (retry count incremented) at `now + delay`,
+    /// refreshing the optional key TTL. The caller `XACK`s the original afterwards, so a crash in
+    /// between leaves the scheduled copy (a duplicate) rather than losing the message.
+    pub(crate) async fn schedule(
+        &self,
+        pool: &Pool,
+        id: &str,
+        payload: &[u8],
+        headers: &HeaderMap,
+        delay: Duration,
+    ) -> Result<(), AckError> {
+        let (score, member) = self.scheduled(id, payload, headers, delay);
         let _: i64 = pool
-            .pexpire(cfg.zset_key.as_str(), ttl_millis(ttl), None)
+            .zadd(
+                self.zset_key.as_str(),
+                None,
+                None,
+                false,
+                false,
+                (score, member),
+            )
             .await
             .map_err(broker_err)?;
-    }
-    Ok(())
-}
-
-/// Moves entries whose `fire_at` has passed from the delay ZSET back onto `stream_key`.
-///
-/// Each due member is claimed with `ZREM`: only the consumer whose `ZREM` removes it (returns 1)
-/// re-`XADD`s it, so concurrent sweepers never double-publish. Bounded to [`SWEEP_BATCH`] entries
-/// per pass.
-pub(crate) async fn sweep_due(
-    pool: &Pool,
-    cfg: &DelayConfig,
-    stream_key: &str,
-) -> Result<(), RedisError> {
-    let now = as_score(now_ms());
-    let due: Vec<Bytes> = pool
-        .zrangebyscore(
-            cfg.zset_key.as_str(),
-            0.0,
-            now,
-            false,
-            Some((0, SWEEP_BATCH)),
-        )
-        .await
-        .map_err(RedisError::stream)?;
-
-    for member in due {
-        let removed: i64 = pool
-            .zrem(cfg.zset_key.as_str(), member.clone())
-            .await
-            .map_err(RedisError::stream)?;
-        // Another sweeper already claimed and re-published this entry.
-        if removed != 1 {
-            continue;
+        if let Some(ttl) = self.ttl {
+            let _: i64 = pool
+                .pexpire(self.zset_key.as_str(), ttl_millis(ttl), None)
+                .await
+                .map_err(broker_err)?;
         }
-        let Some((payload, headers)) = decode_member(&member) else {
-            continue;
-        };
-        let fields = fields_for_publish(payload.to_vec(), &headers);
-        let _: String = pool
-            .xadd(stream_key, false, None::<()>, "*", fields)
+        Ok(())
+    }
+
+    /// Moves entries whose `fire_at` has passed from the delay ZSET back onto `stream_key`.
+    ///
+    /// Each due member is claimed with `ZREM`: only the consumer whose `ZREM` removes it re-`XADD`s
+    /// it, so concurrent sweepers never double-publish. Bounded to [`SWEEP_BATCH`] entries per
+    /// pass.
+    pub(crate) async fn sweep_due(&self, pool: &Pool, stream_key: &str) -> Result<(), RedisError> {
+        let now = as_score(self.now_ms());
+        let due: Vec<Bytes> = pool
+            .zrangebyscore(
+                self.zset_key.as_str(),
+                0.0,
+                now,
+                false,
+                Some((0, SWEEP_BATCH)),
+            )
             .await
             .map_err(RedisError::stream)?;
+
+        for member in due {
+            let removed: i64 = pool
+                .zrem(self.zset_key.as_str(), member.clone())
+                .await
+                .map_err(RedisError::stream)?;
+            // Another sweeper already claimed and re-published this entry.
+            if removed != 1 {
+                continue;
+            }
+            let Some((payload, headers)) = decode_member(&member) else {
+                continue;
+            };
+            let fields = fields_for_publish(payload.to_vec(), &headers);
+            let _: String = pool
+                .xadd(stream_key, false, None::<()>, "*", fields)
+                .await
+                .map_err(RedisError::stream)?;
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 #[cfg(test)]

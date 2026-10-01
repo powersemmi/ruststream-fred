@@ -31,11 +31,10 @@ pub use crate::context::{
     PipelineContext, PoolContext, PubSubContext, StreamBatchContext, StreamContext, keys,
 };
 
-pub use crate::pipeline::{AtomicStep, Bindable, InRound};
+pub use crate::pipeline::{Bindable, InRound, RedisPipelineSteps};
 
 pub use crate::{
-    AtomicList, AtomicPubSub, AtomicStream, DelayedRetry, PARTITION_KEY_HEADER, PipelinedList,
-    PipelinedPubSub, PipelinedStream, PubSubMode, RedisBroker, RedisGroupPosition,
+    DelayedRetry, PARTITION_KEY_HEADER, PubSubMode, RedisBroker, RedisGroupPosition,
     RedisGroupSeeker, RedisList, RedisListPublish, RedisPubSub, RedisPubSubPattern,
     RedisPubSubPublish, RedisPublish, RedisPublishOptions, RedisPublishSteps, RedisStream,
     RedisSubscribeExt, StreamStart,

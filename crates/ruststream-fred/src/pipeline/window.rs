@@ -22,9 +22,13 @@ use fred::types::config::Options;
 use fred::types::{ClusterHash, CustomCommand, Value};
 use futures::future::join_all;
 use ruststream::{AckError, IncomingMessage};
+use tokio::runtime::Handle;
 
 use super::{Rounds, pipeline_on};
+use crate::connection::Connection;
 use crate::error::RedisError;
+#[cfg(feature = "testing")]
+use crate::loopback::InFlight;
 
 /// One delivery's buffer: a `fred` pipeline, pinned to the subscription's slot and opened with
 /// `MULTI` under `.atomic()`.
@@ -295,6 +299,10 @@ pub trait Form: Send + Sync + 'static {
     type Message: IncomingMessage + Send + Sync + 'static;
     /// The broker's connection pool, which a delivery's context hands out.
     fn pool(msg: &Self::Message) -> &fred::clients::Pool;
+    /// Takes the test harness's count of the delivery, which the window holds until the flush
+    /// that carries its settle.
+    #[cfg(feature = "testing")]
+    fn take_flight(msg: &mut Self::Message) -> InFlight;
     /// One settle command, owed until the window flushes.
     type Op: Send + 'static;
 
@@ -398,6 +406,14 @@ struct Owed<Op> {
     staged: Vec<Vec<Op>>,
     /// A flush that failed, reported once on the delivery stream.
     failure: Option<RedisError>,
+    /// The harness's counts of the deliveries settled into the window, released once everything
+    /// the window owed has been sent.
+    #[cfg(feature = "testing")]
+    held: Vec<InFlight>,
+    /// Flushes taken out of the window and not sent yet: what they carry is owed all the same,
+    /// so the held counts wait for them.
+    #[cfg(feature = "testing")]
+    flushing: usize,
 }
 
 /// The window of one pipelined subscription.
@@ -407,6 +423,11 @@ pub(crate) struct Window<F: Form> {
     /// The subscription, named in a flush failure.
     name: Arc<str>,
     owed: Mutex<Owed<F::Op>>,
+    /// The broker's runtime, where a flush no caller can wait for is sent.
+    runtime: Handle,
+    /// The broker's connection with its shutdown flag: a settlement after the shutdown errors
+    /// instead of joining a window no flush will ever send.
+    connection: Arc<Connection>,
 }
 
 impl<F: Form> Debug for Window<F> {
@@ -423,15 +444,28 @@ struct Flush<Op> {
     ops: Vec<Op>,
 }
 
+/// What a window takes from the broker it opens on: the registry of rounds, the runtime a flush
+/// nobody waits for runs on, and the connection whose shutdown ends the window's settlements.
+pub(crate) struct Owner {
+    pub(crate) rounds: Arc<Rounds>,
+    pub(crate) runtime: Handle,
+    pub(crate) connection: Arc<Connection>,
+}
+
 impl<F: Form> Window<F> {
     pub(crate) fn new(
         form: F,
         client: Client,
-        rounds: Arc<Rounds>,
         atomic: bool,
         name: impl Into<Arc<str>>,
         capacity: usize,
+        owner: Owner,
     ) -> Self {
+        let Owner {
+            rounds,
+            runtime,
+            connection,
+        } = owner;
         let name = name.into();
         let hash_slot = fred::util::redis_keyslot(name.as_bytes());
         Self {
@@ -454,7 +488,13 @@ impl<F: Form> Window<F> {
                 scratch: Vec::new(),
                 staged: Vec::new(),
                 failure: None,
+                #[cfg(feature = "testing")]
+                held: Vec::new(),
+                #[cfg(feature = "testing")]
+                flushing: 0,
             }),
+            runtime,
+            connection,
         }
     }
 
@@ -514,6 +554,7 @@ impl<F: Form> Window<F> {
         commit: bool,
         settle: impl FnOnce(&F, &mut Vec<F::Op>) -> Result<(), AckError>,
     ) -> Result<(), AckError> {
+        self.connection.ensure_open_to_settle()?;
         let closed = self.segments.close(round.slot, commit);
         if closed.is_some() {
             self.segments.rounds.leave(round);
@@ -610,25 +651,50 @@ impl<F: Form> Window<F> {
         let due = pending && owed.outstanding == 0 && owed.waiting == 0;
         let flush = due.then(|| Self::take(owed));
         drop(guard);
-        // A destructor cannot wait: the flush runs on the runtime, and where there is none it
-        // runs when the subscription stops.
-        if let Some(flush) = flush {
-            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        // A destructor cannot wait: the flush runs on the broker's runtime, which outlives the
+        // runtime of whoever dropped the delivery. A flush sent releases the held counts once it
+        // lands.
+        match flush {
+            Some(flush) => {
                 let window = Arc::clone(self);
-                runtime.spawn(async move { window.send(flush).await });
-            } else {
-                self.give_back_owed(flush);
+                self.runtime.spawn(async move { window.send(flush).await });
             }
+            #[cfg(feature = "testing")]
+            None => self.release_if_sent(),
+            #[cfg(not(feature = "testing"))]
+            None => {}
         }
     }
 
-    /// Puts a flush that could not be sent back into what the window owes.
-    fn give_back_owed(&self, mut flush: Flush<F::Op>) {
-        let mut owed = self.owed();
-        flush.committed.append(&mut owed.committed);
-        flush.ops.append(&mut owed.ops);
-        owed.committed = flush.committed;
-        owed.ops = flush.ops;
+    /// Holds the harness's count of a delivery settling into the window.
+    #[cfg(feature = "testing")]
+    pub(crate) fn hold(&self, flight: InFlight) {
+        self.owed().held.push(flight);
+    }
+
+    /// Releases the held counts once nothing is outstanding and nothing is left to send: the
+    /// settles and the commands they carried have all reached the server.
+    #[cfg(feature = "testing")]
+    fn release_if_sent(&self) {
+        let released = {
+            let mut owed = self.owed();
+            let sent = owed.outstanding == 0
+                && owed.flushing == 0
+                && owed.ops.is_empty()
+                && owed.committed.is_empty()
+                && owed.staged.iter().all(Vec::is_empty);
+            if sent {
+                std::mem::take(&mut owed.held)
+            } else {
+                Vec::new()
+            }
+        };
+        drop(released);
+    }
+
+    /// Runs `task` on the broker's runtime, for work a destructor starts and cannot wait for.
+    pub(crate) fn spawn(&self, task: impl Future<Output = ()> + Send + 'static) {
+        self.runtime.spawn(task);
     }
 
     /// Takes what the window owes, for a flush on stop.
@@ -650,6 +716,10 @@ impl<F: Form> Window<F> {
 
     fn take(owed: &mut Owed<F::Op>) -> Flush<F::Op> {
         owed.settled = 0;
+        #[cfg(feature = "testing")]
+        {
+            owed.flushing += 1;
+        }
         Flush {
             committed: std::mem::take(&mut owed.committed),
             ops: std::mem::take(&mut owed.ops),
@@ -659,6 +729,8 @@ impl<F: Form> Window<F> {
     async fn send(&self, mut flush: Flush<F::Op>) {
         if flush.committed.is_empty() && flush.ops.is_empty() {
             self.give_back(flush);
+            #[cfg(feature = "testing")]
+            self.sent_one();
             return;
         }
         // The segments are submitted first, in commit order, and the settles after them: the
@@ -687,6 +759,15 @@ impl<F: Form> Window<F> {
             self.owed().failure.get_or_insert(failure);
         }
         self.give_back(flush);
+        #[cfg(feature = "testing")]
+        self.sent_one();
+    }
+
+    /// A flush taken out of the window has been sent: its counts may go once nothing else is owed.
+    #[cfg(feature = "testing")]
+    fn sent_one(&self) {
+        self.owed().flushing -= 1;
+        self.release_if_sent();
     }
 
     /// Returns a flush's buffers to the window, so the next flush reuses what they grew to.
@@ -705,7 +786,7 @@ impl<F: Form> Window<F> {
 
 #[cfg(test)]
 mod tests {
-    use fred::clients::Client;
+    use fred::clients::{Client, Pool};
     use ruststream::AckError;
 
     use super::*;
@@ -715,10 +796,16 @@ mod tests {
         Arc::new(Window::new(
             PubSubForm,
             Client::default(),
-            Arc::new(Rounds::default()),
             false,
             "orders",
             8,
+            Owner {
+                rounds: Arc::new(Rounds::default()),
+                runtime: Handle::current(),
+                connection: Connection::new(
+                    Pool::from_clients(vec![Client::default()]).expect("a pool of one"),
+                ),
+            },
         ))
     }
 

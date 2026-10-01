@@ -45,13 +45,14 @@ use ruststream::{
 };
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
+use crate::connection::{Connection, ReadConnection};
 use crate::envelope::{SharedEnvelope, frame, unframe};
+use crate::loopback::{InFlight, Loopback, Tap};
 use crate::partition::{RedisPublishOptions, resolved_headers};
-use crate::pipeline::{ListForm, Pipelined, RoundMessage, Window};
+use crate::pipeline::{ListForm, RoundMessage, Window};
 use crate::publisher::joins_round;
 use crate::recovery::{self, RecoveryConfig};
 use crate::route::Route;
-use crate::subscriber::other_than;
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
 
 /// This form's publish policy, [`RedisListPublish`], under the mount-site name every form gives
@@ -85,10 +86,10 @@ pub mod prelude {
     // `keys` arrives as the module, not as a glob: its members are short words a service also uses
     // for its own types, and `Ctx<keys::FredPool>` reads as what it is at the use site.
     pub use crate::context::{PipelineContext, PoolContext, keys};
-    pub use crate::pipeline::{AtomicStep, Bindable, InRound};
+    pub use crate::pipeline::{Bindable, InRound, RedisPipelineSteps};
     pub use crate::{
-        AtomicList, PARTITION_KEY_HEADER, PipelinedList, RedisBroker, RedisPublishOptions,
-        RedisPublishSteps, RedisSubscribeExt,
+        PARTITION_KEY_HEADER, RedisBroker, RedisPublishOptions, RedisPublishSteps,
+        RedisSubscribeExt,
     };
 
     #[cfg(any(
@@ -176,27 +177,6 @@ impl RedisList {
             recovery_ttl: None,
             dead_letter: None,
         }
-    }
-
-    /// Opens a window on this subscription: its settles and the commands its handlers queue
-    /// through [`keys::Pipeline`](crate::context::keys::Pipeline) leave together, in one pipeline
-    /// on a connection of the pool.
-    ///
-    /// A pipelined list reads in batches: a reliable list claims with one pipeline of `LMOVE`, a
-    /// simple one pops with `RPOP key count`, and both wait with their blocking pop on an empty
-    /// queue. A reliable list's `LREM` settles ride the window; a simple list settles nothing, so
-    /// its window carries the handlers' commands alone. See [`pipeline`](crate::pipeline).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ruststream_fred::RedisList;
-    ///
-    /// let jobs = RedisList::new("jobs").reliable().pipeline();
-    /// # let _ = jobs;
-    /// ```
-    pub const fn pipeline(self) -> Pipelined<Self> {
-        Pipelined::wrap(self)
     }
 
     /// Switches to reliable (at-least-once) mode: entries move to a processing list and are removed
@@ -343,6 +323,7 @@ impl RedisList {
             zset_key,
             min_idle,
             ttl: self.recovery_ttl,
+            loopback: Loopback::default(),
         }))
     }
 }
@@ -379,70 +360,6 @@ impl RedeliveryAddressed<ConnectedRedisBroker> for RedisList {
     fn redelivery_address(
         &self,
         _connected: &ConnectedRedisBroker,
-    ) -> impl Future<Output = Result<RedeliveryAddress, RedisError>> {
-        ready(Ok(RedeliveryAddress::new(self.key.clone())))
-    }
-}
-
-/// Mounts the production descriptor on the in-process stand-in, which routes by list key alone.
-///
-/// The descriptor is validated exactly as [`ConnectedRedisBroker::subscribe_list`] validates it,
-/// so a subscription that a real server would refuse at startup is refused here too rather than
-/// passing a test and failing on deployment: a recovery ZSET named without a
-/// [`min_idle`](RedisList::min_idle) is rejected.
-///
-/// The rest of the descriptor is inert here, because the stand-in has one queue per key and
-/// delivers on publish: the processing list behind [`reliable`](RedisList::reliable), `block`,
-/// and the orphan-recovery watchdog. The envelope
-/// [`codec`](RedisList::codec) is inert too, since deliveries carry their headers natively instead
-/// of framed into the entry, so a framing mismatch between a subscription and its publisher cannot
-/// surface in process.
-///
-/// What `reliable` does decide is settlement, and that matches the real transport: a reliable list
-/// acknowledges, while a simple one reports [`AckError::Unsupported`] here exactly as it does
-/// against a real server, so a test cannot assert on an acknowledgement the mode cannot make.
-#[cfg(feature = "testing")]
-impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisList {
-    type Subscriber = crate::testing::RedisTestSubscriber;
-    /// The answer the real broker gives, so a registration that compiles against Redis compiles
-    /// against the stand-in.
-    type Copies = AddressedCopies;
-
-    fn name(&self) -> &str {
-        self.key()
-    }
-
-    fn declare_retry(self, declaration: &RetryDeclaration) -> Self {
-        self.with_declaration(declaration)
-    }
-
-    async fn subscribe(
-        self,
-        connected: &crate::testing::ConnectedRedisTestBroker,
-    ) -> Result<Self::Subscriber, RedisError> {
-        self.recovery_config()?;
-        let recorded = connected.record_routes(self.key(), self.dead_letter(), &self.route())?;
-        let subscriber = connected
-            .subscribe_list(self.key(), self.is_reliable())
-            .await?;
-        recorded.keep();
-        Ok(subscriber)
-    }
-
-    /// The same body the real broker's descriptor writes, so a document built in a test is the
-    /// document the service publishes.
-    #[cfg(feature = "asyncapi")]
-    fn channel_bindings(&self) -> Bindings {
-        self.describe()
-    }
-}
-
-/// The same answer the real broker gives, so a scope that starts against Redis starts here.
-#[cfg(feature = "testing")]
-impl RedeliveryAddressed<crate::testing::ConnectedRedisTestBroker> for RedisList {
-    fn redelivery_address(
-        &self,
-        _connected: &crate::testing::ConnectedRedisTestBroker,
     ) -> impl Future<Output = Result<RedeliveryAddress, RedisError>> {
         ready(Ok(RedeliveryAddress::new(self.key.clone())))
     }
@@ -502,16 +419,18 @@ impl BatchSubscriber for RedisListSubscriber {
 
 /// The wire side of a list subscription: one blocking pop per delivery.
 pub(crate) struct ListWire {
-    pool: Pool,
-    /// The connection every pop goes out on. A blocking pop holds its connection until it returns,
-    /// so the pops keep to one, and a window flushes on another.
-    reader: Client,
+    connection: Arc<Connection>,
+    /// The connection every pop goes out on, apart from the pool: a blocking pop holds its
+    /// connection until it returns.
+    reader: ReadConnection,
     key: String,
     reliable: bool,
     processing: String,
     block: Duration,
     codec: Option<SharedEnvelope>,
     recovery: Option<RecoveryConfig>,
+    /// The subscription's registration with the in-process server; empty on a real connection.
+    tap: Tap,
 }
 
 impl Debug for ListWire {
@@ -530,23 +449,26 @@ impl ListWire {
         reason = "internal constructor mirroring the descriptor"
     )]
     pub(crate) fn new(
-        pool: Pool,
+        connection: Arc<Connection>,
+        reader: ReadConnection,
         key: String,
         reliable: bool,
         processing: String,
         block: Duration,
         codec: Option<SharedEnvelope>,
         recovery: Option<RecoveryConfig>,
+        tap: Tap,
     ) -> Self {
         Self {
-            reader: pool.next().clone(),
-            pool,
+            connection,
+            reader,
             key,
             reliable,
             processing,
             block,
             codec,
             recovery,
+            tap,
         }
     }
 
@@ -556,7 +478,8 @@ impl ListWire {
             payload,
             headers,
             ack: None,
-            pool: self.pool.clone(),
+            connection: Arc::clone(&self.connection),
+            flight: self.tap.delivered(),
         }
     }
 
@@ -565,13 +488,14 @@ impl ListWire {
         RedisListMessage {
             payload,
             headers,
-            pool: self.pool.clone(),
+            connection: Arc::clone(&self.connection),
             ack: Some(ListAck {
                 main_key: self.key.clone(),
                 processing_key: self.processing.clone(),
                 value: raw,
                 recovery,
             }),
+            flight: self.tap.delivered(),
         }
     }
 
@@ -579,13 +503,22 @@ impl ListWire {
     /// recovery is enabled, first returns any orphaned entries to the main list so this same pop can
     /// pick them up.
     async fn next_entry(&self) -> Result<Option<RedisListMessage>, RedisError> {
+        // In process the pop below cannot block, so its wait is taken here, before the recovery
+        // sweep, which then finds what went stale while it waited.
+        #[cfg(feature = "testing")]
+        self.tap.readable().await;
+        // The read connection is the subscription's own, so the broker's shutdown does not close
+        // it: a read after the shutdown refuses here instead of delivering past it.
+        self.connection.ensure_open()?;
         let secs = block_secs(self.block);
         if self.reliable {
             if let Some(cfg) = &self.recovery {
-                recovery::sweep_orphans(&self.pool, cfg, &self.key, &self.processing).await?;
+                recovery::sweep_orphans(self.connection.pool(), cfg, &self.key, &self.processing)
+                    .await?;
             }
             let value: Option<Vec<u8>> = empty_on_timeout(
                 self.reader
+                    .client()
                     .blmove(
                         self.key.as_str(),
                         self.processing.as_str(),
@@ -600,7 +533,8 @@ impl ListWire {
             };
             let handle = match &self.recovery {
                 Some(cfg) => {
-                    let member = recovery::record_claim(&self.pool, cfg, &value).await?;
+                    let member =
+                        recovery::record_claim(self.connection.pool(), cfg, &value).await?;
                     Some(RecoveryHandle {
                         zset_key: cfg.zset_key.clone(),
                         member,
@@ -611,7 +545,7 @@ impl ListWire {
             Ok(Some(self.reliable_message(value, handle)))
         } else {
             let popped: Option<(String, Vec<u8>)> =
-                empty_on_timeout(self.reader.brpop(self.key.as_str(), secs).await)?;
+                empty_on_timeout(self.reader.client().brpop(self.key.as_str(), secs).await)?;
             Ok(popped.map(|(_, v)| self.simple_message(&v)))
         }
     }
@@ -631,9 +565,9 @@ impl ListWire {
         )
     }
 
-    /// The window's client: a connection of the pool the flushes go out on.
+    /// The window's client: a connection of the pool, where no pop blocks.
     pub(crate) fn round_client(&self) -> Client {
-        other_than(&self.pool, &self.reader)
+        self.connection.pool().next().clone()
     }
 
     /// The key this subscription reads.
@@ -648,12 +582,16 @@ impl ListWire {
     /// `RPOP key count` and waits with `BRPOP`. Both read the right end, the end a producer's
     /// `LPUSH` makes the oldest.
     async fn claim(&self, count: usize, into: &mut VecDeque<Claimed>) -> Result<(), RedisError> {
+        // The read connection is the subscription's own, so the broker's shutdown does not close
+        // it: a read after the shutdown refuses here instead of delivering past it.
+        self.connection.ensure_open()?;
         let before = into.len();
         if self.reliable {
             if let Some(cfg) = &self.recovery {
-                recovery::sweep_orphans(&self.pool, cfg, &self.key, &self.processing).await?;
+                recovery::sweep_orphans(self.connection.pool(), cfg, &self.key, &self.processing)
+                    .await?;
             }
-            let claims = self.reader.pipeline();
+            let claims = self.reader.client().pipeline();
             for _ in 0..count {
                 claims
                     .lmove::<(), _, _>(
@@ -677,6 +615,7 @@ impl ListWire {
         } else {
             let popped: Value = self
                 .reader
+                .client()
                 .rpop(self.key.as_str(), Some(count))
                 .await
                 .map_err(RedisError::stream)?;
@@ -699,10 +638,13 @@ impl ListWire {
     /// Waits for one entry on an empty list: `BLMOVE` into the processing list on a reliable list,
     /// `BRPOP` on a simple one. `None` when the wait timed out.
     async fn wait_one(&self) -> Result<Option<Vec<u8>>, RedisError> {
+        #[cfg(feature = "testing")]
+        self.tap.readable().await;
         let secs = block_secs(self.block);
         if self.reliable {
             empty_on_timeout(
                 self.reader
+                    .client()
                     .blmove(
                         self.key.as_str(),
                         self.processing.as_str(),
@@ -714,7 +656,7 @@ impl ListWire {
             )
         } else {
             let popped: Option<(String, Vec<u8>)> =
-                empty_on_timeout(self.reader.brpop(self.key.as_str(), secs).await)?;
+                empty_on_timeout(self.reader.client().brpop(self.key.as_str(), secs).await)?;
             Ok(popped.map(|(_, value)| value))
         }
     }
@@ -727,10 +669,10 @@ impl ListWire {
         let Some(cfg) = &self.recovery else {
             return Ok(());
         };
-        let tracking = self.pool.next().pipeline();
+        let tracking = self.connection.pool().next().pipeline();
         let mut any = false;
         for (value, handle) in claimed {
-            let (score, member) = recovery::tracked(value);
+            let (score, member) = cfg.tracked(value);
             tracking
                 .zadd::<(), _, _>(
                     cfg.zset_key.as_str(),
@@ -920,13 +862,28 @@ pub struct RedisListMessage {
     ack: Option<ListAck>,
     /// The connection the entry was read on: what settles it, and what `Ctx<keys::FredPool>`
     /// hands the handler.
-    pool: Pool,
+    connection: Arc<Connection>,
+    /// The test harness's count of this delivery; empty outside the in-process mode.
+    #[cfg_attr(
+        not(feature = "testing"),
+        allow(
+            dead_code,
+            reason = "held for its release on drop, which only `testing` gives"
+        )
+    )]
+    flight: InFlight,
 }
 
 impl RedisListMessage {
     /// The broker's connection pool, for the per-delivery context.
-    pub(crate) const fn pool(&self) -> &Pool {
-        &self.pool
+    pub(crate) fn pool(&self) -> &Pool {
+        self.connection.pool()
+    }
+
+    /// Takes the harness's count of this delivery, for a window to hold until its flush.
+    #[cfg(feature = "testing")]
+    pub(crate) fn take_flight(&mut self) -> InFlight {
+        std::mem::take(&mut self.flight)
     }
 
     /// Takes what a window settles this delivery with: the raw entry and the member its claim is
@@ -964,19 +921,22 @@ impl IncomingMessage for RedisListMessage {
         let Some(handle) = self.ack else {
             return Err(AckError::Unsupported);
         };
-        settle(&self.pool, &handle).await
+        self.connection.ensure_open_to_settle()?;
+        settle(self.connection.pool(), &handle).await
     }
 
     async fn nack(self, requeue: bool) -> Result<(), AckError> {
         let Some(handle) = self.ack else {
             return Err(AckError::Unsupported);
         };
+        self.connection.ensure_open_to_settle()?;
+        let pool = self.connection.pool();
         if requeue {
             // Return the original entry verbatim to the main list, before removing it from
             // processing (a crash in between leaves a duplicate rather than a loss).
-            lpush(&self.pool, handle.main_key.as_str(), handle.value.clone()).await?;
+            lpush(pool, handle.main_key.as_str(), handle.value.clone()).await?;
         }
-        settle(&self.pool, &handle).await
+        settle(pool, &handle).await
     }
 }
 
@@ -1076,45 +1036,6 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisListPublish {
         connected: &ConnectedRedisBroker,
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(connected.list_publisher(self)))
-    }
-
-    /// The list key the policy pushes onto, the expiry it re-arms there on every push, and how
-    /// headers are framed beside the payload.
-    #[cfg(feature = "asyncapi")]
-    fn channel_bindings(&self, channel: &str) -> Bindings {
-        crate::asyncapi::channel(&crate::asyncapi::Publish::list(
-            channel,
-            self.ttl
-                .map(|ttl| u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX)),
-            crate::asyncapi::Envelope::of(self.codec.as_ref()),
-        ))
-    }
-}
-
-/// Pairs the production policy against the in-process stand-in, so a routes file's
-/// `.out_reply(Publish)` mounts on both without naming a second type.
-///
-/// Both options the policy carries are inert in process: the stand-in has no key to expire, so
-/// [`ttl`](RedisListPublish::ttl) has nothing to re-arm, and it delivers headers natively rather
-/// than framed into the entry, so the envelope [`codec`](RedisListPublish::codec) never runs.
-/// A published entry therefore reads back as the bare payload here and as a frame on a real
-/// server, which is what a `published(..)` assertion sees.
-///
-/// The capability surface matches: this pairs into
-/// [`RedisTestPlainPublisher`](crate::testing::RedisTestPlainPublisher), which offers
-/// [`Publisher`](ruststream::Publisher) and nothing more, exactly as [`RedisListPublisher`] does.
-/// A slot bounded on a transaction capability therefore fails to compile here too, rather than
-/// passing in process and breaking on the production build.
-#[cfg(feature = "testing")]
-impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisListPublish {
-    type Live = crate::testing::RedisTestPlainPublisher;
-
-    fn pair(
-        self,
-        connected: &crate::testing::ConnectedRedisTestBroker,
-    ) -> impl Future<Output = Result<Self::Live, PairError>> {
-        let _ = self;
-        ready(Ok(connected.list_publisher()))
     }
 
     /// The list key the policy pushes onto, the expiry it re-arms there on every push, and how

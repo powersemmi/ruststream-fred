@@ -68,7 +68,7 @@ use crate::seek::{EntryId, RedisGroupPosition, RedisGroupSeeker};
 /// Per-delivery context for a Redis Streams delivery ([`RedisMessage`]).
 ///
 /// Built once per delivery from the message. Read its fields by [`keys`] key off a
-/// [`Context`], or bind one as a handler parameter with the core
+/// [`ruststream::runtime::Context`], or bind one as a handler parameter with the core
 /// `Ctx<K>` extractor. A body that repositions its group names this type as its context and needs
 /// nothing else: the [`keys::SeekHandle`] key carries the live handle.
 ///
@@ -350,33 +350,21 @@ impl BuildContext<RedisPubSubMessage> for PoolContext {
     }
 }
 
-/// The stand-in's deliveries carry its pool, so a handler taking `Ctx<keys::FredPool>` mounts on
-/// the harness as it mounts on a server.
-#[cfg(feature = "testing")]
-impl BuildContext<crate::testing::RedisTestMessage> for PoolContext {
-    fn build(msg: &crate::testing::RedisTestMessage) -> Self {
-        Self::from_pool(msg.pool().clone())
-    }
-}
-
 /// The per-delivery context of a `.pipeline()` subscription: the delivery's round and the
 /// broker's connection pool.
 ///
 /// Only a pipelined subscription's delivery builds it, which is what makes `Ctx<keys::Pipeline>`
-/// a compile error on a subscription without a window.
+/// a compile error on a mount site without `.pipeline()`.
 ///
 /// # Examples
 ///
 /// ```
 /// # mod demo {
-/// use ruststream::prelude::*;
-/// use ruststream::subscriber;
-/// use ruststream_fred::PipelinedStream;
-/// use ruststream_fred::context::{PipelineContext, keys};
+/// use ruststream_fred::stream::prelude::*;
 /// # #[derive(serde::Deserialize)]
 /// # struct Order { id: u64 }
 ///
-/// #[subscriber(PipelinedStream::new("orders").group("workers"))]
+/// #[subscriber(RedisStream::new("orders").group("workers"))]
 /// async fn work(order: &Order, ctx: &mut Context<'_, PipelineContext>) -> HandlerOutcome {
 ///     let queued = ctx.context(keys::Pipeline).incr("orders.seen").await;
 ///     let _ = order.id;
@@ -384,6 +372,15 @@ impl BuildContext<crate::testing::RedisTestMessage> for PoolContext {
 ///         return HandlerOutcome::retry();
 ///     }
 ///     HandlerOutcome::ack()
+/// }
+///
+/// fn app() -> RustStream {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             b.include(work.pipeline());
+///         },
+///     )
 /// }
 /// # }
 /// ```

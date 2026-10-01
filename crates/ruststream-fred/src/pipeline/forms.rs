@@ -12,8 +12,10 @@ use ruststream::AckError;
 
 use super::window::{Form, Segment, Sent};
 use crate::convert::fields_for_publish;
-use crate::delay::{self, DelayConfig};
+use crate::delay::DelayConfig;
 use crate::list::RedisListMessage;
+#[cfg(feature = "testing")]
+use crate::loopback::InFlight;
 use crate::message::RedisMessage;
 use crate::pubsub::RedisPubSubMessage;
 use crate::stream::RequeueMode;
@@ -103,6 +105,11 @@ impl Form for StreamForm {
         msg.seeker().pool()
     }
 
+    #[cfg(feature = "testing")]
+    fn take_flight(msg: &mut RedisMessage) -> InFlight {
+        msg.take_flight()
+    }
+
     fn ack(&self, msg: RedisMessage, ops: &mut Vec<StreamOp>) -> Result<(), AckError> {
         let (id, _, _) = msg.into_settle();
         ops.push(StreamOp::Ack(id));
@@ -138,17 +145,17 @@ impl Form for StreamForm {
         delay_by: Duration,
         ops: &mut Vec<StreamOp>,
     ) -> Result<(), AckError> {
-        if self.delay.is_none() {
+        let Some(cfg) = self.delay.as_ref() else {
             if let RequeueMode::LeavePending { .. } = self.requeue {
                 drop(msg.into_settle());
                 return Ok(());
             }
             return Err(AckError::Unsupported);
-        }
+        };
         let (id, payload, headers) = msg.into_settle();
         // Scheduled before the `XACK` of the original, in the same order the direct path takes,
         // so a failure between the two leaves a duplicate rather than a loss.
-        let (score, member) = delay::scheduled(&id, &payload, &headers, delay_by);
+        let (score, member) = cfg.scheduled(&id, &payload, &headers, delay_by);
         ops.push(StreamOp::Schedule { score, member });
         ops.push(StreamOp::Ack(id));
         Ok(())
@@ -285,6 +292,11 @@ impl Form for ListForm {
 
     fn pool(msg: &RedisListMessage) -> &Pool {
         msg.pool()
+    }
+
+    #[cfg(feature = "testing")]
+    fn take_flight(msg: &mut RedisListMessage) -> InFlight {
+        msg.take_flight()
     }
 
     fn ack(&self, msg: RedisListMessage, ops: &mut Vec<ListOp>) -> Result<(), AckError> {
@@ -455,6 +467,11 @@ impl Form for PubSubForm {
         msg.pool()
     }
 
+    #[cfg(feature = "testing")]
+    fn take_flight(msg: &mut RedisPubSubMessage) -> InFlight {
+        msg.take_flight()
+    }
+
     fn ack(&self, _msg: RedisPubSubMessage, _ops: &mut Vec<Self::Op>) -> Result<(), AckError> {
         Err(AckError::Unsupported)
     }
@@ -491,96 +508,5 @@ impl Form for PubSubForm {
         _ops: &mut Vec<Self::Op>,
     ) -> impl Future<Output = Sent> + Send {
         ready(Sent::default())
-    }
-}
-
-/// The in-process broker's settle side, for every form: a delivery settles in memory, at the
-/// flush, the way the window settles it on a server.
-#[cfg(feature = "testing")]
-pub(crate) mod testing {
-    use std::future::{Future, ready};
-    use std::time::Duration;
-
-    use fred::clients::{Client, Pool};
-    use fred::error::Error;
-    use ruststream::{AckError, IncomingMessage};
-
-    use crate::pipeline::window::{Form, Segment, Sent};
-    use crate::testing::RedisTestMessage;
-
-    /// An outcome held until the window flushes.
-    #[derive(Debug)]
-    pub enum TestOp {
-        Ack(RedisTestMessage),
-        Nack(RedisTestMessage, bool),
-        NackAfter(RedisTestMessage, Duration),
-    }
-
-    /// The settle side of a subscription on the in-process broker.
-    #[derive(Debug, Default)]
-    pub struct TestForm;
-
-    impl Form for TestForm {
-        type Message = RedisTestMessage;
-        type Op = TestOp;
-
-        fn pool(msg: &RedisTestMessage) -> &Pool {
-            msg.pool()
-        }
-
-        fn ack(&self, msg: RedisTestMessage, ops: &mut Vec<TestOp>) -> Result<(), AckError> {
-            let answer = msg.settle_answer();
-            ops.push(TestOp::Ack(msg));
-            answer
-        }
-
-        fn nack(
-            &self,
-            msg: RedisTestMessage,
-            requeue: bool,
-            ops: &mut Vec<TestOp>,
-        ) -> Result<(), AckError> {
-            let answer = msg.settle_answer();
-            ops.push(TestOp::Nack(msg, requeue));
-            answer
-        }
-
-        fn nack_after(
-            &self,
-            msg: RedisTestMessage,
-            delay: Duration,
-            ops: &mut Vec<TestOp>,
-        ) -> Result<(), AckError> {
-            if !msg.supports_nack_after() {
-                // Held to the flush all the same, so the harness counts it settled there.
-                ops.push(TestOp::Nack(msg, false));
-                return Err(AckError::Unsupported);
-            }
-            ops.push(TestOp::NackAfter(msg, delay));
-            Ok(())
-        }
-
-        /// The in-memory settles run after the segments, which is where a server runs the
-        /// `EXEC` that carries them.
-        fn close_atomic(
-            &self,
-            _segment: &Segment,
-            _ops: &mut Vec<TestOp>,
-        ) -> impl Future<Output = Result<(), Error>> + Send {
-            ready(Ok(()))
-        }
-
-        async fn send_ops(&self, _client: &Client, ops: &mut Vec<TestOp>) -> Sent {
-            for op in ops.drain(..) {
-                // The stand-in's answers were given when the delivery settled; what is left is the
-                // effect, which in memory cannot fail.
-                let _ = match op {
-                    TestOp::Ack(msg) => msg.ack().await,
-                    TestOp::Nack(msg, requeue) => msg.nack(requeue).await,
-                    TestOp::NackAfter(msg, delay) => msg.nack_after(delay).await,
-                };
-            }
-            Sent::default()
-        }
     }
 }

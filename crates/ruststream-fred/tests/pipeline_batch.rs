@@ -5,11 +5,12 @@
 #![cfg(feature = "testing")]
 
 use ruststream::testing::TestApp;
-use ruststream_fred::PipelinedStream;
 use ruststream_fred::context::{PipelineContext, keys};
 use ruststream_fred::prelude::*;
-use ruststream_fred::testing::RedisTestBroker;
 use serde::{Deserialize, Serialize};
+
+/// The address the service's broker is built with; the in-process mode dials nothing.
+const URL: &str = "redis://localhost:6379";
 
 #[derive(Debug, Deserialize, Outgoing, PartialEq, Serialize)]
 struct Order {
@@ -17,7 +18,7 @@ struct Order {
     keep: bool,
 }
 
-#[subscriber(PipelinedStream::new("orders").group("workers"))]
+#[subscriber(RedisStream::new("orders").group("workers"))]
 async fn in_batches(orders: &[Order], ctx: &mut Context<'_, PipelineContext>) -> HandlerOutcome {
     let pipeline = ctx.context(keys::Pipeline).clone();
     for order in orders {
@@ -38,15 +39,15 @@ macro_rules! case {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn $test() {
             let app = RustStream::new(AppInfo::new("pipeline", "0.1.0")).with_broker(
-                RedisTestBroker::new(),
+                RedisBroker::standalone(URL),
                 |b| {
-                    b.include(in_batches.batch(nonzero!(3)));
+                    b.include(in_batches.batch(nonzero!(3)).pipeline());
                 },
             );
             let tb = TestApp::start(app).await.expect("start");
 
             for id in 0..3 {
-                tb.broker::<RedisTestBroker>()
+                tb.broker::<RedisBroker>()
                     .message(&Order { id, keep: $keep })
                     .to("orders")
                     .publish()
@@ -54,7 +55,7 @@ macro_rules! case {
                     .expect("publish");
             }
 
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .published::<Order>("audit")
                 .assert_called($expected);
 
