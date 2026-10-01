@@ -30,8 +30,8 @@ use ruststream::{
 };
 use ruststream_fred::{
     ConnectedRedisBroker, PARTITION_KEY_HEADER, RedisBroker, RedisError, RedisList,
-    RedisListPublish, RedisMessage, RedisPubSub, RedisPubSubPattern, RedisPubSubPublish,
-    RedisPublishSteps, RedisStream, StreamStart,
+    RedisListPublish, RedisMessage, RedisPubSub, RedisPubSubPattern, RedisPubSubPatternAtomic,
+    RedisPubSubPatternPipeline, RedisPubSubPublish, RedisPublishSteps, RedisStream, StreamStart,
 };
 use serde::{Deserialize, Serialize};
 
@@ -925,6 +925,29 @@ async fn pubsub_keeps_nothing_for_a_late_subscriber() {
     assert!(stays_quiet(&mut Box::pin(sub.stream())).await);
 }
 
+/// A subscription holds what arrives before its handler reads, up to its buffer; past it the
+/// oldest is lost, as the client's own buffer loses it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pubsub_holds_its_buffer_for_a_handler_that_falls_behind() {
+    let broker = connected().await;
+    let mut sub =
+        SubscriptionSource::subscribe(RedisPubSub::new("burst").buffer(nonzero!(4)), &broker)
+            .await
+            .expect("subscribe");
+    let publisher = broker.pubsub_publisher(RedisPubSubPublish::new());
+    for index in 0..5_u8 {
+        publisher
+            .publish(OutgoingMessage::new("burst", [index].as_slice()), None)
+            .await
+            .expect("publish");
+    }
+    let mut stream = Box::pin(sub.stream());
+    for index in 1..5_u8 {
+        assert_eq!(next_payload(&mut stream).await, vec![index]);
+    }
+    assert!(stays_quiet(&mut stream).await);
+}
+
 /// A name is one Redis type: a list write to a stream is refused, and a stream write to a list.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_write_of_the_wrong_type_is_refused() {
@@ -1259,6 +1282,8 @@ fn a_pattern_leaves_the_destination_to_the_mount_site() {
     {
     }
     named::<ConnectedRedisBroker, RedisPubSubPattern>();
+    named::<ConnectedRedisBroker, RedisPubSubPatternPipeline>();
+    named::<ConnectedRedisBroker, RedisPubSubPatternAtomic>();
 }
 
 // The harness cases: the service's app, run in process.
