@@ -1,7 +1,7 @@
 <h1 align="center">ruststream-fred</h1>
 
 <p align="center">
-  <i>The Redis and Valkey broker for the <a href="https://github.com/powersemmi/ruststream">RustStream</a> messaging framework: Streams with consumer groups, lists, Pub/Sub, standalone / cluster / sentinel topologies, and an in-process test broker.</i>
+  <i>The Redis and Valkey broker for the <a href="https://github.com/powersemmi/ruststream">RustStream</a> messaging framework: Streams with consumer groups, lists, Pub/Sub, standalone / cluster / sentinel topologies, and an in-process mode that runs a service's own app in its tests.</i>
 </p>
 
 <p align="center">
@@ -33,16 +33,19 @@ framework; this crate is the transport.
   list, and `AckError::Unsupported` where Redis has nothing to settle.
 - **Retry caps and dead letters** declared where the handler is mounted, on every transport.
 - **Batches on every transport,** read with one `XREADGROUP` on a stream.
+- **Pipelining on every form:** `.pipeline()` sends a fetch's settles and the handler's own
+  commands in one round trip, and `.atomic()` makes them one `MULTI` / `EXEC`.
 - **Standalone, cluster and sentinel,** with authentication and TLS on each.
 - **Transactions** as one `MULTI` / `EXEC` block, and repositioning a consumer group with
   `start_at(..)`.
-- **Tests without a server:** handlers run against an in-process Redis.
+- **Tests on the production app without a server:** `TestApp` runs the service's own app with its
+  `RedisBroker` connected to an in-process Redis.
 
 ## Install
 
 ```toml
 [dependencies]
-ruststream = { version = "0.7", features = ["macros", "json"] }
+ruststream = { version = ">=0.7.0-rc.11, <0.8.0", features = ["macros", "json"] }
 ruststream-fred = "0.7"
 serde = { version = "1", features = ["derive"] }
 
@@ -97,29 +100,25 @@ cargo generate --git https://github.com/powersemmi/ruststream-fred templates/red
 
 ## Test it
 
-`TestApp` runs the handlers against an in-process Redis, with no server.
+`TestApp` runs the service's own `app()` with its `RedisBroker` connected to an in-process Redis,
+with no server.
 
 ```rust
 use ruststream::testing::TestApp;
-use ruststream_fred::testing::RedisTestBroker;
 
-let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-    RedisTestBroker::new(),
-    |b| {
-        b.include(confirm).out_reply(Publish);
-    },
-);
-let tb = TestApp::start(app).await?;
+let tb = TestApp::start(app()).await?;
 
-tb.broker::<RedisTestBroker>()
-    .publish("orders", &Order { id: 7 })
+tb.broker::<RedisBroker>()
+    .message(&Order { id: 7 })
+    .to("orders")
+    .publish()
     .await?;
 
-tb.broker::<RedisTestBroker>()
+tb.broker::<RedisBroker>()
     .subscriber("orders")
     .assert_called_once()
     .settled(HandlerOutcome::ack());
-tb.broker::<RedisTestBroker>()
+tb.broker::<RedisBroker>()
     .published::<Confirmation>("confirmations")
     .assert_called_once();
 ```

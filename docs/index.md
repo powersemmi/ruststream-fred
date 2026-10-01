@@ -2,11 +2,11 @@
 
 `ruststream-fred` runs a [RustStream](https://powersemmi.github.io/ruststream/) service on Redis.
 Redis Streams is a log, like Kafka: a subscription reads it through a consumer group and
-acknowledges each entry it handles. Lists and Pub/Sub are here as well, and the `testing` feature
-ships an in-process test broker, so tests run without a Redis server.
+acknowledges each entry it handles. Lists and Pub/Sub are here as well. With the `testing` feature
+a test runs the service's own app on a Redis modelled in process, so tests run without a server.
 
 ```toml
-ruststream = { version = ">=0.7.0-rc.9, <0.8.0", features = ["macros"] }
+ruststream = { version = ">=0.7.0-rc.10, <0.8.0", features = ["macros"] }
 ruststream-fred = "0.7"
 serde = { version = "1", features = ["derive"] }
 ```
@@ -60,6 +60,9 @@ The reference on docs.rs opens with the crate's own textbook, one section per to
   [capping the retries](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#capping-the-retries)
   and
   [repositioning a group](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#repositioning-a-group).
+- [Pipelining](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#pipelining): a window that
+  settles a whole fetch in one round trip, and the Redis commands a handler queues into it, which
+  run only when the delivery is acknowledged.
 - [Publishing](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#publishing): the
   policies, the
   [partition key](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#partition-keys)
@@ -67,8 +70,9 @@ The reference on docs.rs opens with the crate's own textbook, one section per to
   [transactions](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#transactions).
 - [The generated document](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#the-generated-document):
   what the AsyncAPI document says about a Redis channel, and what it deliberately leaves out.
-- [Testing](https://docs.rs/ruststream-fred/latest/ruststream_fred/testing/index.html): the
-  in-process transport, what it reproduces and what belongs in a test against a real server.
+- [Testing](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#testing): the
+  service's own app on an in-process Redis, what the model keeps and what belongs in a test
+  against a real server.
 - [Operations](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#operations):
   topologies, credentials, TLS and the known limits.
 
