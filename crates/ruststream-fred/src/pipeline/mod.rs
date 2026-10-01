@@ -55,7 +55,7 @@ pub(crate) use window::{Form, Owner, Round, Segment, Window};
 /// `Mode` is [`Plain`] until `.atomic()` makes it [`Atomic`]. A service does not build one: it
 /// names the descriptor in `#[subscriber(..)]` and chains [`pipeline`](RedisPipelineSteps::pipeline)
 /// where it mounts the handler. The type shows up in the builder's type, under the names
-/// [`RedisStreamPipeline`](crate::RedisStreamPipeline) and its siblings.
+/// [`RedisStreamPipeline`] and its siblings.
 ///
 /// # Examples
 ///
