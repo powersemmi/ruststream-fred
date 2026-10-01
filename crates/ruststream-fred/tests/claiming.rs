@@ -6,8 +6,8 @@
 //! entry the handler did not finish comes back once it has been idle long enough with its count
 //! raised, and a handler that watches the count stops retrying on its own.
 //!
-//! The stand-in answers the mode the way the server does, so these cases are the in-process twins
-//! of the live ones in `tests/integration_fred.rs`.
+//! The in-process server answers the mode the way Redis does, so these cases are the in-process
+//! twins of the live ones in `tests/integration_fred.rs`.
 
 #![cfg(feature = "testing")]
 
@@ -15,9 +15,11 @@ use std::time::Duration;
 
 use ruststream::testing::TestApp;
 use ruststream_fred::stream::prelude::*;
-use ruststream_fred::testing::RedisTestBroker;
 use ruststream_fred::{DELIVERY_COUNT_HEADER, IDLE_MS_HEADER};
 use serde::{Deserialize, Serialize};
+
+/// The address the service's broker is built with; the in-process mode dials nothing.
+const URL: &str = "redis://localhost:6379";
 
 /// How long an entry has to sit in the pending entries list before the subscription claims it
 /// back. Well above any handler runtime, as the mode requires.
@@ -110,14 +112,21 @@ fn counter<Kind, AppState>(ctx: &Context<'_, Kind, AppState>, name: &str) -> u64
         .unwrap_or_else(|err| panic!("the {name} header must be a number: {err}"))
 }
 
-/// The service both cases run against: two claiming subscriptions, each reporting what it saw.
-async fn start() -> TestApp<()> {
-    let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
+/// The service every case runs against: three claiming subscriptions, two of them reporting what
+/// they saw.
+fn app() -> impl App<State = ()> {
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+        RedisBroker::standalone(URL),
+        |b| {
             b.include(handle_order).out(Audit, Publish).build();
             b.include(handle_flaky).out(Audit, Publish).build();
-        });
-    TestApp::start(app).await.expect("start")
+            b.include(handle_impatient);
+        },
+    )
+}
+
+async fn start() -> TestApp<()> {
+    TestApp::start(app()).await.expect("start")
 }
 
 /// A fresh entry has never been claimed, so the server reports no idle time and no earlier
@@ -126,16 +135,16 @@ async fn start() -> TestApp<()> {
 async fn a_fresh_entry_reports_no_idle_time_and_no_earlier_delivery() {
     let tb = start().await;
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .message(&Order { id: 7 })
         .publish()
         .await
         .expect("publish");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .subscriber("orders")
         .assert_called_once();
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .published::<Seen>("orders.seen")
         .with(&Seen {
             id: 7,
@@ -153,27 +162,29 @@ async fn a_fresh_entry_reports_no_idle_time_and_no_earlier_delivery() {
 async fn an_entry_left_pending_comes_back_with_its_delivery_count_raised() {
     let tb = start().await;
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .message(&Order { id: 7 })
         .publish()
         .await
         .expect("publish");
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .subscriber("orders")
         .assert_called_once()
         .settled(HandlerOutcome::retry());
 
     // Half the threshold is not the threshold: the entry is still someone's to finish.
     tb.advance(MIN_IDLE / 2).await.expect("advance");
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .subscriber("orders")
         .assert_called(1);
 
-    tb.advance(MIN_IDLE).await.expect("advance");
-    tb.broker::<RedisTestBroker>()
+    // The other half: the entry has now been idle exactly `min_idle`, and the claim reports the
+    // idle time the read found.
+    tb.advance(MIN_IDLE / 2).await.expect("advance");
+    tb.broker::<RedisBroker>()
         .subscriber("orders")
         .assert_called(2);
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .published::<Seen>("orders.seen")
         .with(&Seen {
             id: 7,
@@ -190,7 +201,7 @@ async fn an_entry_left_pending_comes_back_with_its_delivery_count_raised() {
 async fn a_handler_stops_retrying_at_the_delivery_count_it_caps_on() {
     let tb = start().await;
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .message(&FlakyOrder { id: 3 })
         .publish()
         .await
@@ -199,11 +210,11 @@ async fn a_handler_stops_retrying_at_the_delivery_count_it_caps_on() {
         tb.advance(MIN_IDLE).await.expect("advance");
     }
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .subscriber("flaky")
         .assert_called(3);
     assert_eq!(
-        tb.broker::<RedisTestBroker>()
+        tb.broker::<RedisBroker>()
             .published::<Seen>("orders.seen")
             .decoded()
             .iter()
@@ -238,33 +249,29 @@ const SHORT_DELAY: Duration = Duration::from_secs(2);
 /// `min_idle`, so a shorter delay rounds up to it and nothing is published to the stream.
 #[tokio::test(start_paused = true)]
 async fn a_delay_shorter_than_min_idle_rounds_up_to_it() {
-    let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(RedisTestBroker::new(), |b| {
-            b.include(handle_impatient);
-        });
-    let tb = TestApp::start(app).await.expect("start");
+    let tb = start().await;
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .message(&ImpatientOrder { id: 4 })
         .publish()
         .await
         .expect("publish");
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .subscriber("impatient")
         .assert_called_once();
 
     // The delay the handler asked for has passed, the threshold the mode works to has not.
     tb.advance(SHORT_DELAY).await.expect("advance");
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .subscriber("impatient")
         .assert_called(1);
 
     tb.advance(MIN_IDLE).await.expect("advance");
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .subscriber("impatient")
         .assert_called(2);
     // The entry itself came back: the copy path would have written a second one here.
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .published::<ImpatientOrder>("impatient")
         .assert_called_once();
 

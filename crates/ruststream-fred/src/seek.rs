@@ -14,8 +14,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use fred::clients::Pool;
 use fred::interfaces::StreamsInterface;
-use ruststream::Seeker;
+use ruststream::{AckError, Seeker};
 
+use crate::connection::Connection;
 use crate::error::RedisError;
 
 /// A Redis Streams entry id: the `<milliseconds>-<sequence>` pair the server assigns to every
@@ -230,6 +231,9 @@ impl RedisGroupPosition {
 /// ```
 #[derive(Clone)]
 pub struct RedisGroupSeeker {
+    /// Asked before a seek, which after the broker's shutdown refuses at once.
+    connection: Arc<Connection>,
+    /// The same pool, kept at hand for the delivery contexts that give it to a handler.
     pool: Pool,
     // `Arc<str>` rather than `String`: every delivery's context clones this handle, so the clone
     // has to stay allocation-free on the dispatch path.
@@ -251,17 +255,32 @@ impl std::fmt::Debug for RedisGroupSeeker {
 
 impl RedisGroupSeeker {
     pub(crate) fn new(
-        pool: Pool,
+        connection: Arc<Connection>,
         key: impl Into<Arc<str>>,
         group: impl Into<Arc<str>>,
         generation: Arc<AtomicU64>,
     ) -> Self {
         Self {
-            pool,
+            pool: connection.pool().clone(),
+            connection,
             key: key.into(),
             group: group.into(),
             generation,
         }
+    }
+
+    /// The connection pool this handle issues its commands on.
+    pub(crate) const fn pool(&self) -> &Pool {
+        &self.pool
+    }
+
+    /// Refuses a settlement of one of this subscription's deliveries once the broker shut down.
+    ///
+    /// Asked through the seeker because every delivery already carries it: the check adds nothing
+    /// to what a delivery holds.
+    #[inline]
+    pub(crate) fn ensure_open_to_settle(&self) -> Result<(), AckError> {
+        self.connection.ensure_open_to_settle()
     }
 
     /// The stream key this handle repositions a group over.
@@ -289,8 +308,9 @@ impl Seeker for RedisGroupSeeker {
     /// # Errors
     ///
     /// Returns [`RedisError::Stream`] when the group or the stream does not exist, or the
-    /// command fails.
+    /// command fails, and [`RedisError::ShutDown`] once the broker was shut down.
     async fn seek(&self, to: RedisGroupPosition) -> Result<(), RedisError> {
+        self.connection.ensure_open()?;
         let _: String = self
             .pool
             .xgroup_setid(&*self.key, &*self.group, to.as_xid())

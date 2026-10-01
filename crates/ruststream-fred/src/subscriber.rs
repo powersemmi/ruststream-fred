@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use fred::clients::Pool;
+use fred::clients::Client;
 use fred::interfaces::{ClientLike, StreamsInterface};
 use fred::types::streams::XReadValue;
 use fred::types::{CustomCommand, Value};
@@ -17,9 +17,12 @@ use futures::stream::unfold;
 use ruststream::{BatchSubscriber, Seekable, Subscriber};
 
 use crate::claim::{self, ClaimedEntry};
+use crate::connection::{Connection, ReadConnection};
 use crate::convert::{HEADER_PREFIX, parts_from_fields};
-use crate::delay::{self, DelayConfig};
+use crate::delay::DelayConfig;
+use crate::loopback::Tap;
 use crate::message::{DELIVERY_COUNT_HEADER, IDLE_MS_HEADER, RedisMessage};
+use crate::pipeline::{RoundMessage, StreamForm, Window};
 use crate::seek::{EntryId, RedisGroupSeeker};
 use crate::{error::RedisError, stream::ReadMode};
 
@@ -53,7 +56,7 @@ const XREADGROUP: &str = "XREADGROUP";
 /// that fetched one entry per round trip would spend a round trip per message, so the loop
 /// prefetches and drains the buffer between reads. Batches take their own `COUNT` from the size the
 /// mount site asked for instead.
-const PREFETCH: u64 = 64;
+pub(crate) const PREFETCH: u64 = 64;
 
 fn duration_to_millis(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
@@ -64,7 +67,10 @@ fn duration_to_millis(d: Duration) -> u64 {
 /// Constructed by [`crate::ConnectedRedisBroker::subscribe`] from a [`crate::RedisStream`]
 /// descriptor. The read mode (fresh tail, reclaim, or claim-and-read) is fixed at construction.
 pub struct RedisSubscriber {
-    pool: Pool,
+    connection: Arc<Connection>,
+    /// The connection every read goes out on, apart from the pool: a blocking read holds its
+    /// connection until it returns.
+    reader: ReadConnection,
     key: String,
     group: String,
     consumer: String,
@@ -86,6 +92,8 @@ pub struct RedisSubscriber {
     /// Minted once, when the subscription opens, and handed to every delivery so its context can
     /// carry the handle without building one per message.
     seeker: Arc<RedisGroupSeeker>,
+    /// The subscription's registration with the in-process server; empty on a real connection.
+    tap: Tap,
 }
 
 impl Debug for RedisSubscriber {
@@ -105,23 +113,26 @@ impl RedisSubscriber {
         reason = "internal constructor mirroring the descriptor"
     )]
     pub(crate) fn new(
-        pool: Pool,
+        connection: Arc<Connection>,
+        reader: ReadConnection,
         key: String,
         group: String,
         consumer: String,
         block: Duration,
         mode: ReadMode,
         delay: Option<DelayConfig>,
+        tap: Tap,
     ) -> Self {
         let generation = Arc::new(AtomicU64::new(0));
         let seeker = Arc::new(RedisGroupSeeker::new(
-            pool.clone(),
+            Arc::clone(&connection),
             key.as_str(),
             group.as_str(),
             Arc::clone(&generation),
         ));
         Self {
-            pool,
+            connection,
+            reader,
             key,
             group,
             consumer,
@@ -133,6 +144,7 @@ impl RedisSubscriber {
             generation,
             buffer_generation: 0,
             seeker,
+            tap,
         }
     }
 
@@ -148,7 +160,7 @@ impl RedisSubscriber {
         let parsed: EntryId = id.parse()?;
         let (payload, headers) = parts_from_fields(entry.fields);
         Ok(RedisMessage::new(
-            self.pool.clone(),
+            self.connection.pool().clone(),
             self.key.clone(),
             self.group.clone(),
             id,
@@ -159,26 +171,94 @@ impl RedisSubscriber {
             entry.delivered,
             Arc::clone(&self.seeker),
             self.mode.requeue(),
+            self.tap.delivered(),
         ))
     }
 
     /// Drops entries selected before a seek moved the group cursor: they belong to the position
-    /// the group left, so delivering them would contradict the reposition.
-    fn discard_stale(&mut self) {
+    /// the group left, so delivering them would contradict the reposition. Returns how many it
+    /// dropped.
+    fn discard_stale(&mut self) -> usize {
         let current = self.generation.load(Ordering::Acquire);
-        if self.buffer_generation != current {
-            self.buffer.clear();
-            self.buffer_generation = current;
+        if self.buffer_generation == current {
+            return 0;
         }
+        let dropped = self.buffer.len();
+        self.buffer.clear();
+        self.buffer_generation = current;
+        #[cfg(feature = "testing")]
+        self.tap.discard(dropped);
+        dropped
+    }
+
+    /// The stream key this subscription reads.
+    pub(crate) fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// The settle side of this subscription inside a window.
+    pub(crate) fn round_form(&self) -> StreamForm {
+        StreamForm::new(
+            self.key.as_str(),
+            self.group.as_str(),
+            self.delay.clone(),
+            self.mode.requeue(),
+        )
+    }
+
+    /// The window's client: a connection of the pool, where no read blocks.
+    pub(crate) fn round_client(&self) -> Client {
+        self.connection.pool().next().clone()
+    }
+
+    /// Yields one delivery per entry, each with a slot in `window`, and reports a failed flush of
+    /// the window once.
+    pub(crate) fn round_stream<'a>(
+        &'a mut self,
+        window: &'a Arc<Window<StreamForm>>,
+    ) -> impl Stream<Item = Result<RoundMessage<StreamForm>, RedisError>> + Send + 'a {
+        unfold(self, move |s| async move {
+            loop {
+                if let Some(failure) = window.take_failure() {
+                    return Some((Err(failure), s));
+                }
+                window.discarded(s.discard_stale());
+                if let Some(entry) = s.buffer.pop_front() {
+                    let delivery = match s.message(entry) {
+                        Ok(delivery) => delivery,
+                        Err(err) => {
+                            window.discarded(1);
+                            return Some((Err(err), s));
+                        }
+                    };
+                    let round = window.open();
+                    return Some((
+                        Ok(RoundMessage::new(delivery, Arc::clone(window), round)),
+                        s,
+                    ));
+                }
+                if let Err(err) = s.fetch(PREFETCH).await {
+                    return Some((Err(err), s));
+                }
+                window.fetched(s.buffer.len());
+            }
+        })
     }
 
     /// Fetches up to `count` entries into the buffer. A read that timed out with nothing pending
     /// leaves the buffer empty (the caller loops and reads again).
     async fn fetch(&mut self, count: u64) -> Result<(), RedisError> {
+        // In process the read below cannot block, so the wait it would hold open is taken here,
+        // before the sweep, which then finds what came due while it waited.
+        #[cfg(feature = "testing")]
+        self.tap.readable().await;
+        // The read connection is the subscription's own, so the broker's shutdown does not close
+        // it: a read after the shutdown refuses here instead of delivering past it.
+        self.connection.ensure_open()?;
         // Replay any due delayed-retry entries before reading, so they re-enter the stream and get
         // delivered through the normal read path. Granularity is the read block interval.
         if let Some(cfg) = &self.delay {
-            delay::sweep_due(&self.pool, cfg, &self.key).await?;
+            cfg.sweep_due(self.connection.pool(), &self.key).await?;
         }
         // Captured before the read, not after: a blocking read selects its entries against the
         // cursor as it stood when the read started, so a seek that lands mid-read invalidates
@@ -191,6 +271,8 @@ impl RedisSubscriber {
         };
         if selected_at != self.generation.load(Ordering::Acquire) {
             // A seek overtook this read; drop its entries and let the caller read again.
+            #[cfg(feature = "testing")]
+            self.tap.discard(entries.len());
             return Ok(());
         }
         self.buffer_generation = selected_at;
@@ -200,7 +282,8 @@ impl RedisSubscriber {
 
     async fn fetch_fresh(&self, count: u64) -> Result<Vec<Entry>, RedisError> {
         let resp: RawStreams = self
-            .pool
+            .reader
+            .client()
             .xreadgroup(
                 self.group.as_str(),
                 self.consumer.as_str(),
@@ -264,7 +347,8 @@ impl RedisSubscriber {
         .collect();
 
         let frame = self
-            .pool
+            .reader
+            .client()
             .custom_raw(command, args)
             .await
             .map_err(RedisError::stream)?;
@@ -301,7 +385,8 @@ impl RedisSubscriber {
         count: u64,
     ) -> Result<Vec<Entry>, RedisError> {
         let (cursor, entries): (String, Vec<XReadValue<String, String, Vec<u8>>>) = self
-            .pool
+            .reader
+            .client()
             .xautoclaim_values(
                 self.key.as_str(),
                 self.group.as_str(),
@@ -316,6 +401,11 @@ impl RedisSubscriber {
         self.cursor = cursor;
         // Nothing left to reclaim this pass: avoid a hot loop until more entries go stale.
         if entries.is_empty() {
+            // In process the next fetch waits until an entry goes stale instead.
+            #[cfg(feature = "testing")]
+            if self.tap.in_process() {
+                return Ok(Vec::new());
+            }
             tokio::time::sleep(self.block).await;
             return Ok(Vec::new());
         }
@@ -351,7 +441,8 @@ impl RedisSubscriber {
     /// extended `XPENDING`, which - unlike `XAUTOCLAIM` - reports the native delivery count.
     async fn pending_meta(&self, limit: u64) -> Result<HashMap<String, (u64, u64)>, RedisError> {
         let rows: Vec<(String, String, u64, u64)> = self
-            .pool
+            .reader
+            .client()
             .xpending(
                 self.key.as_str(),
                 self.group.as_str(),
@@ -363,6 +454,50 @@ impl RedisSubscriber {
             .into_iter()
             .map(|(id, _consumer, idle, count)| (id, (idle, count)))
             .collect())
+    }
+}
+
+impl RedisSubscriber {
+    /// Yields one batch per read, native all the way down as the batches without a window are:
+    /// `size` is the read's `COUNT`, and the batch shares one slot of `window`, so what the batch
+    /// handler queued commits with the settles of every entry.
+    pub(crate) fn round_batches<'a>(
+        &'a mut self,
+        window: &'a Arc<Window<StreamForm>>,
+        size: NonZeroUsize,
+    ) -> impl Stream<Item = Result<Vec<RoundMessage<StreamForm>>, RedisError>> + Send + 'a {
+        let count = u64::try_from(size.get()).unwrap_or(u64::MAX);
+        window.fill_at(size.get());
+        unfold(self, move |s| async move {
+            loop {
+                if let Some(failure) = window.take_failure() {
+                    return Some((Err(failure), s));
+                }
+                window.discarded(s.discard_stale());
+                if !s.buffer.is_empty() {
+                    let tail = s.buffer.split_off(size.get().min(s.buffer.len()));
+                    let entries = std::mem::replace(&mut s.buffer, tail);
+                    let members = u32::try_from(entries.len()).unwrap_or(u32::MAX);
+                    let round = window.open_batch(members);
+                    let mut batch = Vec::with_capacity(entries.len());
+                    for entry in entries {
+                        match s.message(entry) {
+                            Ok(delivery) => batch.push(RoundMessage::new(
+                                delivery,
+                                Arc::clone(window),
+                                round.clone(),
+                            )),
+                            Err(err) => return Some((Err(err), s)),
+                        }
+                    }
+                    return Some((Ok(batch), s));
+                }
+                if let Err(err) = s.fetch(count).await {
+                    return Some((Err(err), s));
+                }
+                window.fetched(s.buffer.len());
+            }
+        })
     }
 }
 
@@ -389,7 +524,7 @@ impl Subscriber for RedisSubscriber {
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
         unfold(self, |s| async move {
             loop {
-                s.discard_stale();
+                let _ = s.discard_stale();
                 if let Some(entry) = s.buffer.pop_front() {
                     return Some((s.message(entry), s));
                 }
@@ -430,7 +565,7 @@ impl BatchSubscriber for RedisSubscriber {
         let count = u64::try_from(size.get()).unwrap_or(u64::MAX);
         unfold(self, move |s| async move {
             loop {
-                s.discard_stale();
+                let _ = s.discard_stale();
                 if !s.buffer.is_empty() {
                     // Move the entries out first so `s.message` can borrow `s` without overlapping
                     // a live mutable borrow of `s.buffer`. The read already capped itself at
