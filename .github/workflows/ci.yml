@@ -159,20 +159,31 @@ jobs:
             --all-features -- -D warnings
           cargo clippy -p ruststream-fred-bench --all-targets -- -D warnings
 
+      # The core release this crate is built against, read from the lock file: the scaffolds are
+      # checked against the core a user of this crate gets, not against the core's unreleased main.
+      - name: Read the core release in the lock file
+        id: core-release
+        if: "!cancelled() && env.TEMPLATES_CHANGED == 'true'"
+        run: |
+          version=$(awk '/^name = "ruststream"$/ { getline; split($0, v, "\""); print v[2] }' Cargo.lock)
+          test -n "$version"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
       # The rendered scaffolds pin `ruststream` (and depend on this crate), so the cross-repo
       # sibling checkout must be present to patch them at the local checkouts.
       - uses: actions/checkout@v7
         if: "!cancelled() && env.TEMPLATES_CHANGED == 'true'"
         with:
           repository: powersemmi/ruststream
+          ref: ${{ steps.core-release.outputs.tag }}
           persist-credentials: false
           path: ruststream
 
       # The template-contract drift check: render each Redis scaffold and compile it, so an API
       # change that breaks a template fails here, not a user's first `cargo build`. Compile-only,
       # with no live Redis. The rendered projects pin `ruststream` / `ruststream-fred` by version,
-      # so patch both at the local checkouts to test the code in this PR rather than the last
-      # release. No --locked: a fresh scaffold has no lock file, which is what a user starts from.
+      # so patch both at the local checkouts: this crate as the PR has it, and the core at the
+      # release in the lock file. No --locked: a fresh scaffold has no lock file, which is what a user starts from.
       - name: Render and check the Redis templates
         if: "!cancelled() && env.TEMPLATES_CHANGED == 'true'"
         run: |
@@ -222,13 +233,9 @@ jobs:
         id: minimal-pin
         if: "!cancelled() && steps.minimal-resolve.outcome == 'success'"
         run: |
-          # The serde floor is set by what the graph's own manifests demand, not by serde itself:
-          # serde_norway (the YAML writer behind the core's asyncapi feature) requires 1.0.203, and
-          # serde_json requires 1.0.194 from its lowest release that is not yanked, 1.0.127.
-          # rmp-serde's own floor, 1.0.136, sits below both.
-          cargo update -p serde --precise 1.0.203
           # tracing-attributes declares `syn = "1"` yet calls `LitInt::base10_parse`, added in
-          # syn 1.0.4. serde_derive is on syn 2 at the pin above, so nothing else lifts syn 1.x.
+          # syn 1.0.4. serde_derive is on syn 2 at the serde floor the graph resolves to, so
+          # nothing else lifts syn 1.x.
           cargo update -p syn@1.0.0 --precise 1.0.4
           # fred declares `tokio-stream = "0.1"` but uses `tokio_stream::wrappers`, added in 0.1.1.
           cargo update -p tokio-stream --precise 0.1.1
@@ -425,6 +432,16 @@ jobs:
           REDIS_TEST_URL: redis://127.0.0.1:6379
           RUSTSTREAM_REQUIRE_LIVE: "1"
         run: cargo test -p ruststream-fred --features testing --test conformance_fred -- --test-threads=1
+
+      # The suites fed with this crate's own descriptors and publishers. The settlement suite reads
+      # the claiming mode, so it needs the 8.4 standalone beside the 7.x one.
+      - name: Run Redis contract suites
+        working-directory: ruststream-fred
+        env:
+          REDIS_TEST_URL: redis://127.0.0.1:6379
+          REDIS_84_TEST_URL: redis://127.0.0.1:6386
+          RUSTSTREAM_REQUIRE_LIVE: "1"
+        run: cargo test -p ruststream-fred --features testing --test conformance_suites -- --test-threads=1
 
       - name: Stop Redis topologies
         if: always()
