@@ -58,6 +58,14 @@ pub enum RedisError {
     /// versions, and a prefix would only repeat them.
     #[error("{0}")]
     ServerTooOld(String),
+
+    /// A window of a `.pipeline()` subscription failed to send what it owed.
+    ///
+    /// Reported once, on the subscription's delivery stream, and the message names the
+    /// subscription, how many commands the flush carried and how many failed. On the forms that
+    /// settle, the entries whose settles failed stay pending and are delivered again.
+    #[error("{0}")]
+    Flush(String),
 }
 
 impl RedisError {

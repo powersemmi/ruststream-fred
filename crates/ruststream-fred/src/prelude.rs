@@ -27,7 +27,11 @@ pub use ruststream::{OwnedTransactions, Positioned, Seeker, Transaction, Transac
 
 // `keys` arrives as the module, not as a glob: its members are short words a service also uses for
 // its own types, and `Ctx<keys::SeekHandle>` reads as what it is at the use site.
-pub use crate::context::{PubSubContext, StreamBatchContext, StreamContext, keys};
+pub use crate::context::{
+    PipelineContext, PoolContext, PubSubContext, StreamBatchContext, StreamContext, keys,
+};
+
+pub use crate::pipeline::{Bindable, InRound, RedisPipelineSteps};
 
 pub use crate::{
     DelayedRetry, PARTITION_KEY_HEADER, PubSubMode, RedisBroker, RedisGroupPosition,

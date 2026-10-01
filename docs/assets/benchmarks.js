@@ -12,17 +12,17 @@
  *
  * A row carries three measurements - the client driven by hand, this crate's consumer driven by
  * hand, and the service a user writes - and the two differences between them, each with its own
- * verdict.
+ * verdict. The code table is the crate's own cost per message in instructions and allocations,
+ * with what starting the service cost once.
  */
 
 (() => {
   "use strict";
 
-  // Schema 2 added a section this page does not render; both still carry `scenarios`. A document
-  // declaring anything else is not rendered as if it were one of these: printing wrong numbers is
-  // worse than printing none.
-  // Schema 3 reports each loop as its best and worst round; a schema 1 document carried a
-  // median with its extremes, and both render.
+  // Schema 1 carried each loop as a median with its extremes, schema 2 added the `code` section,
+  // and schema 3 reports each loop as its best, median and worst round. All three render. A
+  // document declaring anything else is not rendered as if it were one of these: printing wrong
+  // numbers is worse than printing none.
   const SCHEMAS = [1, 2, 3];
   const TIMEOUT_MS = 8000;
 
@@ -38,6 +38,7 @@
     "os",
     "broker",
     "rustc",
+    "valgrind",
     "profile",
     "features",
     "rustflags",
@@ -66,8 +67,12 @@
     }
   }
 
-  const number = (value, lang) =>
-    typeof value === "number" ? value.toLocaleString(lang, { maximumFractionDigits: 1 }) : "-";
+  // Allocations per message are published to three decimals: one allocation per thousand
+  // messages is a cost, and one decimal would print it as zero.
+  const number = (value, lang, digits = 1) =>
+    typeof value === "number"
+      ? value.toLocaleString(lang, { maximumFractionDigits: digits })
+      : "-";
 
   function side(measurement, unit, lang) {
     if (!measurement) {
@@ -75,10 +80,15 @@
     }
     if (typeof measurement.best === "number") {
       const best = number(measurement.best, lang) + " " + unit;
-      if (typeof measurement.worst !== "number") {
+      // The parenthesis is the typical round: the median where the document carries one, and the
+      // worst round where it does not. The worst round stays out of the cell otherwise, because
+      // what it is there for is the spread the verdict rule reads.
+      const typical =
+        typeof measurement.median === "number" ? measurement.median : measurement.worst;
+      if (typeof typical !== "number") {
         return best;
       }
-      return best + " (" + number(measurement.worst, lang) + ")";
+      return best + " (" + number(typical, lang) + ")";
     }
     const median = number(measurement.median, lang) + " " + unit;
     if (typeof measurement.min !== "number" || typeof measurement.max !== "number") {
@@ -129,6 +139,33 @@
     return element;
   }
 
+  function code(results, labels, lang) {
+    const element = document.createElement("table");
+    const head = element.createTHead().insertRow();
+    for (const column of [labels.scenario, labels.instructions, labels.allocations, labels.cold]) {
+      head.appendChild(text("th", column));
+    }
+    const body = element.createTBody();
+    for (const scenario of results.code) {
+      const row = body.insertRow();
+      row.appendChild(text("td", scenario.name));
+      row.appendChild(text("td", number(scenario.framework?.instructions, lang)));
+      row.appendChild(text("td", number(scenario.framework?.allocations, lang, 3)));
+      // Two numbers in one cell: what starting cost in instructions, and in allocations.
+      row.appendChild(
+        text(
+          "td",
+          scenario.cold
+            ? number(scenario.cold.instructions, lang) +
+                " / " +
+                number(scenario.cold.allocations, lang)
+            : "-",
+        ),
+      );
+    }
+    return element;
+  }
+
   function machine(results, labels) {
     const environment = results.environment || {};
     const rows = MACHINE.filter((field) => environment[field]).map((field) => [
@@ -140,6 +177,14 @@
       results.crate + " " + results.crate_version + " on ruststream " + results.core_version,
     ]);
     rows.push([labels.measured, results.measured_at]);
+    const coded = results.code_measured;
+    if (coded) {
+      rows.push([
+        labels.codeMeasured,
+        results.crate + " " + coded.crate_version + " on ruststream " + coded.core_version +
+          ", " + coded.measured_at,
+      ]);
+    }
 
     const element = document.createElement("table");
     const body = element.createTBody();
@@ -154,12 +199,13 @@
   async function main() {
     const container = document.getElementById("benchmark-results");
     const machineContainer = document.getElementById("benchmark-machine");
+    const codeContainer = document.getElementById("benchmark-code");
     if (!container) {
       return;
     }
     const labels = JSON.parse(container.dataset.benchmarkLabels);
     const lang = document.documentElement.lang || "en";
-    for (const element of [container, machineContainer]) {
+    for (const element of [container, machineContainer, codeContainer]) {
       element?.replaceChildren(text("p", labels.loading));
     }
 
@@ -169,13 +215,16 @@
     const results = await load(source);
     if (!results) {
       // A broken publish is visible instead of silently missing.
-      for (const element of [container, machineContainer]) {
+      for (const element of [container, machineContainer, codeContainer]) {
         element?.replaceChildren(text("p", labels.unavailable));
       }
       return;
     }
     container.replaceChildren(table(results, labels, lang));
     machineContainer?.replaceChildren(machine(results, labels));
+    codeContainer?.replaceChildren(
+      results.code?.length ? code(results, labels, lang) : text("p", labels.unavailable),
+    );
   }
 
   // Material swaps page content without a reload, so the tables are built on every navigation
