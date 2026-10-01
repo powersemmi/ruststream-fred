@@ -159,20 +159,31 @@ jobs:
             --all-features -- -D warnings
           cargo clippy -p ruststream-fred-bench --all-targets -- -D warnings
 
+      # The core release this crate is built against, read from the lock file: the scaffolds are
+      # checked against the core a user of this crate gets, not against the core's unreleased main.
+      - name: Read the core release in the lock file
+        id: core-release
+        if: "!cancelled() && env.TEMPLATES_CHANGED == 'true'"
+        run: |
+          version=$(awk '/^name = "ruststream"$/ { getline; split($0, v, "\""); print v[2] }' Cargo.lock)
+          test -n "$version"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
       # The rendered scaffolds pin `ruststream` (and depend on this crate), so the cross-repo
       # sibling checkout must be present to patch them at the local checkouts.
       - uses: actions/checkout@v7
         if: "!cancelled() && env.TEMPLATES_CHANGED == 'true'"
         with:
           repository: powersemmi/ruststream
+          ref: ${{ steps.core-release.outputs.tag }}
           persist-credentials: false
           path: ruststream
 
       # The template-contract drift check: render each Redis scaffold and compile it, so an API
       # change that breaks a template fails here, not a user's first `cargo build`. Compile-only,
       # with no live Redis. The rendered projects pin `ruststream` / `ruststream-fred` by version,
-      # so patch both at the local checkouts to test the code in this PR rather than the last
-      # release. No --locked: a fresh scaffold has no lock file, which is what a user starts from.
+      # so patch both at the local checkouts: this crate as the PR has it, and the core at the
+      # release in the lock file. No --locked: a fresh scaffold has no lock file, which is what a user starts from.
       - name: Render and check the Redis templates
         if: "!cancelled() && env.TEMPLATES_CHANGED == 'true'"
         run: |
