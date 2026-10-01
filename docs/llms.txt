@@ -29,7 +29,7 @@ This site holds the entry pages. The crate's guide is its overview on docs.rs, a
 - [Transactions](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#transactions): `MULTI` / `EXEC` groups of publishes on the stream publisher
 - [The prelude](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#the-prelude): the form preludes and the mixed-form prelude
 - [The generated document](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#the-generated-document): what the `asyncapi` feature reports about a Redis channel
-- [Testing](https://docs.rs/ruststream-fred/latest/ruststream_fred/testing/index.html): the in-process broker behind the `testing` feature, driven by `TestApp`
+- [Testing](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#testing): the service's own app on an in-process Redis, driven by `TestApp`, and the same test body live
 - [Operations](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#operations): topologies, pools, credentials and TLS
 - [Cargo features](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#cargo-features): `testing`, `asyncapi`, the TLS backends, `sentinel-auth` and `credential-provider`
 

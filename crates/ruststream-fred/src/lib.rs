@@ -5,10 +5,14 @@
 mod asyncapi;
 mod broker;
 mod claim;
+mod connection;
 mod convert;
 mod delay;
 mod envelope;
 mod error;
+#[cfg(feature = "testing")]
+mod in_process;
+mod loopback;
 mod message;
 mod partition;
 mod publisher;
@@ -27,6 +31,7 @@ pub mod prelude;
 // mount site names the policy by the same word whichever form it is on; the types they hold stay
 // re-exported at the crate root as well, for a file that mixes forms.
 pub mod list;
+pub mod pipeline;
 pub mod pubsub;
 pub mod stream;
 
@@ -38,6 +43,10 @@ pub use list::{
 };
 pub use message::{DELIVERY_COUNT_HEADER, IDLE_MS_HEADER, PARTITION_KEY_HEADER, RedisMessage};
 pub use partition::{RedisPublishOptions, RedisPublishSteps};
+pub use pipeline::{
+    RedisListAtomic, RedisListPipeline, RedisPubSubAtomic, RedisPubSubPatternAtomic,
+    RedisPubSubPatternPipeline, RedisPubSubPipeline, RedisStreamAtomic, RedisStreamPipeline,
+};
 pub use publisher::{
     RedisDefaultPublish, RedisDefaultPublisher, RedisPublish, RedisPublisher, RedisTransaction,
 };
@@ -60,6 +69,3 @@ pub use fred::types::config::CredentialProvider;
     feature = "tls-native-tls"
 ))]
 pub use fred::types::config::{TlsConfig, TlsConnector};
-
-#[cfg(feature = "testing")]
-pub mod testing;

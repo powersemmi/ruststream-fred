@@ -24,7 +24,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use fred::clients::Client;
+use fred::clients::{Client, Pool};
 use fred::interfaces::{ClientLike, PubsubInterface};
 use fred::types::{Message, MessageKind};
 use futures::Stream;
@@ -37,11 +37,17 @@ use ruststream::{
     Lend, NamedCopies, OutgoingMessage, PairError, Partitioned, PublishPolicy, Publisher,
     RedeliveryAddress, RedeliveryAddressed, RetryDeclaration, SubscriptionSource,
 };
-use tokio::sync::broadcast::{Receiver, error::RecvError};
+use tokio::runtime::Handle;
+use tokio::sync::broadcast::Receiver;
+use tokio::sync::broadcast::error::{RecvError, TryRecvError};
+use tracing::warn;
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::envelope::{SharedEnvelope, frame, unframe};
+use crate::loopback::{InFlight, Tap};
 use crate::partition::{RedisPublishOptions, resolved_headers};
+use crate::pipeline::{PubSubForm, RoundMessage, Window};
+use crate::publisher::joins_round;
 use crate::route::Route;
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
 
@@ -77,7 +83,8 @@ pub mod prelude {
     pub use super::{PubSubMode, Publish, RedisPubSub, RedisPubSubPattern};
     // `keys` arrives as the module, not as a glob: its members are short words a service also uses
     // for its own types, and `Ctx<keys::Channel>` reads as what it is at the use site.
-    pub use crate::context::{PubSubContext, keys};
+    pub use crate::context::{PipelineContext, PoolContext, PubSubContext, keys};
+    pub use crate::pipeline::{Bindable, InRound, RedisPipelineSteps};
     pub use crate::{PARTITION_KEY_HEADER, RedisBroker, RedisPublishOptions, RedisPublishSteps};
 
     #[cfg(any(
@@ -131,6 +138,8 @@ pub struct RedisPubSub {
     /// Where the mount site sends a spent delivery, taken from its retry declaration when the
     /// subscription opens, so the broker publishes to that name as the channel it is.
     dead_letter: Option<String>,
+    /// `None` keeps the capacity `fred` gives a client's broadcast channels by default.
+    buffer: Option<NonZeroUsize>,
 }
 
 impl Debug for RedisPubSub {
@@ -140,6 +149,7 @@ impl Debug for RedisPubSub {
             .field("mode", &self.mode)
             .field("codec", &self.codec.is_some())
             .field("dead_letter", &self.dead_letter)
+            .field("buffer", &self.buffer)
             .finish()
     }
 }
@@ -152,6 +162,7 @@ impl RedisPubSub {
             mode: PubSubMode::default(),
             codec: None,
             dead_letter: None,
+            buffer: None,
         }
     }
 
@@ -168,10 +179,42 @@ impl RedisPubSub {
         self
     }
 
+    /// Sets how many messages the subscription holds that its handler has not taken yet.
+    ///
+    /// Redis pushes a Pub/Sub message the moment it is published, and the subscription keeps it
+    /// until the handler asks for the next one. The buffer bounds how many may wait. Once it is
+    /// full, each new message drops the oldest, and the subscription logs a warning with the
+    /// channel and the count it lost. The default is `fred`'s own
+    /// (`PerformanceConfig::broadcast_channel_capacity`, 32 messages in `fred` 10.1).
+    ///
+    /// Raise it for a handler that falls behind bursts: set it to the largest burst the handler
+    /// must absorb. The room is reserved when the subscription opens, about 600 bytes per message
+    /// of buffer whatever the payloads weigh, because `fred` sizes all eight of a client's
+    /// notification channels by it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream::nonzero;
+    /// use ruststream_fred::RedisPubSub;
+    ///
+    /// // A handler that falls behind a burst of up to ten thousand events loses none of them.
+    /// let events = RedisPubSub::new("events").buffer(nonzero!(10_000));
+    /// # let _ = events;
+    /// ```
+    pub const fn buffer(mut self, messages: NonZeroUsize) -> Self {
+        self.buffer = Some(messages);
+        self
+    }
+
     /// The channel this subscription listens on.
     #[must_use]
     pub fn channel(&self) -> &str {
         &self.channel
+    }
+
+    pub(crate) const fn buffer_size(&self) -> Option<NonZeroUsize> {
+        self.buffer
     }
 
     pub(crate) const fn delivery_mode(&self) -> PubSubMode {
@@ -234,11 +277,21 @@ impl RedisPubSub {
 /// let events = RedisPubSubPattern::new("events.*");
 /// assert_eq!(events.pattern(), "events.*");
 /// ```
+///
+/// Sharded Pub/Sub has no pattern subscription, so a pattern takes no mode:
+///
+/// ```compile_fail
+/// use ruststream_fred::{PubSubMode, RedisPubSubPattern};
+///
+/// let events = RedisPubSubPattern::new("events.*").mode(PubSubMode::Sharded);
+/// ```
 #[derive(Clone)]
 #[must_use]
 pub struct RedisPubSubPattern {
     pattern: String,
     codec: Option<SharedEnvelope>,
+    /// `None` keeps the capacity `fred` gives a client's broadcast channels by default.
+    buffer: Option<NonZeroUsize>,
 }
 
 impl Debug for RedisPubSubPattern {
@@ -246,6 +299,7 @@ impl Debug for RedisPubSubPattern {
         f.debug_struct("RedisPubSubPattern")
             .field("pattern", &self.pattern)
             .field("codec", &self.codec.is_some())
+            .field("buffer", &self.buffer)
             .finish()
     }
 }
@@ -256,6 +310,7 @@ impl RedisPubSubPattern {
         Self {
             pattern: pattern.into(),
             codec: None,
+            buffer: None,
         }
     }
 
@@ -266,10 +321,42 @@ impl RedisPubSubPattern {
         self
     }
 
+    /// Sets how many messages the subscription holds that its handler has not taken yet.
+    ///
+    /// Redis pushes a Pub/Sub message the moment it is published, and the subscription keeps it
+    /// until the handler asks for the next one. The buffer bounds how many may wait. Once it is
+    /// full, each new message drops the oldest, and the subscription logs a warning with the
+    /// channel and the count it lost. The default is `fred`'s own
+    /// (`PerformanceConfig::broadcast_channel_capacity`, 32 messages in `fred` 10.1).
+    ///
+    /// Raise it for a handler that falls behind bursts: set it to the largest burst the handler
+    /// must absorb. The room is reserved when the subscription opens, about 600 bytes per message
+    /// of buffer whatever the payloads weigh, because `fred` sizes all eight of a client's
+    /// notification channels by it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream::nonzero;
+    /// use ruststream_fred::RedisPubSubPattern;
+    ///
+    /// // A handler that falls behind a burst of up to ten thousand events loses none of them.
+    /// let events = RedisPubSubPattern::new("events.*").buffer(nonzero!(10_000));
+    /// # let _ = events;
+    /// ```
+    pub const fn buffer(mut self, messages: NonZeroUsize) -> Self {
+        self.buffer = Some(messages);
+        self
+    }
+
     /// The glob this subscription matches channels against.
     #[must_use]
     pub fn pattern(&self) -> &str {
         &self.pattern
+    }
+
+    pub(crate) const fn buffer_size(&self) -> Option<NonZeroUsize> {
+        self.buffer
     }
 
     pub(crate) fn codec_handle(&self) -> Option<SharedEnvelope> {
@@ -352,96 +439,6 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisPubSubPattern {
     }
 }
 
-/// Mounts the production descriptor on the in-process stand-in, which routes by channel name
-/// alone.
-///
-/// The descriptor is inert here beyond its channel: [`mode`](RedisPubSub::mode) selects between
-/// commands the stand-in does not issue, and the envelope [`codec`](RedisPubSub::codec) never
-/// runs, since deliveries carry their headers natively instead of framed into the payload, so a
-/// framing mismatch between a subscription and its publisher cannot surface in process.
-///
-/// Settlement matches the real transport: deliveries here report [`AckError::Unsupported`] and a
-/// requeue is refused rather than performed, so a test cannot assert on an acknowledgement Pub/Sub
-/// is unable to make.
-#[cfg(feature = "testing")]
-impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisPubSub {
-    type Subscriber = crate::testing::RedisTestSubscriber;
-    /// The answer the real broker gives, so a registration that compiles against Redis compiles
-    /// against the stand-in.
-    type Copies = AddressedCopies;
-
-    fn name(&self) -> &str {
-        self.channel()
-    }
-
-    fn declare_retry(self, declaration: &RetryDeclaration) -> Self {
-        self.with_declaration(declaration)
-    }
-
-    async fn subscribe(
-        self,
-        connected: &crate::testing::ConnectedRedisTestBroker,
-    ) -> Result<Self::Subscriber, RedisError> {
-        let recorded =
-            connected.record_routes(self.channel(), self.dead_letter(), &self.route())?;
-        let subscriber = connected.subscribe_channel(self.channel()).await?;
-        recorded.keep();
-        Ok(subscriber)
-    }
-
-    /// The same body the real broker's descriptor writes, so a document built in a test is the
-    /// document the service publishes.
-    #[cfg(feature = "asyncapi")]
-    fn channel_bindings(&self) -> Bindings {
-        self.describe()
-    }
-}
-
-/// The same answer the real broker gives, so a scope that starts against Redis starts here.
-#[cfg(feature = "testing")]
-impl RedeliveryAddressed<crate::testing::ConnectedRedisTestBroker> for RedisPubSub {
-    fn redelivery_address(
-        &self,
-        _connected: &crate::testing::ConnectedRedisTestBroker,
-    ) -> impl Future<Output = Result<RedeliveryAddress, RedisError>> {
-        ready(Ok(self.redelivery_channel()))
-    }
-}
-
-/// Refuses the mount, because the stand-in matches channel names exactly: a glob subscription
-/// would go silent on every channel it is meant to catch while still matching its own literal
-/// spelling, which neither delivers what production delivers nor fails where production fails.
-/// Exercise `PSUBSCRIBE` against a real server.
-#[cfg(feature = "testing")]
-impl SubscriptionSource<crate::testing::ConnectedRedisTestBroker> for RedisPubSubPattern {
-    type Subscriber = crate::testing::RedisTestSubscriber;
-    type Copies = NamedCopies;
-
-    fn name(&self) -> &str {
-        self.pattern()
-    }
-
-    // Refused without touching the connection, so the body suspends on nothing.
-    fn subscribe(
-        self,
-        _connected: &crate::testing::ConnectedRedisTestBroker,
-    ) -> impl Future<Output = Result<Self::Subscriber, RedisError>> {
-        ready(Err(RedisError::InvalidOptions(format!(
-            "pattern subscription on `{}` cannot mount on the in-process test broker: it matches \
-             channel names exactly, so the subscription would miss every channel the glob is \
-             meant to catch; test PSUBSCRIBE against a real Redis server",
-            self.pattern
-        ))))
-    }
-
-    /// The same body the real broker's descriptor writes, so a document built in a test is the
-    /// document the service publishes.
-    #[cfg(feature = "asyncapi")]
-    fn channel_bindings(&self) -> Bindings {
-        self.describe()
-    }
-}
-
 /// A Pub/Sub subscription backed by a dedicated `fred` client, so its message stream and channel
 /// state are isolated from other subscribers and from the publishing pool.
 ///
@@ -458,12 +455,8 @@ impl Debug for RedisPubSubSubscriber {
 }
 
 impl RedisPubSubSubscriber {
-    pub(crate) fn new(
-        client: Client,
-        rx: Receiver<Message>,
-        codec: Option<SharedEnvelope>,
-    ) -> Self {
-        Self(BufferedSubscriber::new(PubSubWire { client, rx, codec }))
+    pub(crate) fn new(wire: PubSubWire) -> Self {
+        Self(BufferedSubscriber::new(wire))
     }
 }
 
@@ -475,9 +468,10 @@ impl ruststream::Subscriber for RedisPubSubSubscriber {
     ///
     /// # Cancel safety
     ///
-    /// Dropping the returned stream between items is safe. Because Pub/Sub has no buffering, any
-    /// message published while no stream is polling is lost (this is Redis Pub/Sub semantics, not a
-    /// limitation of this client).
+    /// Dropping the returned stream between items is safe. What arrives while no stream is polling
+    /// waits in the subscription's [buffer](crate::RedisPubSub::buffer); past it the oldest is
+    /// lost, and while the subscription is disconnected everything is, as Redis Pub/Sub keeps
+    /// nothing for a subscriber that is not there.
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
         self.0.stream()
     }
@@ -501,10 +495,18 @@ impl BatchSubscriber for RedisPubSubSubscriber {
 }
 
 /// The wire side of a Pub/Sub subscription: the dedicated client and the channel it feeds.
-struct PubSubWire {
+pub(crate) struct PubSubWire {
+    /// The channel or the glob it reads, for the warning a lost message raises.
+    name: String,
     client: Client,
     rx: Receiver<Message>,
     codec: Option<SharedEnvelope>,
+    /// The broker's pool, handed to every delivery for `Ctx<keys::FredPool>`.
+    pool: Pool,
+    /// The subscription's registration with the in-process server; empty on a real connection.
+    tap: Tap,
+    /// The broker's runtime, where the dedicated client is closed once the subscription stops.
+    runtime: Handle,
 }
 
 impl Debug for PubSubWire {
@@ -513,18 +515,165 @@ impl Debug for PubSubWire {
     }
 }
 
+impl PubSubWire {
+    pub(crate) fn new(
+        name: String,
+        client: Client,
+        rx: Receiver<Message>,
+        codec: Option<SharedEnvelope>,
+        pool: Pool,
+        tap: Tap,
+        runtime: Handle,
+    ) -> Self {
+        Self {
+            name,
+            client,
+            rx,
+            codec,
+            pool,
+            tap,
+            runtime,
+        }
+    }
+
+    /// The window's client: a connection of the pool the flushes go out on.
+    pub(crate) fn round_client(&self) -> Client {
+        self.pool.next().clone()
+    }
+
+    /// Yields one delivery per message, each with a slot in `window`, telling the window how
+    /// many more have arrived behind it, and reports a failed flush of the window once.
+    pub(crate) fn round_stream<'a>(
+        &'a mut self,
+        window: &'a Arc<Window<PubSubForm>>,
+    ) -> impl Stream<Item = Result<RoundMessage<PubSubForm>, RedisError>> + Send + 'a {
+        let codec = self.codec.clone();
+        let (pool, tap, name) = (&self.pool, &self.tap, self.name.as_str());
+        unfold((&mut self.rx, codec), move |(rx, codec)| async move {
+            loop {
+                if let Some(failure) = window.take_failure() {
+                    return Some((Err(failure), (rx, codec)));
+                }
+                match rx.recv().await {
+                    Ok(msg) => {
+                        let delivery = to_message(&msg, codec.as_ref(), pool, tap);
+                        window.yielded(rx.len());
+                        let round = window.open();
+                        return Some((
+                            Ok(RoundMessage::new(delivery, Arc::clone(window), round)),
+                            (rx, codec),
+                        ));
+                    }
+                    // The receiver fell behind the broadcast buffer; skip the gap and keep reading.
+                    Err(RecvError::Lagged(skipped)) => lagged(name, tap, skipped),
+                    Err(RecvError::Closed) => return None,
+                }
+            }
+        })
+    }
+}
+
+/// Reports the messages a subscription that fell behind its buffer lost, and forgets them.
+fn lagged(name: &str, tap: &Tap, skipped: u64) {
+    warn!(
+        subscription = name,
+        lost = skipped,
+        "a Redis Pub/Sub subscription fell behind its buffer and lost the oldest messages; raise \
+         its buffer or speed up its handler"
+    );
+    #[cfg(feature = "testing")]
+    tap.discard(usize::try_from(skipped).unwrap_or(usize::MAX));
+    #[cfg(not(feature = "testing"))]
+    let _ = tap;
+}
+
+impl PubSubWire {
+    /// Yields one batch of up to `size` messages: the first one waited for, and those already
+    /// arrived behind it. The batch shares one slot of `window`.
+    pub(crate) fn round_batches<'a>(
+        &'a mut self,
+        window: &'a Arc<Window<PubSubForm>>,
+        size: NonZeroUsize,
+    ) -> impl Stream<Item = Result<Vec<RoundMessage<PubSubForm>>, RedisError>> + Send + 'a {
+        window.fill_at(size.get());
+        let codec = self.codec.clone();
+        let (pool, tap, name) = (&self.pool, &self.tap, self.name.as_str());
+        unfold((&mut self.rx, codec), move |(rx, codec)| async move {
+            loop {
+                if let Some(failure) = window.take_failure() {
+                    return Some((Err(failure), (rx, codec)));
+                }
+                let first = match rx.recv().await {
+                    Ok(msg) => msg,
+                    Err(RecvError::Lagged(skipped)) => {
+                        lagged(name, tap, skipped);
+                        continue;
+                    }
+                    Err(RecvError::Closed) => return None,
+                };
+                let mut messages = vec![first];
+                while messages.len() < size.get() {
+                    match rx.try_recv() {
+                        Ok(msg) => messages.push(msg),
+                        Err(TryRecvError::Lagged(skipped)) => lagged(name, tap, skipped),
+                        Err(_) => break,
+                    }
+                }
+                let members = u32::try_from(messages.len()).unwrap_or(u32::MAX);
+                for _ in 0..members {
+                    window.yielded(rx.len());
+                }
+                let round = window.open_batch(members);
+                let batch = messages
+                    .iter()
+                    .map(|msg| {
+                        RoundMessage::new(
+                            to_message(msg, codec.as_ref(), pool, tap),
+                            Arc::clone(window),
+                            round.clone(),
+                        )
+                    })
+                    .collect();
+                return Some((Ok(batch), (rx, codec)));
+            }
+        })
+    }
+}
+
 impl Drop for PubSubWire {
     fn drop(&mut self) {
+        // What reached the subscription and was never read leaves with it: the in-process server
+        // counted each message in flight when it sent it.
+        #[cfg(feature = "testing")]
+        {
+            let mut unread = 0_usize;
+            loop {
+                match self.rx.try_recv() {
+                    Ok(_) => unread += 1,
+                    Err(TryRecvError::Lagged(skipped)) => {
+                        unread =
+                            unread.saturating_add(usize::try_from(skipped).unwrap_or(usize::MAX));
+                    }
+                    Err(_) => break,
+                }
+            }
+            self.tap.discard(unread);
+        }
         // The dedicated client owns a background connection task; close it on a detached task since
-        // `drop` cannot await.
+        // `drop` cannot await, on the broker's runtime, which is there wherever the drop happens.
         let client = self.client.clone();
-        tokio::spawn(async move {
+        self.runtime.spawn(async move {
             let _ = client.quit().await;
         });
     }
 }
 
-fn to_message(msg: &Message, codec: Option<&SharedEnvelope>) -> RedisPubSubMessage {
+fn to_message(
+    msg: &Message,
+    codec: Option<&SharedEnvelope>,
+    pool: &Pool,
+    tap: &Tap,
+) -> RedisPubSubMessage {
     let raw = msg.value.as_bytes().unwrap_or(&[]);
     let (payload, headers) = unframe(codec, raw);
     RedisPubSubMessage {
@@ -534,6 +683,8 @@ fn to_message(msg: &Message, codec: Option<&SharedEnvelope>) -> RedisPubSubMessa
         pattern: matches!(msg.kind, MessageKind::PMessage),
         payload,
         headers,
+        pool: pool.clone(),
+        flight: tap.delivered(),
     }
 }
 
@@ -543,15 +694,16 @@ impl ruststream::Subscriber for PubSubWire {
 
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
         let codec = self.codec.clone();
-        unfold((&mut self.rx, codec), |(rx, codec)| async move {
+        let (pool, tap, name) = (&self.pool, &self.tap, self.name.as_str());
+        unfold((&mut self.rx, codec), move |(rx, codec)| async move {
             loop {
                 match rx.recv().await {
                     Ok(msg) => {
-                        let message = to_message(&msg, codec.as_ref());
+                        let message = to_message(&msg, codec.as_ref(), pool, tap);
                         return Some((Ok(message), (rx, codec)));
                     }
                     // The receiver fell behind the broadcast buffer; skip the gap and keep reading.
-                    Err(RecvError::Lagged(_)) => {}
+                    Err(RecvError::Lagged(skipped)) => lagged(name, tap, skipped),
                     Err(RecvError::Closed) => return None,
                 }
             }
@@ -566,6 +718,17 @@ pub struct RedisPubSubMessage {
     pattern: bool,
     payload: Bytes,
     headers: HeaderMap,
+    /// The broker's pool, which `Ctx<keys::FredPool>` hands the handler.
+    pool: Pool,
+    /// The test harness's count of this delivery; empty outside the in-process mode.
+    #[cfg_attr(
+        not(feature = "testing"),
+        allow(
+            dead_code,
+            reason = "held for its release on drop, which only `testing` gives"
+        )
+    )]
+    flight: InFlight,
 }
 
 impl Debug for RedisPubSubMessage {
@@ -593,6 +756,17 @@ impl RedisPubSubMessage {
     #[must_use]
     pub fn from_pattern(&self) -> bool {
         self.pattern
+    }
+
+    /// The broker's connection pool, for the per-delivery context.
+    pub(crate) const fn pool(&self) -> &Pool {
+        &self.pool
+    }
+
+    /// Takes the harness's count of this delivery, for a window to hold until its flush.
+    #[cfg(feature = "testing")]
+    pub(crate) fn take_flight(&mut self) -> InFlight {
+        std::mem::take(&mut self.flight)
     }
 }
 
@@ -699,45 +873,6 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisPubSubPublish {
     }
 }
 
-/// Pairs the production policy against the in-process stand-in, so a routes file's
-/// `.out_reply(Publish)` mounts on both without naming a second type.
-///
-/// Both options the policy carries are inert in process: [`mode`](RedisPubSubPublish::mode)
-/// selects between `PUBLISH` and `SPUBLISH`, neither of which the stand-in issues, and it delivers
-/// headers natively rather than framed into the payload, so the envelope
-/// [`codec`](RedisPubSubPublish::codec) never runs. A published message therefore reads back as
-/// the bare payload here and as a frame on a real server, which is what a `published(..)`
-/// assertion sees.
-///
-/// The capability surface matches: this pairs into
-/// [`RedisTestPlainPublisher`](crate::testing::RedisTestPlainPublisher), which offers [`Publisher`]
-/// and nothing more, exactly as [`RedisPubSubPublisher`] does. A slot bounded on a transaction
-/// capability therefore fails to compile here too, rather than passing in process and breaking on
-/// the production build.
-#[cfg(feature = "testing")]
-impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisPubSubPublish {
-    type Live = crate::testing::RedisTestPlainPublisher;
-
-    fn pair(
-        self,
-        connected: &crate::testing::ConnectedRedisTestBroker,
-    ) -> impl Future<Output = Result<Self::Live, PairError>> {
-        let _ = self;
-        ready(Ok(connected.pubsub_publisher()))
-    }
-
-    /// The same body the real broker's policy writes, so a document built in a test is the
-    /// document the service publishes.
-    #[cfg(feature = "asyncapi")]
-    fn channel_bindings(&self, channel: &str) -> Bindings {
-        crate::asyncapi::channel(&crate::asyncapi::Publish::pubsub(
-            channel,
-            self.mode.as_str(),
-            crate::asyncapi::Envelope::of(self.codec.as_ref()),
-        ))
-    }
-}
-
 /// Publishes Pub/Sub messages with `PUBLISH` (classic) or `SPUBLISH` (sharded): a
 /// [`RedisPubSubPublish`] policy paired with a connection.
 ///
@@ -750,6 +885,8 @@ pub struct RedisPubSubPublisher {
     core: Arc<RedisCore>,
     mode: PubSubMode,
     codec: Option<SharedEnvelope>,
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    round_name: u64,
 }
 
 impl Debug for RedisPubSubPublisher {
@@ -762,8 +899,14 @@ impl Debug for RedisPubSubPublisher {
 }
 
 impl RedisPubSubPublisher {
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    pub(crate) const fn round_name(&self) -> u64 {
+        self.round_name
+    }
+
     pub(crate) fn new(core: Arc<RedisCore>, publish: RedisPubSubPublish) -> Self {
         Self {
+            round_name: core.rounds().publisher(),
             core,
             mode: publish.mode,
             codec: publish.codec,
@@ -789,6 +932,21 @@ impl Publisher for RedisPubSubPublisher {
         options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
         let (channel, payload, headers) = msg.into_parts();
+        if let Some(round) = self
+            .core
+            .rounds()
+            .joined(self.round_name, joins_round(options))
+        {
+            let body = frame(
+                self.codec.as_ref(),
+                payload,
+                &resolved_headers(headers, options),
+            );
+            return round
+                .publish(channel, body, self.mode == PubSubMode::Sharded)
+                .await
+                .map_err(RedisError::publish);
+        }
         send(
             &self.core,
             self.mode,
@@ -827,7 +985,13 @@ pub(crate) async fn send(
 mod tests {
     use super::*;
     use crate::context::PubSubContext;
+    use fred::types::config::Config;
     use ruststream::BuildContext;
+
+    /// An unconnected pool (just client structs); `Pool::new` opens no sockets.
+    fn offline_pool() -> Pool {
+        Pool::new(Config::default(), None, None, None, 1).expect("offline pool")
+    }
 
     #[test]
     fn build_context_reads_channel_and_pattern_flag() {
@@ -836,6 +1000,8 @@ mod tests {
             pattern: false,
             payload: Bytes::from_static(b"{}"),
             headers: HeaderMap::new(),
+            pool: offline_pool(),
+            flight: InFlight::default(),
         };
         let cx = PubSubContext::build(&exact);
         assert_eq!(cx.channel(), "events");
@@ -846,6 +1012,8 @@ mod tests {
             pattern: true,
             payload: Bytes::from_static(b"{}"),
             headers: HeaderMap::new(),
+            pool: offline_pool(),
+            flight: InFlight::default(),
         };
         assert!(PubSubContext::build(&matched).from_pattern());
     }

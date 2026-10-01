@@ -17,8 +17,10 @@ use ruststream::{
 use tracing::warn;
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
+use crate::envelope::frame;
 use crate::list::push;
 use crate::partition::{RedisPublishOptions, resolved_headers};
+use crate::pubsub::PubSubMode;
 use crate::pubsub::send;
 use crate::route::Route;
 use crate::{convert::fields_for_publish, error::RedisError};
@@ -165,6 +167,8 @@ impl DefaultPublish for ConnectedRedisBroker {
 #[derive(Clone)]
 pub struct RedisDefaultPublisher {
     core: Arc<RedisCore>,
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    round_name: u64,
 }
 
 impl Debug for RedisDefaultPublisher {
@@ -176,8 +180,16 @@ impl Debug for RedisDefaultPublisher {
 }
 
 impl RedisDefaultPublisher {
-    pub(crate) const fn new(core: Arc<RedisCore>) -> Self {
-        Self { core }
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    pub(crate) const fn round_name(&self) -> u64 {
+        self.round_name
+    }
+
+    pub(crate) fn new(core: Arc<RedisCore>) -> Self {
+        Self {
+            round_name: core.rounds().publisher(),
+            core,
+        }
     }
 }
 
@@ -197,6 +209,34 @@ impl Publisher for RedisDefaultPublisher {
     ) -> Result<(), Self::Error> {
         let (key, payload, headers) = msg.into_parts();
         let headers = resolved_headers(headers, options);
+        if let Some(round) = self
+            .core
+            .rounds()
+            .joined(self.round_name, joins_round(options))
+        {
+            let joined = match self.core.routes().route(key) {
+                Route::Stream => {
+                    round
+                        .xadd(key, fields_for_publish(Vec::from(payload), &headers))
+                        .await
+                }
+                Route::List { envelope } => {
+                    round
+                        .lpush(key, frame(envelope.as_ref(), &payload, &headers), None)
+                        .await
+                }
+                Route::Channel { mode, envelope } => {
+                    round
+                        .publish(
+                            key,
+                            frame(envelope.as_ref(), &payload, &headers),
+                            mode == PubSubMode::Sharded,
+                        )
+                        .await
+                }
+            };
+            return joined.map_err(RedisError::publish);
+        }
         match self.core.routes().route(key) {
             Route::Stream => append(&self.core, key, Vec::from(payload), &headers).await,
             Route::List { envelope } => {
@@ -207,6 +247,11 @@ impl Publisher for RedisDefaultPublisher {
             }
         }
     }
+}
+
+/// Whether the call site asked this message to join the round of the delivery being handled.
+pub(crate) fn joins_round(options: Option<&RedisPublishOptions>) -> bool {
+    options.is_some_and(|options| options.join_round)
 }
 
 /// `XADD`s one entry onto the stream `key`: the stream publish, shared by [`RedisPublisher`] and
@@ -229,53 +274,6 @@ async fn append(
         .await
         .map_err(RedisError::publish)?;
     Ok(())
-}
-
-/// Pairs the default policy against the in-process stand-in, which records the same routes the
-/// real connection does, so a copy that leaves the wrong way on a server is refused here too.
-#[cfg(feature = "testing")]
-impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisDefaultPublish {
-    type Live = crate::testing::RedisTestPlainPublisher;
-
-    fn pair(
-        self,
-        connected: &crate::testing::ConnectedRedisTestBroker,
-    ) -> impl Future<Output = Result<Self::Live, PairError>> {
-        ready(Ok(connected.default_publisher()))
-    }
-
-    /// The same body the real broker's policy writes, so a document built in a test is the
-    /// document the service publishes.
-    #[cfg(feature = "asyncapi")]
-    fn channel_bindings(&self, channel: &str) -> Bindings {
-        crate::asyncapi::channel(&crate::asyncapi::Publish::stream(channel))
-    }
-}
-
-/// Pairs the production policy against the in-process stand-in, so a routes file's
-/// `.out_reply(Publish)` mounts on both without naming a second type.
-///
-/// The policy carries nothing to honour (`XADD` takes its key from each message), and the
-/// stand-in's publisher offers the same surface the live one does, both transaction kinds
-/// included, so this form loses nothing in process.
-#[cfg(feature = "testing")]
-impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisPublish {
-    type Live = crate::testing::RedisTestPublisher;
-
-    fn pair(
-        self,
-        connected: &crate::testing::ConnectedRedisTestBroker,
-    ) -> impl Future<Output = Result<Self::Live, PairError>> {
-        ready(Ok(connected.publisher()))
-    }
-
-    /// An `XADD` carries its headers as entry fields and the policy has no settings of its own, so
-    /// what the document learns from here is which Redis structure the channel is and which stream
-    /// key the entries are appended to.
-    #[cfg(feature = "asyncapi")]
-    fn channel_bindings(&self, channel: &str) -> Bindings {
-        crate::asyncapi::channel(&crate::asyncapi::Publish::stream(channel))
-    }
 }
 
 /// The live stream publisher: [`RedisPublish`] paired with a connection. Cheap to clone.
@@ -316,6 +314,8 @@ impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisPublish {
 pub struct RedisPublisher {
     core: Arc<RedisCore>,
     txn: Arc<Mutex<Option<Vec<Buffered>>>>,
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    round_name: u64,
 }
 
 impl Debug for RedisPublisher {
@@ -327,8 +327,14 @@ impl Debug for RedisPublisher {
 }
 
 impl RedisPublisher {
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    pub(crate) const fn round_name(&self) -> u64 {
+        self.round_name
+    }
+
     pub(crate) fn new(core: Arc<RedisCore>) -> Self {
         Self {
+            round_name: core.rounds().publisher(),
             core,
             txn: Arc::new(Mutex::new(None)),
         }
@@ -374,6 +380,16 @@ impl Publisher for RedisPublisher {
         msg: OutgoingMessage<'_, BytesMut>,
         options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
+        if let Some(round) = self
+            .core
+            .rounds()
+            .joined(self.round_name, joins_round(options))
+        {
+            let (key, payload, headers) = msg.into_parts();
+            let fields =
+                fields_for_publish(Vec::from(payload), &resolved_headers(headers, options));
+            return round.xadd(key, fields).await.map_err(RedisError::publish);
+        }
         let (key, payload, headers) = msg.into_parts();
         let entry: Buffered = (
             key.to_owned(),
