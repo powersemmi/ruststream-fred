@@ -45,7 +45,7 @@ use crate::recovery::RecoveryConfig;
 use crate::{
     error::RedisError,
     list::{ListWire, RedisList, RedisListPublish, RedisListPublisher, RedisListSubscriber},
-    pipeline::Rounds,
+    pipeline::{Owner, Rounds},
     publisher::{RedisDefaultPublisher, RedisPublisher},
     pubsub::{
         PubSubMode, PubSubWire, RedisPubSub, RedisPubSubPattern, RedisPubSubPublish,
@@ -963,6 +963,16 @@ impl ConnectedRedisBroker {
         &self,
         def: RedisPubSubPattern,
     ) -> Result<RedisPubSubSubscriber, RedisError> {
+        Ok(RedisPubSubSubscriber::new(
+            self.open_pubsub_pattern(def).await?,
+        ))
+    }
+
+    /// Subscribes a dedicated client to the glob `def` names and hands back its wire.
+    pub(crate) async fn open_pubsub_pattern(
+        &self,
+        def: RedisPubSubPattern,
+    ) -> Result<PubSubWire, RedisError> {
         let codec = def.codec_handle();
         let client = self.new_client(def.buffer_size()).await?;
         // Opened before the subscribe, for the reason `subscribe_pubsub` gives.
@@ -974,7 +984,7 @@ impl ConnectedRedisBroker {
         confirm_subscribed(&client).await?;
         let (rx, tap) =
             self.pubsub_tap(rx, PubSubTarget::Pattern(def.pattern()), def.buffer_size());
-        Ok(RedisPubSubSubscriber::new(PubSubWire::new(
+        Ok(PubSubWire::new(
             def.pattern().to_owned(),
             client,
             rx,
@@ -982,7 +992,7 @@ impl ConnectedRedisBroker {
             self.core.pool()?,
             tap,
             self.runtime().clone(),
-        )))
+        ))
     }
 
     /// Opens a list (work-queue) subscription described by `def`.
@@ -1093,6 +1103,16 @@ impl ConnectedRedisBroker {
     /// The runtime this connection was opened on, where the broker spawns its own tasks.
     pub(crate) fn runtime(&self) -> &Handle {
         &self.core.runtime
+    }
+
+    /// What a pipelined subscription's window takes from this connection, or
+    /// [`RedisError::ShutDown`] once it was torn down.
+    pub(crate) fn window_owner(&self) -> Result<Owner, RedisError> {
+        Ok(Owner {
+            rounds: Arc::clone(self.rounds()),
+            runtime: self.runtime().clone(),
+            connection: self.core.connection()?,
+        })
     }
 
     /// Returns a clone of the underlying pool, for advanced operations not covered by the

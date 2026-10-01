@@ -65,8 +65,12 @@ cross-broker table, is at
 The second table is this crate's own cost per message, counted rather than timed: instructions
 under callgrind and allocations under DHAT. Each scenario is the service a user writes, built on
 `RedisBroker` and started against the standalone server of the stand, so every command in it is
-one a service sends: `XREADGROUP` to read a `RedisStream` consumer group, `XACK` to settle, and
-`XADD` to reply through `RedisPublish`.
+one a service sends. A stream scenario reads a `RedisStream` consumer group with `XREADGROUP`,
+settles with `XACK` and replies with `XADD` through `RedisPublish`. A reliable list moves each entry
+with `LMOVE` and settles it with `LREM`. A Pub/Sub scenario reads a channel or a pattern and settles
+nothing. A `.pipeline()` scenario sends a fetch's settles together, and its handler queues one
+`INCR` of its own per delivery; `.pipeline().atomic()` wraps each delivery's settle in its own
+`MULTI` / `EXEC`.
 
 The service runs on a single-threaded tokio runtime, and `fred` drives its connections on the same
 thread. Everything on that thread is counted: the framework, this crate, and `fred` writing the
@@ -81,8 +85,8 @@ the framework's own cost included; the core publishes that cost alone on its
 [benchmarks page](https://powersemmi.github.io/ruststream/latest/benchmarks/).
 
 The service talks to a real server, so a count moves a little between runs: over six runs the
-instruction totals of a scenario stayed within 0.4% of each other and its allocations within eight
-blocks of 59,000. Each floor is therefore the highest count seen plus a margin of 0.1%.
+instruction totals of a scenario stayed within 0.4% of each other and its allocations within a
+few blocks. Each floor is therefore the highest count seen plus a margin of 0.1%.
 `just bench-code` fails on an allocation above the floor a scenario declares, and with
 `--baseline=main` on more than two percent more instructions, and a pull request that changes the
 cost cites its numbers.

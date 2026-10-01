@@ -22,8 +22,8 @@ use ruststream::conformance::harness::InProcessBroker;
 use ruststream::conformance::{capabilities, harness};
 use ruststream::nonzero;
 use ruststream_fred::{
-    DelayedRetry, RedisBroker, RedisList, RedisListPublish, RedisPubSub, RedisPubSubPublish,
-    RedisStream,
+    DelayedRetry, RedisBroker, RedisList, RedisListPublish, RedisPubSub, RedisPubSubPattern,
+    RedisPubSubPublish, RedisStream,
 };
 
 mod live;
@@ -103,6 +103,60 @@ async fn in_process_passes_pubsub_lifecycle() {
     Box::pin(harness::lifecycle(in_process, burst_pubsub, |connected| {
         connected.pubsub_publisher(RedisPubSubPublish::new())
     }))
+    .await;
+}
+
+/// A pattern with room for the lifecycle's burst, matching the suite's channel and no other: the
+/// name holds no glob character.
+fn burst_pattern(channel: &str) -> RedisPubSubPattern {
+    RedisPubSubPattern::new(channel).buffer(nonzero!(64))
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_passes_pattern_lifecycle() {
+    Box::pin(harness::lifecycle(in_process, burst_pattern, |connected| {
+        connected.pubsub_publisher(RedisPubSubPublish::new())
+    }))
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_passes_pattern_batches() {
+    Box::pin(capabilities::batches(
+        in_process,
+        |channel| RedisPubSubPattern::new(channel),
+        |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
+    ))
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passes_pattern_lifecycle() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    Box::pin(harness::lifecycle(
+        move || RedisBroker::standalone(url.clone()),
+        burst_pattern,
+        |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
+    ))
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passes_pattern_batches() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    Box::pin(capabilities::batches(
+        || RedisBroker::standalone(url.clone()),
+        |channel| RedisPubSubPattern::new(channel),
+        |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
+    ))
     .await;
 }
 

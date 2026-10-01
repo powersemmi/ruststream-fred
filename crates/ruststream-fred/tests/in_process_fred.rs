@@ -30,8 +30,8 @@ use ruststream::{
 };
 use ruststream_fred::{
     ConnectedRedisBroker, PARTITION_KEY_HEADER, RedisBroker, RedisError, RedisList,
-    RedisListPublish, RedisMessage, RedisPubSub, RedisPubSubPattern, RedisPubSubPublish,
-    RedisPublishSteps, RedisStream, StreamStart,
+    RedisListPublish, RedisMessage, RedisPubSub, RedisPubSubPattern, RedisPubSubPatternAtomic,
+    RedisPubSubPatternPipeline, RedisPubSubPublish, RedisPublishSteps, RedisStream, StreamStart,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1282,6 +1282,8 @@ fn a_pattern_leaves_the_destination_to_the_mount_site() {
     {
     }
     named::<ConnectedRedisBroker, RedisPubSubPattern>();
+    named::<ConnectedRedisBroker, RedisPubSubPatternPipeline>();
+    named::<ConnectedRedisBroker, RedisPubSubPatternAtomic>();
 }
 
 // The harness cases: the service's app, run in process.

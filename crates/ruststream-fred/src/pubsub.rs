@@ -46,7 +46,7 @@ use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::envelope::{SharedEnvelope, frame, unframe};
 use crate::loopback::{InFlight, Tap};
 use crate::partition::{RedisPublishOptions, resolved_headers};
-use crate::pipeline::{Pipelined, PubSubForm, RoundMessage, Window};
+use crate::pipeline::{PubSubForm, RoundMessage, Window};
 use crate::publisher::joins_round;
 use crate::route::Route;
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
@@ -84,11 +84,8 @@ pub mod prelude {
     // `keys` arrives as the module, not as a glob: its members are short words a service also uses
     // for its own types, and `Ctx<keys::Channel>` reads as what it is at the use site.
     pub use crate::context::{PipelineContext, PoolContext, PubSubContext, keys};
-    pub use crate::pipeline::{AtomicStep, Bindable, InRound};
-    pub use crate::{
-        AtomicPubSub, PARTITION_KEY_HEADER, PipelinedPubSub, RedisBroker, RedisPublishOptions,
-        RedisPublishSteps,
-    };
+    pub use crate::pipeline::{Bindable, InRound, RedisPipelineSteps};
+    pub use crate::{PARTITION_KEY_HEADER, RedisBroker, RedisPublishOptions, RedisPublishSteps};
 
     #[cfg(any(
         feature = "tls-rustls",
@@ -220,25 +217,6 @@ impl RedisPubSub {
         self.buffer
     }
 
-    /// Opens a window on this subscription: the commands its handlers queue through
-    /// [`keys::Pipeline`](crate::context::keys::Pipeline) leave together, in one pipeline on a
-    /// connection of the pool, once nothing is in flight.
-    ///
-    /// Pub/Sub settles nothing, so the window carries the handlers' commands alone; what it adds
-    /// is that a handler's Redis side effects follow its outcome. See [`pipeline`](crate::pipeline).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ruststream_fred::RedisPubSub;
-    ///
-    /// let events = RedisPubSub::new("events").pipeline();
-    /// # let _ = events;
-    /// ```
-    pub const fn pipeline(self) -> Pipelined<Self> {
-        Pipelined::wrap(self)
-    }
-
     pub(crate) const fn delivery_mode(&self) -> PubSubMode {
         self.mode
     }
@@ -298,6 +276,14 @@ impl RedisPubSub {
 ///
 /// let events = RedisPubSubPattern::new("events.*");
 /// assert_eq!(events.pattern(), "events.*");
+/// ```
+///
+/// Sharded Pub/Sub has no pattern subscription, so a pattern takes no mode:
+///
+/// ```compile_fail
+/// use ruststream_fred::{PubSubMode, RedisPubSubPattern};
+///
+/// let events = RedisPubSubPattern::new("events.*").mode(PubSubMode::Sharded);
 /// ```
 #[derive(Clone)]
 #[must_use]
