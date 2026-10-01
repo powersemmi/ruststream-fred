@@ -354,20 +354,17 @@ impl BuildContext<RedisPubSubMessage> for PoolContext {
 /// broker's connection pool.
 ///
 /// Only a pipelined subscription's delivery builds it, which is what makes `Ctx<keys::Pipeline>`
-/// a compile error on a subscription without a window.
+/// a compile error on a mount site without `.pipeline()`.
 ///
 /// # Examples
 ///
 /// ```
 /// # mod demo {
-/// use ruststream::prelude::*;
-/// use ruststream::subscriber;
-/// use ruststream_fred::PipelinedStream;
-/// use ruststream_fred::context::{PipelineContext, keys};
+/// use ruststream_fred::stream::prelude::*;
 /// # #[derive(serde::Deserialize)]
 /// # struct Order { id: u64 }
 ///
-/// #[subscriber(PipelinedStream::new("orders").group("workers"))]
+/// #[subscriber(RedisStream::new("orders").group("workers"))]
 /// async fn work(order: &Order, ctx: &mut Context<'_, PipelineContext>) -> HandlerOutcome {
 ///     let queued = ctx.context(keys::Pipeline).incr("orders.seen").await;
 ///     let _ = order.id;
@@ -375,6 +372,15 @@ impl BuildContext<RedisPubSubMessage> for PoolContext {
 ///         return HandlerOutcome::retry();
 ///     }
 ///     HandlerOutcome::ack()
+/// }
+///
+/// fn app() -> RustStream {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             b.include(work.pipeline());
+///         },
+///     )
 /// }
 /// # }
 /// ```

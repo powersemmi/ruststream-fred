@@ -7,7 +7,6 @@ use ruststream::testing::TestApp;
 use ruststream_fred::context::keys;
 use ruststream_fred::pipeline::RedisPipeline;
 use ruststream_fred::prelude::*;
-use ruststream_fred::{AtomicList, PipelinedList};
 use serde::{Deserialize, Serialize};
 
 /// The address the service's broker is built with; the in-process mode dials nothing.
@@ -31,23 +30,23 @@ async fn queue_and_settle(job: &Job, pipeline: &RedisPipeline) -> HandlerOutcome
     }
 }
 
-#[subscriber(PipelinedList::new("jobs").reliable())]
+#[subscriber(RedisList::new("jobs").reliable())]
 async fn reliable(job: &Job, Ctx(pipeline): Ctx<keys::Pipeline>) -> HandlerOutcome {
     queue_and_settle(job, &pipeline).await
 }
 
-#[subscriber(PipelinedList::new("jobs"))]
+#[subscriber(RedisList::new("jobs"))]
 async fn simple(job: &Job, Ctx(pipeline): Ctx<keys::Pipeline>) -> HandlerOutcome {
     queue_and_settle(job, &pipeline).await
 }
 
-#[subscriber(AtomicList::new("jobs").reliable())]
+#[subscriber(RedisList::new("jobs").reliable())]
 async fn atomic(job: &Job, Ctx(pipeline): Ctx<keys::Pipeline>) -> HandlerOutcome {
     queue_and_settle(job, &pipeline).await
 }
 
 macro_rules! case {
-    ($test:ident, $handler:ident, $keep:literal, $expected:literal) => {
+    ($test:ident, $handler:expr, $keep:literal, $expected:literal) => {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn $test() {
             let app = RustStream::new(AppInfo::new("pipeline", "0.1.0")).with_broker(
@@ -79,37 +78,37 @@ macro_rules! case {
 
 case!(
     a_reliable_job_acknowledged_sends_what_it_queued,
-    reliable,
+    reliable.pipeline(),
     true,
     1
 );
 case!(
     a_reliable_job_dropped_sends_nothing_it_queued,
-    reliable,
+    reliable.pipeline(),
     false,
     0
 );
 case!(
     a_simple_job_acknowledged_sends_what_it_queued,
-    simple,
+    simple.pipeline(),
     true,
     1
 );
 case!(
     a_simple_job_dropped_sends_nothing_it_queued,
-    simple,
+    simple.pipeline(),
     false,
     0
 );
 case!(
     an_atomic_job_acknowledged_sends_what_it_queued,
-    atomic,
+    atomic.pipeline().atomic(),
     true,
     1
 );
 case!(
     an_atomic_job_dropped_sends_nothing_it_queued,
-    atomic,
+    atomic.pipeline().atomic(),
     false,
     0
 );

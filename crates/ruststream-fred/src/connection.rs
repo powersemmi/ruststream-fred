@@ -1,11 +1,16 @@
-//! The pooled connection a connected broker and every handle derived from it share, and whether
-//! its owner has shut it down.
+//! The pooled connection a connected broker and every handle derived from it share, whether its
+//! owner has shut it down, and the connection a subscription reads on.
 
-use std::sync::Arc;
+use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
-use fred::clients::Pool;
+use fred::clients::{Client, Pool};
+use fred::interfaces::{ClientInterface, ClientLike};
+use fred::types::ClientUnblockFlag;
 use ruststream::AckError;
+use tokio::runtime::Handle;
+use tokio::task::JoinHandle;
 
 use crate::error::RedisError;
 
@@ -80,4 +85,82 @@ impl Connection {
 #[cold]
 const fn shut_down() -> RedisError {
     RedisError::ShutDown
+}
+
+/// The connection one stream or list subscription reads on, apart from the pool.
+///
+/// A blocking read (`XREADGROUP ... BLOCK`, `BLMOVE`, `BRPOP`) holds its connection until it
+/// returns, and `fred` queues every other command sent on that connection behind it. On a pooled
+/// connection a publish that the pool hands the same client waits for the read's whole block
+/// interval, so the reads go out on a connection of their own. The price is one connection per
+/// subscription, opened when it subscribes.
+///
+/// Dropped, it interrupts a read still blocked on the server before it closes: a blocked pop left
+/// running would take the next message for a subscription nobody reads any more. The close runs
+/// on the broker's runtime, and the broker's shutdown waits for it.
+pub(crate) struct ReadConnection {
+    client: Client,
+    /// The broker's runtime, where the close runs: a drop cannot await, and happens wherever the
+    /// subscription is dropped.
+    runtime: Handle,
+    closing: Arc<Closing>,
+    /// Whether a read can block on the server; the in-process one answers at once.
+    blocks: bool,
+}
+
+impl ReadConnection {
+    pub(crate) const fn new(
+        client: Client,
+        runtime: Handle,
+        closing: Arc<Closing>,
+        blocks: bool,
+    ) -> Self {
+        Self {
+            client,
+            runtime,
+            closing,
+            blocks,
+        }
+    }
+
+    pub(crate) const fn client(&self) -> &Client {
+        &self.client
+    }
+}
+
+impl Drop for ReadConnection {
+    fn drop(&mut self) {
+        let client = self.client.clone();
+        let blocks = self.blocks;
+        let close = self.runtime.spawn(async move {
+            if blocks {
+                // `CLIENT UNBLOCK` goes out on `fred`'s side connection, so it overtakes the read
+                // the `QUIT` below would queue behind. A connection that is not blocked answers
+                // an error, which is the outcome wanted.
+                let _ = client.unblock_self(Some(ClientUnblockFlag::Timeout)).await;
+            }
+            let _ = client.quit().await;
+        });
+        self.closing.track(close);
+    }
+}
+
+/// The closes of read connections still running, which the broker's shutdown waits for.
+#[derive(Debug, Default)]
+pub(crate) struct Closing(Mutex<Vec<JoinHandle<()>>>);
+
+impl Closing {
+    fn track(&self, close: JoinHandle<()>) {
+        let mut closes = self.0.lock().expect("read connection closes poisoned");
+        closes.retain(|close| !close.is_finished());
+        closes.push(close);
+    }
+
+    /// Waits for every close tracked so far.
+    pub(crate) async fn finish(&self) {
+        let closes = mem::take(&mut *self.0.lock().expect("read connection closes poisoned"));
+        for close in closes {
+            let _ = close.await;
+        }
+    }
 }

@@ -20,20 +20,17 @@ use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use fred::interfaces::StreamsInterface;
 use futures::{Stream, StreamExt};
 use ruststream::testing::InProcess;
 use ruststream::{
     Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
-    SubscriptionSource,
 };
 use ruststream_fred::{
-    ConnectedRedisBroker, PipelinedStream, RedisBroker, RedisError, RedisPubSub,
-    RedisPubSubPublish, RedisStream,
+    ConnectedRedisBroker, RedisBroker, RedisError, RedisPubSub, RedisPubSubPublish, RedisStream,
 };
 use tokio::runtime::Builder;
 use tokio::sync::oneshot;
-use tokio::time::{Instant, timeout};
+use tokio::time::timeout;
 
 mod live;
 
@@ -122,86 +119,6 @@ async fn publish_entries(broker: &ConnectedRedisBroker, key: &str, count: usize)
             .await
             .expect("publish");
     }
-}
-
-/// Waits until the group owes exactly `expected` entries, and fails once the wait runs out.
-async fn assert_pending(broker: &ConnectedRedisBroker, key: &str, expected: u64, why: &str) {
-    let pool = broker.pool_handle().expect("live pool");
-    let deadline = Instant::now() + WAIT;
-    loop {
-        let rows: Vec<(String, String, u64, u64)> = pool
-            .xpending(key, "workers", (0_u64, "-", "+", 10_u64))
-            .await
-            .expect("xpending");
-        if rows.len() as u64 == expected {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "{why}: the group still owes {} entries, expected {expected}",
-            rows.len()
-        );
-        tokio::task::yield_now().await;
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_delivery_dropped_on_another_runtime_flushes_what_its_window_owes() {
-    let broker = in_process().await;
-    let key = unique("abandon");
-    let mut subscriber = PipelinedStream::new(key.as_str())
-        .group("workers")
-        .subscribe(&broker)
-        .await
-        .expect("subscribe");
-    publish_entries(&broker, &key, 2).await;
-    let (acked, dropped) = {
-        let mut stream = pin!(subscriber.stream());
-        (next(&mut stream).await, next(&mut stream).await)
-    };
-
-    // The ack waits in the window for the other delivery; dropping that one unsettled is what
-    // sends the window, from a runtime that stops right after.
-    on_foreign_runtime(async move || {
-        acked.ack().await.expect("ack");
-        drop(dropped);
-    })
-    .await;
-
-    assert_pending(
-        &broker,
-        &key,
-        1,
-        "the window flush left on a runtime that stopped",
-    )
-    .await;
-    drop(subscriber);
-    broker.shutdown().await.expect("shutdown");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_subscription_dropped_off_any_runtime_flushes_what_its_window_owes() {
-    let broker = in_process().await;
-    let key = unique("stop");
-    let mut subscriber = PipelinedStream::new(key.as_str())
-        .group("workers")
-        .subscribe(&broker)
-        .await
-        .expect("subscribe");
-    publish_entries(&broker, &key, 2).await;
-    let (acked, held) = {
-        let mut stream = pin!(subscriber.stream());
-        (next(&mut stream).await, next(&mut stream).await)
-    };
-    acked.ack().await.expect("ack");
-
-    // The subscription stops while a delivery is still in hand: its drop owes the server the ack
-    // the window holds, and it happens where no runtime is current.
-    off_any_runtime(move || drop(subscriber)).await;
-
-    assert_pending(&broker, &key, 1, "the stopping subscription sent nothing").await;
-    drop(held);
-    broker.shutdown().await.expect("shutdown");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

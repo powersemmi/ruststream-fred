@@ -159,6 +159,29 @@ CODE_SCENARIOS = [
     ("stream consumer group, JSON decode into a small struct, XACK each", "consume/service", True),
     ("stream reply, appended with XADD through RedisPublish", "reply/service", True),
     ("stream consumer group in batches of 64, XACK each", "batch/service", True),
+    ("reliable list, JSON decode into a small struct, LREM each", "list/service", True),
+    ("Pub/Sub channel, JSON decode into a small struct", "pubsub/channel", True),
+    ("Pub/Sub pattern, JSON decode into a small struct", "pubsub/pattern", True),
+    ("stream with .pipeline(), one INCR queued per delivery", "pipeline_stream/plain", True),
+    ("stream with .pipeline().atomic(), one INCR queued per delivery", "pipeline_stream/atomic", True),
+    ("reliable list with .pipeline(), one INCR queued per delivery", "pipeline_list/plain", True),
+    (
+        "reliable list with .pipeline().atomic(), one INCR queued per delivery",
+        "pipeline_list/atomic",
+        True,
+    ),
+    ("Pub/Sub channel with .pipeline(), one INCR queued per delivery", "pipeline_pubsub/plain", True),
+    (
+        "Pub/Sub channel with .pipeline().atomic(), one INCR queued per delivery",
+        "pipeline_pubsub/atomic",
+        True,
+    ),
+    ("Pub/Sub pattern with .pipeline(), one INCR queued per delivery", "pipeline_pattern/plain", True),
+    (
+        "Pub/Sub pattern with .pipeline().atomic(), one INCR queued per delivery",
+        "pipeline_pattern/atomic",
+        True,
+    ),
 ]
 
 

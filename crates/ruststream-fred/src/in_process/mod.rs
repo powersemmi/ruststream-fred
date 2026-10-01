@@ -33,6 +33,7 @@ pub(crate) use glob::matches as glob_matches;
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::{Debug, Formatter};
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -108,8 +109,6 @@ pub(crate) struct Server {
     epoch_ms: u64,
     started: Instant,
     closed: AtomicBool,
-    /// The capacity of a subscription's message channel, the client's own setting.
-    capacity: usize,
     /// The address a Pub/Sub message reports it came from.
     address: ServerAddress,
     next_reader: AtomicU64,
@@ -167,7 +166,6 @@ pub(crate) async fn connect(
         .first()
         .cloned()
         .unwrap_or_else(|| ServerAddress::new("localhost", 6379));
-    let capacity = config_capacity();
     let server = Arc::new_cyclic(|this| Server {
         state: Mutex::new(State::default()),
         changed: Notify::new(),
@@ -176,7 +174,6 @@ pub(crate) async fn connect(
         epoch_ms: system_ms(),
         started: Instant::now(),
         closed: AtomicBool::new(false),
-        capacity,
         address,
         next_reader: AtomicU64::new(0),
         runtime: Handle::current(),
@@ -196,12 +193,6 @@ pub(crate) async fn connect(
     }
     let pool = Pool::from_clients(clients).map_err(|err| RedisError::Connect(Box::new(err)))?;
     Ok((pool, connection::config(config, &server), server))
-}
-
-/// The capacity of a client's message channel: the connection builds its clients with `fred`'s
-/// default performance settings, so a subscription here gets the same room before it lags.
-fn config_capacity() -> usize {
-    PerformanceConfig::default().broadcast_channel_capacity
 }
 
 fn system_ms() -> u64 {
@@ -384,13 +375,19 @@ impl Server {
         id
     }
 
-    /// Registers a Pub/Sub subscription and hands back the channel its messages arrive on.
+    /// Registers a Pub/Sub subscription and hands back the channel its messages arrive on, as
+    /// large as the client's own: the subscription's `buffer`, or `fred`'s default without one.
     pub(crate) fn attach_pubsub(
         &self,
         target: Subscription,
+        buffer: Option<NonZeroUsize>,
     ) -> (broadcast::Receiver<Message>, ReaderId) {
         let id = self.next_reader();
-        let (tx, rx) = broadcast::channel(self.capacity);
+        let capacity = buffer.map_or_else(
+            || PerformanceConfig::default().broadcast_channel_capacity,
+            NonZeroUsize::get,
+        );
+        let (tx, rx) = broadcast::channel(capacity);
         self.lock()
             .readers
             .insert(id, Reader::Channel { target, tx });

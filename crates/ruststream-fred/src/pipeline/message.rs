@@ -20,17 +20,24 @@ use super::window::{Form, Round, Window};
 ///
 /// ```
 /// # mod demo {
-/// use ruststream::prelude::*;
-/// use ruststream::subscriber;
-/// use ruststream_fred::PipelinedStream;
+/// use ruststream_fred::stream::prelude::*;
 /// # #[derive(serde::Deserialize)]
 /// # struct Order { id: u64 }
 ///
-/// // The subscription yields this type; a handler reads it as any delivery.
-/// #[subscriber(PipelinedStream::new("orders").group("workers"))]
+/// #[subscriber(RedisStream::new("orders").group("workers"))]
 /// async fn work(order: &Order) -> HandlerOutcome {
 ///     let _ = order.id;
 ///     HandlerOutcome::ack()
+/// }
+///
+/// fn app() -> RustStream {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             // The subscription yields this type; the handler reads it as any delivery.
+///             b.include(work.pipeline());
+///         },
+///     )
 /// }
 /// # }
 /// ```
