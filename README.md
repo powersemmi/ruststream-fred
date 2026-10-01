@@ -59,7 +59,7 @@ Optional features: TLS (`tls-rustls`, `tls-rustls-ring`, `tls-native-tls`), `sen
 use ruststream_fred::stream::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Outgoing, Serialize)]
 struct Order {
     id: u64,
 }
@@ -97,31 +97,27 @@ cargo generate --git https://github.com/powersemmi/ruststream-fred templates/red
 
 ## Test it
 
-`TestApp` runs the handlers against an in-process Redis, with no server.
+`TestApp` runs the service's own app with `RedisBroker` in process, with no server.
 
 ```rust
 use ruststream::testing::TestApp;
-use ruststream_fred::testing::RedisTestBroker;
 
-let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-    RedisTestBroker::new(),
-    |b| {
-        b.include(confirm).out_reply(Publish);
-    },
-);
-let tb = TestApp::start(app).await?;
+let tb = TestApp::start(app()).await?;
 
-tb.broker::<RedisTestBroker>()
-    .publish("orders", &Order { id: 7 })
+tb.broker::<RedisBroker>()
+    .message(&Order { id: 7 })
+    .to("orders")
+    .publish()
     .await?;
 
-tb.broker::<RedisTestBroker>()
+tb.broker::<RedisBroker>()
     .subscriber("orders")
     .assert_called_once()
     .settled(HandlerOutcome::ack());
-tb.broker::<RedisTestBroker>()
+tb.broker::<RedisBroker>()
     .published::<Confirmation>("confirmations")
     .assert_called_once();
+
 ```
 
 ## Documentation
