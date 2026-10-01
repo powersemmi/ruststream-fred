@@ -249,3 +249,207 @@ async fn a_channel_copy_and_its_dead_letter_leave_through_publish() {
     running.shutdown().await.expect("shutdown");
     watcher.shutdown().await.expect("shutdown watcher");
 }
+
+// The same with a window: the retry's settle rides the window, and the copy and the move leave
+// through the form's own publish.
+
+#[subscriber(RedisStream::new(key("windowed-stream")).group("workers"))]
+async fn windowed_stream_handler(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::retry_after(DELAY)
+}
+
+#[subscriber(RedisList::new(key("atomic-list")).reliable())]
+async fn atomic_list_handler(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::retry_after(DELAY)
+}
+
+#[subscriber(RedisPubSub::new(key("windowed-channel")))]
+async fn windowed_channel_handler(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::retry_after(DELAY)
+}
+
+#[subscriber(RedisPubSubPattern::new(format!("{}.*", key("windowed-pattern"))))]
+async fn windowed_pattern_handler(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::retry_after(DELAY)
+}
+
+#[subscriber(RedisPubSubPattern::new(format!("{}.*", key("atomic-pattern"))))]
+async fn atomic_pattern_handler(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::retry_after(DELAY)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_windowed_stream_copy_and_its_dead_letter_leave_through_xadd() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let dead = key("windowed-stream.dead");
+    let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
+        RedisBroker::standalone(url.clone()),
+        |b| {
+            b.include(windowed_stream_handler.pipeline())
+                .max_attempts(nonzero!(2u32))
+                .dead_letter(dead.clone());
+        },
+    );
+    let watcher = connected(&url).await;
+    let mut dead_letters = watcher
+        .subscribe(RedisStream::new(dead.clone()).group("check"))
+        .await
+        .expect("watch the dead-letter stream");
+    let running = app.start().await.expect("start");
+
+    watcher
+        .publisher()
+        .publish(
+            OutgoingMessage::new(key("windowed-stream").as_str(), BODY),
+            None,
+        )
+        .await
+        .expect("publish");
+    assert_dead_lettered(&mut dead_letters).await;
+
+    running.shutdown().await.expect("shutdown");
+    watcher.shutdown().await.expect("shutdown watcher");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_atomic_list_copy_and_its_dead_letter_leave_through_lpush() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let dead = key("atomic-list.dead");
+    let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
+        RedisBroker::standalone(url.clone()),
+        |b| {
+            b.include(atomic_list_handler.pipeline().atomic())
+                .max_attempts(nonzero!(2u32))
+                .dead_letter(dead.clone());
+        },
+    );
+    let watcher = connected(&url).await;
+    let mut dead_letters = watcher
+        .subscribe_list(RedisList::new(dead.clone()))
+        .await
+        .expect("watch the dead-letter list");
+    let running = app.start().await.expect("start");
+
+    watcher
+        .list_publisher(RedisListPublish::new())
+        .publish(
+            OutgoingMessage::new(key("atomic-list").as_str(), BODY),
+            None,
+        )
+        .await
+        .expect("publish");
+    assert_dead_lettered(&mut dead_letters).await;
+
+    running.shutdown().await.expect("shutdown");
+    watcher.shutdown().await.expect("shutdown watcher");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_windowed_channel_copy_and_its_dead_letter_leave_through_publish() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let dead = key("windowed-channel.dead");
+    let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
+        RedisBroker::standalone(url.clone()),
+        |b| {
+            b.include(windowed_channel_handler.pipeline())
+                .max_attempts(nonzero!(2u32))
+                .dead_letter(dead.clone());
+        },
+    );
+    let watcher = connected(&url).await;
+    let mut dead_letters = watcher
+        .subscribe_pubsub(RedisPubSub::new(dead.clone()))
+        .await
+        .expect("watch the dead-letter channel");
+    let running = app.start().await.expect("start");
+
+    watcher
+        .pubsub_publisher(RedisPubSubPublish::new())
+        .publish(
+            OutgoingMessage::new(key("windowed-channel").as_str(), BODY),
+            None,
+        )
+        .await
+        .expect("publish");
+    assert_dead_lettered(&mut dead_letters).await;
+
+    running.shutdown().await.expect("shutdown");
+    watcher.shutdown().await.expect("shutdown watcher");
+}
+
+/// Runs one pipelined pattern registration to its cap. A pattern names no channel, so the mount
+/// site names the one its copies go to; that channel matches the pattern, and the copy comes back
+/// until the cap moves it to the dead-letter channel, which the pattern does not match.
+async fn pattern_moves_at_the_cap(url: String, base: &'static str, app: RustStream) {
+    let dead = key(if base == "windowed-pattern" {
+        "windowed-pattern-dead"
+    } else {
+        "atomic-pattern-dead"
+    });
+    let watcher = connected(&url).await;
+    let mut dead_letters = watcher
+        .subscribe_pubsub(RedisPubSub::new(dead.clone()))
+        .await
+        .expect("watch the dead-letter channel");
+    let running = app.start().await.expect("start");
+
+    watcher
+        .pubsub_publisher(RedisPubSubPublish::new())
+        .publish(
+            OutgoingMessage::new(format!("{}.orders", key(base)).as_str(), BODY),
+            None,
+        )
+        .await
+        .expect("publish");
+    assert_dead_lettered(&mut dead_letters).await;
+
+    running.shutdown().await.expect("shutdown");
+    watcher.shutdown().await.expect("shutdown watcher");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_windowed_pattern_copy_and_its_dead_letter_leave_through_publish() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
+        RedisBroker::standalone(url.clone()),
+        |b| {
+            b.include(windowed_pattern_handler.pipeline())
+                .max_attempts(nonzero!(2u32))
+                .dead_letter(key("windowed-pattern-dead"))
+                .out_retry(RedisPubSubPublish::new())
+                .to(format!("{}.retry", key("windowed-pattern")));
+        },
+    );
+    pattern_moves_at_the_cap(url, "windowed-pattern", app).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_atomic_pattern_copy_and_its_dead_letter_leave_through_publish() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
+        RedisBroker::standalone(url.clone()),
+        |b| {
+            b.include(atomic_pattern_handler.pipeline().atomic())
+                .max_attempts(nonzero!(2u32))
+                .dead_letter(key("atomic-pattern-dead"))
+                .out_retry(RedisPubSubPublish::new())
+                .to(format!("{}.retry", key("atomic-pattern")));
+        },
+    );
+    pattern_moves_at_the_cap(url, "atomic-pattern", app).await;
+}

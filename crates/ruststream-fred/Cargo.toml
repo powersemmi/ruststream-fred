@@ -16,9 +16,9 @@ workspace = true
 
 [features]
 default = []
-# User-facing test support only: the conformance harness is broker-author tooling and stays a
-# dev-dependency of this crate.
-testing = ["ruststream/testing"]
+# The in-process mode `TestApp` runs an app on: an in-process Redis under `fred`'s own mock layer.
+# The conformance harness is broker-author tooling and stays a dev-dependency of this crate.
+testing = ["ruststream/testing", "fred/mocks"]
 
 # The document-plane hooks: what this crate's descriptors and publish policies add to the
 # generated AsyncAPI document. Forwards the core feature that defines them.
@@ -65,7 +65,9 @@ async-trait = "0.1.77"
 
 [dependencies]
 ruststream = { workspace = true, default-features = false }
-fred.workspace = true
+# `i-scripts` is the Lua and function surface a pipelined handler queues through; `i-client` is
+# `CLIENT UNBLOCK`, which a dropped subscription interrupts its blocked read with.
+fred = { workspace = true, features = ["i-scripts", "i-client"] }
 bytes.workspace = true
 futures.workspace = true
 serde = { version = "1", features = ["derive"] }
@@ -110,6 +112,9 @@ required-features = ["tls-rustls"]
 
 [[example]]
 name = "fred_transaction"
+
+[[example]]
+name = "fred_pipeline"
 
 [[example]]
 name = "fred_testing"

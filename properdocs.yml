@@ -1,5 +1,5 @@
 site_name: ruststream-fred
-site_description: The Redis broker for RustStream - Redis Streams consumer groups, an in-process test broker, and the lazy-startup broker contract.
+site_description: The Redis broker for RustStream - Redis Streams consumer groups, an in-process mode for testing the production app, and the lazy-startup broker contract.
 site_url: https://powersemmi.github.io/ruststream-fred/
 repo_url: https://github.com/powersemmi/ruststream-fred
 repo_name: powersemmi/ruststream-fred
@@ -92,9 +92,9 @@ plugins:
         asyncapi.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#the-generated-document
         ru/asyncapi.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#the-generated-document
         zh/asyncapi.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#the-generated-document
-        testing.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/testing/index.html
-        ru/testing.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/testing/index.html
-        zh/testing.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/testing/index.html
+        testing.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#testing
+        ru/testing.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#testing
+        zh/testing.md: https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#testing
   # Versioned docs are published with `mike` (see the Deploy docs workflow and the version
   # switcher).
   # Each translation is a tree of its own under `docs/<locale>/`, mirroring the English paths.

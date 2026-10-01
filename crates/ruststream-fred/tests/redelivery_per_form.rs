@@ -13,8 +13,10 @@ use std::time::Duration;
 use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::testing::TestApp;
 use ruststream_fred::prelude::*;
-use ruststream_fred::testing::RedisTestBroker;
 use serde::{Deserialize, Serialize};
+
+/// The address the service's broker is built with; the in-process mode dials nothing.
+const URL: &str = "redis://localhost:6379";
 
 const DELAY: Duration = Duration::from_secs(30);
 
@@ -58,40 +60,40 @@ async fn channel_once(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
 
 /// Mounts `handler` alone and checks the round trip of one delayed copy on `name`.
 macro_rules! comes_back_once {
-    ($test:ident, $handler:ident, $name:literal) => {
+    ($test:ident, $handler:expr, $name:literal) => {
         #[tokio::test(start_paused = true)]
         async fn $test() {
             let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
-                RedisTestBroker::new(),
+                RedisBroker::standalone(URL),
                 |b| {
                     b.include($handler);
                 },
             );
             let tb = TestApp::start(app).await.expect("start");
 
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .message(&Order { id: 1 })
                 .to($name)
                 .publish()
                 .await
                 .expect("publish");
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .subscriber($name)
                 .assert_called_once()
                 .settled(HandlerOutcome::retry_after(DELAY));
 
             // Half the delay is not the delay.
             tb.advance(DELAY / 2).await.expect("advance");
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .subscriber($name)
                 .assert_called_once();
 
             tb.advance(DELAY).await.expect("advance");
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .subscriber($name)
                 .assert_called(2)
                 .with(&Order { id: 1 });
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .published::<Order>($name)
                 .assert_called(2)
                 .with_header(RETRY_COUNT_HEADER, "1");
@@ -163,11 +165,11 @@ async fn channel_dead(order: &Order) -> HandlerOutcome {
 /// Mounts `handler` under a cap of two, beside the reader of its dead-letter destination, and
 /// checks the second delivery moves there.
 macro_rules! moves_at_the_cap {
-    ($test:ident, $handler:ident, $name:literal, $reader:ident, $dead:literal) => {
+    ($test:ident, $handler:expr, $name:literal, $reader:ident, $dead:literal) => {
         #[tokio::test(start_paused = true)]
         async fn $test() {
             let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
-                RedisTestBroker::new(),
+                RedisBroker::standalone(URL),
                 |b| {
                     b.include($handler)
                         .max_attempts(nonzero!(2u32))
@@ -177,7 +179,7 @@ macro_rules! moves_at_the_cap {
             );
             let tb = TestApp::start(app).await.expect("start");
 
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .message(&Order { id: 2 })
                 .to($name)
                 .publish()
@@ -185,15 +187,15 @@ macro_rules! moves_at_the_cap {
                 .expect("publish");
             tb.advance(DELAY).await.expect("advance");
 
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .subscriber($name)
                 .assert_called(2);
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .published::<Order>($dead)
                 .assert_called_once()
                 .with(&Order { id: 2 })
                 .with_header(RETRY_COUNT_HEADER, "2");
-            tb.broker::<RedisTestBroker>()
+            tb.broker::<RedisBroker>()
                 .subscriber($dead)
                 .assert_called_once();
 
@@ -248,7 +250,7 @@ async fn order_reader(order: &Order) -> HandlerOutcome {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_dead_letter_read_as_another_type_refuses_to_start() {
     let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
-        RedisTestBroker::new(),
+        RedisBroker::standalone(URL),
         |b| {
             b.include(order_reader);
             b.include(job_to_orders)
@@ -282,7 +284,7 @@ async fn job_reader(order: &Order) -> HandlerOutcome {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_default_reply_reaches_a_list_this_service_reads() {
     let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
-        RedisTestBroker::new(),
+        RedisBroker::standalone(URL),
         |b| {
             b.include(order_to_job);
             b.include(job_reader);
@@ -290,17 +292,210 @@ async fn a_default_reply_reaches_a_list_this_service_reads() {
     );
     let tb = TestApp::start(app).await.expect("start");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .message(&Order { id: 3 })
         .to("orders")
         .publish()
         .await
         .expect("publish");
 
-    tb.broker::<RedisTestBroker>()
+    tb.broker::<RedisBroker>()
         .subscriber("jobs")
         .assert_called_once()
         .with(&Order { id: 3 });
+
+    tb.shutdown().await.expect("shutdown");
+}
+
+// The same with a window: a retry's settle rides the window, and the copy and the move leave
+// through the form's own publish.
+
+#[subscriber(RedisStream::new("orders").group("workers"))]
+async fn windowed_stream_once(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
+    let _ = order;
+    once(ctx.headers().get(RETRY_COUNT_HEADER).is_some())
+}
+
+#[subscriber(RedisList::new("jobs").reliable())]
+async fn atomic_list_once(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
+    let _ = order;
+    once(ctx.headers().get(RETRY_COUNT_HEADER).is_some())
+}
+
+#[subscriber(RedisPubSub::new("events"))]
+async fn windowed_channel_once(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
+    let _ = order;
+    once(ctx.headers().get(RETRY_COUNT_HEADER).is_some())
+}
+
+comes_back_once!(
+    a_windowed_stream_delivery_comes_back_once,
+    windowed_stream_once.pipeline(),
+    "orders"
+);
+comes_back_once!(
+    an_atomic_list_delivery_comes_back_once,
+    atomic_list_once.pipeline().atomic(),
+    "jobs"
+);
+comes_back_once!(
+    a_windowed_channel_delivery_comes_back_once,
+    windowed_channel_once.pipeline(),
+    "events"
+);
+
+#[subscriber(RedisStream::new("orders").group("workers"))]
+async fn atomic_stream_never(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::retry_after(DELAY)
+}
+
+#[subscriber(RedisList::new("jobs").reliable())]
+async fn atomic_list_never(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::retry_after(DELAY)
+}
+
+#[subscriber(RedisPubSub::new("events"))]
+async fn windowed_channel_never(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::retry_after(DELAY)
+}
+
+moves_at_the_cap!(
+    an_atomic_stream_moves_at_the_cap,
+    atomic_stream_never.pipeline().atomic(),
+    "orders",
+    stream_dead,
+    "orders.dead"
+);
+moves_at_the_cap!(
+    an_atomic_list_moves_at_the_cap,
+    atomic_list_never.pipeline().atomic(),
+    "jobs",
+    reliable_dead,
+    "jobs.dead"
+);
+moves_at_the_cap!(
+    a_windowed_channel_moves_at_the_cap,
+    windowed_channel_never.pipeline(),
+    "events",
+    channel_dead,
+    "events.dead"
+);
+
+// A pattern names no channel a copy could go to, so its mount site names one. Here that channel
+// matches the pattern, so the copy comes back to the subscription that asked for it.
+
+#[subscriber(RedisPubSubPattern::new("signals.*"))]
+async fn windowed_pattern_once(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
+    let _ = order;
+    once(ctx.headers().get(RETRY_COUNT_HEADER).is_some())
+}
+
+#[subscriber(RedisPubSubPattern::new("signals.*"))]
+async fn atomic_pattern_once(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
+    let _ = order;
+    once(ctx.headers().get(RETRY_COUNT_HEADER).is_some())
+}
+
+/// Mounts `handler` on the `signals.*` pattern with its copies sent to `signals.retry`, and
+/// checks the one delayed copy comes back there.
+macro_rules! pattern_comes_back_once {
+    ($test:ident, $handler:expr) => {
+        #[tokio::test(start_paused = true)]
+        async fn $test() {
+            let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
+                RedisBroker::standalone(URL),
+                |b| {
+                    b.include($handler)
+                        .out_retry(pubsub::Publish::default())
+                        .to("signals.retry");
+                },
+            );
+            let tb = TestApp::start(app).await.expect("start");
+
+            tb.broker::<RedisBroker>()
+                .message(&Order { id: 1 })
+                .to("signals.eu")
+                .publish()
+                .await
+                .expect("publish");
+            tb.broker::<RedisBroker>()
+                .subscriber("signals.*")
+                .assert_called_once()
+                .settled(HandlerOutcome::retry_after(DELAY));
+
+            tb.advance(DELAY).await.expect("advance");
+            tb.broker::<RedisBroker>()
+                .subscriber("signals.*")
+                .assert_called(2)
+                .with(&Order { id: 1 });
+            tb.broker::<RedisBroker>()
+                .published::<Order>("signals.retry")
+                .assert_called_once()
+                .with_header(RETRY_COUNT_HEADER, "1");
+
+            tb.shutdown().await.expect("shutdown");
+        }
+    };
+}
+
+pattern_comes_back_once!(
+    a_windowed_pattern_delivery_comes_back_once,
+    windowed_pattern_once.pipeline()
+);
+pattern_comes_back_once!(
+    an_atomic_pattern_delivery_comes_back_once,
+    atomic_pattern_once.pipeline().atomic()
+);
+
+#[subscriber(RedisPubSubPattern::new("alarms.*"))]
+async fn windowed_pattern_never(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::retry_after(DELAY)
+}
+
+#[subscriber(RedisPubSub::new("dead.alarms"))]
+async fn alarms_dead(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::ack()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_windowed_pattern_moves_at_the_cap() {
+    let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
+        RedisBroker::standalone(URL),
+        |b| {
+            b.include(windowed_pattern_never.pipeline())
+                .max_attempts(nonzero!(2u32))
+                .dead_letter("dead.alarms")
+                .out_retry(pubsub::Publish::default())
+                .to("alarms.retry");
+            b.include(alarms_dead);
+        },
+    );
+    let tb = TestApp::start(app).await.expect("start");
+
+    tb.broker::<RedisBroker>()
+        .message(&Order { id: 2 })
+        .to("alarms.eu")
+        .publish()
+        .await
+        .expect("publish");
+    tb.advance(DELAY).await.expect("advance");
+
+    tb.broker::<RedisBroker>()
+        .subscriber("alarms.*")
+        .assert_called(2);
+    tb.broker::<RedisBroker>()
+        .published::<Order>("dead.alarms")
+        .assert_called_once()
+        .with(&Order { id: 2 })
+        .with_header(RETRY_COUNT_HEADER, "2");
+    tb.broker::<RedisBroker>()
+        .subscriber("dead.alarms")
+        .assert_called_once();
 
     tb.shutdown().await.expect("shutdown");
 }
