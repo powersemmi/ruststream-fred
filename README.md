@@ -62,7 +62,7 @@ Optional features: TLS (`tls-rustls`, `tls-rustls-ring`, `tls-native-tls`), `sen
 use ruststream_fred::stream::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Outgoing, Serialize)]
 struct Order {
     id: u64,
 }
@@ -100,8 +100,7 @@ cargo generate --git https://github.com/powersemmi/ruststream-fred templates/red
 
 ## Test it
 
-`TestApp` runs the service's own `app()` with its `RedisBroker` connected to an in-process Redis,
-with no server.
+`TestApp` runs the service's own app with `RedisBroker` in process, with no server.
 
 ```rust
 use ruststream::testing::TestApp;
@@ -121,6 +120,7 @@ tb.broker::<RedisBroker>()
 tb.broker::<RedisBroker>()
     .published::<Confirmation>("confirmations")
     .assert_called_once();
+
 ```
 
 ## Documentation
