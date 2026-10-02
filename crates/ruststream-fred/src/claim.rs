@@ -258,10 +258,9 @@ mod tests {
     /// A blocking read that found nothing answers with a null, not with an empty stream.
     #[test]
     fn a_timed_out_read_decodes_to_no_entries() {
-        assert!(
-            decode_reply(&Resp3Frame::Null, "orders")
-                .expect("a null is a legal reply")
-                .is_empty()
+        assert_eq!(
+            decode_reply(&Resp3Frame::Null, "orders").expect("a null is a legal reply"),
+            Vec::<ClaimedEntry>::new()
         );
     }
 
@@ -269,10 +268,9 @@ mod tests {
     #[test]
     fn entries_of_another_key_are_not_returned() {
         let reply = resp2_reply("other", vec![entry("1-0", 0, 0)]);
-        assert!(
-            decode_reply(&reply, "orders")
-                .expect("a reply naming another key is well formed")
-                .is_empty()
+        assert_eq!(
+            decode_reply(&reply, "orders").expect("a reply naming another key is well formed"),
+            Vec::<ClaimedEntry>::new()
         );
     }
 

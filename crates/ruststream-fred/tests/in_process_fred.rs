@@ -656,7 +656,7 @@ async fn owned_transactions_are_independent() {
 
     // Settling one transaction leaves the other untouched.
     let audit_before = expect_published(&broker, "owned.audit", 1, Duration::from_millis(50)).await;
-    assert!(audit_before.is_empty());
+    assert_eq!(audit_before, Vec::<RawMessage>::new());
     audit.commit().await.expect("commit audit");
     let audit_after = expect_published(&broker, "owned.audit", 1, WAIT).await;
     assert_eq!(audit_after.len(), 1);
@@ -1119,7 +1119,7 @@ async fn a_publish_is_owed_by_what_redis_routes_it_to() {
         [6],
         "a name nothing reads exactly reaches the patterns"
     );
-    assert!(broker.routes("elsewhere", &names).is_empty());
+    assert_eq!(broker.routes("elsewhere", &names), Vec::<usize>::new());
 }
 
 // What the transport refuses. Each is contract behaviour the conformance suites check in process;
