@@ -29,15 +29,41 @@ use crate::error::RedisError;
 /// # Examples
 ///
 /// ```
-/// use ruststream_fred::EntryId;
+/// # mod demo {
+/// use std::time::{Duration, SystemTime, UNIX_EPOCH};
 ///
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let id: EntryId = "1700000000000-4".parse()?;
-/// assert_eq!(id.milliseconds(), 1_700_000_000_000);
-/// assert_eq!(id.sequence(), 4);
-/// assert_eq!(id.to_string(), "1700000000000-4");
-/// # Ok(())
+/// use ruststream_fred::stream::prelude::*;
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize)]
+/// struct Quote {
+///     price: u64,
+/// }
+///
+/// // The id's first half is the server clock at `XADD`, so a quote's age needs no field of its own.
+/// #[subscriber(RedisStream::new("quotes").group("pricing"))]
+/// async fn price(quote: &Quote, Ctx(id): Ctx<keys::EntryId>) -> HandlerOutcome {
+///     let added = UNIX_EPOCH + Duration::from_millis(id.milliseconds());
+///     let age = SystemTime::now().duration_since(added).unwrap_or_default();
+///     if age > Duration::from_secs(5) {
+///         println!("stale quote {id}, {}ms old", age.as_millis());
+///         return HandlerOutcome::drop();
+///     }
+///     println!("quote {}", quote.price);
+///     HandlerOutcome::ack()
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             b.include(price);
+///         },
+///     )
+/// }
 /// # }
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EntryId {
@@ -122,15 +148,55 @@ impl FromStr for EntryId {
 /// # Examples
 ///
 /// ```
-/// use ruststream_fred::{EntryId, RedisGroupPosition};
+/// # mod demo {
+/// use ruststream_fred::EntryId;
+/// use ruststream_fred::stream::prelude::*;
+/// use serde::Deserialize;
 ///
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let replay_all = RedisGroupPosition::beginning();
-/// let skip_backlog = RedisGroupPosition::end();
-/// let resume = RedisGroupPosition::after("1700000000000-4".parse::<EntryId>()?);
-/// # let _ = (replay_all, skip_backlog, resume);
-/// # Ok(())
+/// #[derive(Deserialize)]
+/// struct Order {
+///     id: u64,
+///     // Set on the producer's resync marker: the last entry it still stands behind.
+///     resync_after: Option<String>,
+/// }
+///
+/// // Replays the whole retained stream into the `auditors` group on every start.
+/// #[subscriber(
+///     RedisStream::new("orders").group("auditors"),
+///     start_at(RedisGroupPosition::beginning())
+/// )]
+/// async fn audit(order: &Order) -> HandlerOutcome {
+///     println!("audited order {}", order.id);
+///     HandlerOutcome::ack()
+/// }
+///
+/// // On a resync marker the `workers` group resumes right after the named entry.
+/// #[subscriber(RedisStream::new("orders").group("workers"))]
+/// async fn work(order: &Order, Ctx(seeker): Ctx<keys::SeekHandle>) -> HandlerOutcome {
+///     let Some(checkpoint) = &order.resync_after else {
+///         return HandlerOutcome::ack();
+///     };
+///     let Ok(after) = checkpoint.parse::<EntryId>() else {
+///         return HandlerOutcome::drop();
+///     };
+///     match seeker.seek(RedisGroupPosition::after(after)).await {
+///         Ok(()) => HandlerOutcome::ack(),
+///         Err(_) => HandlerOutcome::retry(),
+///     }
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             b.include(audit);
+///             b.include(work);
+///         },
+///     )
+/// }
 /// # }
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -213,21 +279,40 @@ impl RedisGroupPosition {
 ///
 /// # Examples
 ///
-/// ```no_run
-/// use ruststream::{Broker, Seekable, Seeker};
-/// use ruststream_fred::{RedisBroker, RedisGroupPosition, RedisStream};
+/// ```
+/// # mod demo {
+/// use ruststream_fred::stream::prelude::*;
+/// use serde::Deserialize;
 ///
-/// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-/// let connected = RedisBroker::standalone("redis://localhost:6379").connect().await?;
-/// let subscriber = connected
-///     .subscribe(RedisStream::new("orders").group("workers"))
-///     .await?;
+/// #[derive(Deserialize)]
+/// struct Event {
+///     kind: String,
+/// }
 ///
-/// // Minted before the stream opens; usable while it runs.
-/// let seeker = subscriber.seeker();
-/// seeker.seek(RedisGroupPosition::beginning()).await?;
-/// # Ok(())
+/// // A `rebuild` event makes the projection group read the whole retained stream again.
+/// #[subscriber(RedisStream::new("events").group("projection"))]
+/// async fn project(event: &Event, Ctx(seeker): Ctx<keys::SeekHandle>) -> HandlerOutcome {
+///     if event.kind != "rebuild" {
+///         println!("projecting {}", event.kind);
+///         return HandlerOutcome::ack();
+///     }
+///     match seeker.seek(RedisGroupPosition::beginning()).await {
+///         Ok(()) => HandlerOutcome::ack(),
+///         Err(_) => HandlerOutcome::retry(),
+///     }
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("projection", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             b.include(project);
+///         },
+///     )
+/// }
 /// # }
+/// # fn main() {}
 /// ```
 #[derive(Clone)]
 pub struct RedisGroupSeeker {

@@ -557,7 +557,11 @@ async fn transaction_buffers_until_commit() {
 
     // Nothing is visible before commit.
     let observed = expect_published(&broker, "tx", 1, Duration::from_millis(50)).await;
-    assert!(observed.is_empty(), "buffered messages must not be visible");
+    assert_eq!(
+        observed,
+        Vec::<RawMessage>::new(),
+        "buffered messages must not be visible"
+    );
 
     publisher.commit().await.expect("commit");
 
@@ -579,7 +583,11 @@ async fn transaction_abort_discards_buffer() {
     publisher.abort().await.expect("abort");
 
     let observed = expect_published(&broker, "tx", 1, Duration::from_millis(50)).await;
-    assert!(observed.is_empty(), "aborted messages must be discarded");
+    assert_eq!(
+        observed,
+        Vec::<RawMessage>::new(),
+        "aborted messages must be discarded"
+    );
 }
 
 // The `TransactionalPublisher` contract requires misuse to surface as an error rather than a
@@ -675,7 +683,11 @@ async fn owned_transaction_abort_discards_the_buffer() {
     txn.abort().await.expect("abort");
 
     let observed = expect_published(&broker, "owned.abort", 1, Duration::from_millis(50)).await;
-    assert!(observed.is_empty(), "aborted messages must be discarded");
+    assert_eq!(
+        observed,
+        Vec::<RawMessage>::new(),
+        "aborted messages must be discarded"
+    );
 }
 
 // What Redis does with a stream, a list and a channel, which the in-process server keeps.

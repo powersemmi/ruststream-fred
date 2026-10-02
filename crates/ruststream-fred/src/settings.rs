@@ -36,15 +36,19 @@ use crate::stream::RedisStream;
 /// use ruststream_fred::stream::prelude::*;
 /// # use serde::Deserialize;
 /// # #[derive(Deserialize)]
-/// # struct Order { id: u64 }
+/// # struct Order {
+/// #     amount: u64,
+/// # }
 ///
 /// #[subscriber(RedisStream::new("orders").group("workers"))]
 /// async fn bill(orders: &[Order]) -> HandlerOutcome {
-///     let _ = orders.len();
+///     let total: u64 = orders.iter().map(|order| order.amount).sum();
+///     println!("billed {} orders, {total} in all", orders.len());
 ///     HandlerOutcome::ack()
 /// }
 ///
-/// fn app() -> RustStream {
+/// #[ruststream::app]
+/// fn app() -> impl App {
 ///     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {

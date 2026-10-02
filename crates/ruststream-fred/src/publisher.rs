@@ -65,17 +65,40 @@ async fn flush_block(core: &RedisCore, buffered: Vec<Buffered>) -> Result<(), Re
 ///
 /// # Examples
 ///
-/// ```no_run
-/// use ruststream::{Broker, PublishPolicy};
-/// use ruststream_fred::{RedisBroker, RedisPublish};
+/// ```
+/// # mod demo {
+/// use ruststream_fred::stream::prelude::*;
+/// use serde::{Deserialize, Serialize};
 ///
-/// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-/// let policy = RedisPublish; // no connection in sight
-/// let connected = RedisBroker::standalone("redis://localhost:6379").connect().await?;
-/// let publisher = policy.pair(&connected).await?;
-/// # let _ = publisher;
-/// # Ok(())
+/// #[derive(Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "orders.accepted")]
+/// struct Accepted {
+///     id: u64,
+/// }
+///
+/// #[subscriber(RedisStream::new("orders").group("workers"), publish)]
+/// async fn accept(order: &Order) -> Accepted {
+///     Accepted { id: order.id }
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             // `Publish` is this policy under the stream prelude's name. No connection exists
+///             // yet; the runtime pairs it with the connected broker at startup.
+///             b.include(accept).out_reply(Publish);
+///         },
+///     )
+/// }
 /// # }
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[must_use]
@@ -115,18 +138,48 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisPublish {
 ///
 /// # Examples
 ///
-/// ```no_run
-/// use ruststream::{Broker, OutgoingMessage, PublishPolicy, Publisher};
-/// use ruststream_fred::{RedisBroker, RedisDefaultPublish, RedisList};
+/// ```
+/// # mod demo {
+/// use ruststream_fred::RedisList;
+/// use ruststream_fred::stream::prelude::*;
+/// use serde::{Deserialize, Serialize};
 ///
-/// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-/// let connected = RedisBroker::standalone("redis://localhost:6379").connect().await?;
-/// let _jobs = connected.subscribe_list(RedisList::new("jobs").reliable()).await?;
-/// let publisher = RedisDefaultPublish.pair(&connected).await?;
-/// // `jobs` is read as a list here, so this is an `LPUSH`.
-/// publisher.publish(OutgoingMessage::new("jobs", b"{}".as_slice()), None).await?;
-/// # Ok(())
+/// #[derive(Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[derive(Deserialize, Serialize, Outgoing)]
+/// #[outgoing(name = "jobs")]
+/// struct Job {
+///     order: u64,
+/// }
+///
+/// #[subscriber(RedisStream::new("orders").group("planners"), publish)]
+/// async fn plan(order: &Order) -> Job {
+///     Job { order: order.id }
+/// }
+///
+/// #[subscriber(RedisList::new("jobs").reliable())]
+/// async fn work(job: &Job) -> HandlerOutcome {
+///     println!("job for order {}", job.order);
+///     HandlerOutcome::ack()
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             // The reply names no policy, so it leaves through the default one: `jobs` is
+///             // read as a list here, so the reply is an `LPUSH`.
+///             b.include(plan);
+///             b.include(work);
+///         },
+///     )
+/// }
 /// # }
+/// # fn main() {}
 /// ```
 ///
 /// [`RedisList`]: crate::RedisList
@@ -505,22 +558,44 @@ impl OwnedTransactions for RedisPublisher {
 ///
 /// # Examples
 ///
-/// ```no_run
-/// use ruststream::{Broker, OutgoingMessage, OwnedTransactions, Transaction};
-/// use ruststream_fred::RedisBroker;
-///
-/// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-/// let connected = RedisBroker::standalone("redis://localhost:6379").connect().await?;
-/// let publisher = connected.publisher();
-///
-/// let mut orders = publisher.transaction().await?;
-/// let mut audit = publisher.transaction().await?; // concurrent with `orders`
-/// orders.publish(OutgoingMessage::new("orders", b"{}".as_slice()), None).await?;
-/// audit.publish(OutgoingMessage::new("audit", b"{}".as_slice()), None).await?;
-/// orders.commit().await?;
-/// audit.commit().await?;
-/// # Ok(())
+/// ```
+/// # mod demo {
+/// use ruststream::OutgoingMessage;
+/// use ruststream_fred::stream::prelude::*;
+/// # use serde::Deserialize;
+/// # #[derive(Deserialize)]
+/// # struct Order {
+/// #     id: u64,
 /// # }
+/// #
+/// # #[subscriber(RedisStream::new("orders").group("workers"))]
+/// # async fn handle(order: &Order) -> HandlerOutcome {
+/// #     println!("order {}", order.id);
+/// #     HandlerOutcome::ack()
+/// # }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             b.include(handle);
+///             // Two buffers open at once on one handle; each commits as its own MULTI / EXEC.
+///             b.after_startup(TransactionalPublish, async move |publisher| {
+///                 let mut orders = publisher.transaction().await?;
+///                 let mut audit = publisher.transaction().await?;
+///                 let seed = OutgoingMessage::new("orders", br#"{"id":0}"#.as_slice());
+///                 orders.publish(seed, None).await?;
+///                 let note = OutgoingMessage::new("audit", br#"{"seeded":1}"#.as_slice());
+///                 audit.publish(note, None).await?;
+///                 orders.commit().await?;
+///                 audit.commit().await
+///             });
+///         },
+///     )
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 #[must_use = "a transaction does nothing until settled with commit() or abort()"]
 pub struct RedisTransaction {

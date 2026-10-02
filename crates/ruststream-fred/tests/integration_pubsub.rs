@@ -18,7 +18,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use fred::interfaces::PubsubInterface;
 use futures::StreamExt;
 use ruststream::{
-    AckError, Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
+    AckError, Broker, ConnectedBroker, HeaderMap, IncomingMessage, OutgoingMessage, Publisher,
+    Subscriber,
 };
 use ruststream_fred::{
     ConnectedRedisBroker, PubSubMode, RedisBroker, RedisPubSub, RedisPubSubPattern,
@@ -133,8 +134,9 @@ async fn a_subscribe_returns_only_once_the_server_routes_the_channel() {
     let broker = standalone(url).await;
     let channel = unique_channel("confirmed");
 
-    assert!(
-        channels(&broker, &channel).await.is_empty(),
+    assert_eq!(
+        channels(&broker, &channel).await,
+        Vec::<String>::new(),
         "the channel must be idle before anything subscribes to it",
     );
     // Nobody is listening yet, so this one is lost by design and cannot be confused with the one
@@ -270,8 +272,9 @@ async fn a_sharded_subscription_is_reached_only_by_a_sharded_publish() {
         vec![channel.clone()],
         "a sharded subscribe registers in the sharded registry",
     );
-    assert!(
-        channels(&broker, &channel).await.is_empty(),
+    assert_eq!(
+        channels(&broker, &channel).await,
+        Vec::<String>::new(),
         "and nowhere else: `PUBLISH` cannot see it",
     );
 
@@ -313,8 +316,9 @@ async fn a_classic_subscription_is_not_reached_by_a_sharded_publish() {
         vec![channel.clone()],
         "a classic subscribe registers in the classic registry",
     );
-    assert!(
-        shard_channels(&broker, &channel).await.is_empty(),
+    assert_eq!(
+        shard_channels(&broker, &channel).await,
+        Vec::<String>::new(),
         "and nowhere else: `SPUBLISH` cannot see it",
     );
 
@@ -363,8 +367,9 @@ async fn a_value_published_by_another_client_arrives_as_the_bare_payload() {
 
     let msg = next(&mut stream).await.expect("delivery ok");
     assert_eq!(msg.payload(), b"plain text");
-    assert!(
-        msg.headers().is_empty(),
+    assert_eq!(
+        msg.headers(),
+        &HeaderMap::new(),
         "an unframed value carries no headers, and none are read out of its bytes",
     );
 

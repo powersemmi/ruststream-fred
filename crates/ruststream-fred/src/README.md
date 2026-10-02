@@ -981,13 +981,16 @@ assertions are the framework's:
 <https://docs.rs/ruststream/latest/ruststream/testing/index.html>.
 
 ```
+# use std::error::Error;
 # #[cfg(feature = "testing")]
 # mod demo {
+use std::error::Error;
+
 use ruststream::testing::TestApp;
 use ruststream_fred::stream::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Outgoing, Serialize)]
+#[derive(Debug, Deserialize, Outgoing, PartialEq, Serialize)]
 struct Payment {
     id: u64,
     amount: u64,
@@ -1009,11 +1012,13 @@ pub fn app() -> impl App<State = ()> {
         })
 }
 
-pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    // The broker connects in process: nothing dials the address.
+pub async fn a_paid_payment_is_acknowledged() -> Result<(), Box<dyn Error>> {
+    // The broker connects in process: nothing dials the address, and a publish is driven to
+    // quiescence, so the assertion after it needs no waiting.
     let tb = TestApp::start(app()).await?;
+    let payment = Payment { id: 1, amount: 100 };
     tb.broker::<RedisBroker>()
-        .message(&Payment { id: 1, amount: 100 })
+        .message(&payment)
         .to("payments")
         .publish()
         .await?;
@@ -1021,21 +1026,17 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     tb.broker::<RedisBroker>()
         .subscriber("payments")
         .assert_called_once()
+        .with(&payment)
         .settled(HandlerOutcome::ack());
-
-    tb.shutdown().await?;
     Ok(())
 }
 # }
-# fn main() {
-#     #[cfg(feature = "testing")]
-#     tokio::runtime::Builder::new_current_thread()
-#         .enable_all()
-#         .build()
-#         .unwrap()
-#         .block_on(demo::run())
-#         .unwrap();
+# #[cfg(feature = "testing")]
+# fn main() -> Result<(), Box<dyn Error>> {
+#     tokio::runtime::Runtime::new()?.block_on(demo::a_paid_payment_is_acknowledged())
 # }
+# #[cfg(not(feature = "testing"))]
+# fn main() {}
 ```
 
 `TestApp::start` connects the broker to a Redis server modelled inside the test process. The
@@ -1099,14 +1100,34 @@ broker can also switch TLS on with a `rediss://` or `valkeys://` URL.
 ```
 # #[cfg(feature = "tls-rustls")]
 # mod demo {
-use ruststream_fred::{RedisBroker, TlsConnector};
+use std::error::Error;
 
-pub fn brokers() -> Result<(), Box<dyn std::error::Error>> {
-    let _password_only = RedisBroker::sentinel("mymaster", ["10.0.0.1:26379"]).password("s3cr3t");
-    let _acl = RedisBroker::cluster(["10.0.0.1:6379"]).credentials("worker", "s3cr3t");
+use ruststream_fred::stream::prelude::*;
+use serde::Deserialize;
 
+#[derive(Deserialize)]
+struct Order {
+    id: u64,
+}
+
+#[subscriber(RedisStream::new("orders").group("workers"))]
+async fn handle(order: &Order) -> HandlerOutcome {
+    println!("order {}", order.id);
+    HandlerOutcome::ack()
+}
+
+pub async fn serve() -> Result<(), Box<dyn Error>> {
     // System trust roots, no client certificate. The same connector works on every topology.
-    let _tls = RedisBroker::cluster(["10.0.0.1:6379"]).tls(TlsConnector::default_rustls()?);
+    let tls = TlsConnector::default_rustls()?;
+    let broker = RedisBroker::cluster(["10.0.0.1:6379"])
+        .credentials("worker", "s3cr3t")
+        .tls(tls);
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(broker, |b| {
+            b.include(handle);
+        })
+        .run()
+        .await?;
     Ok(())
 }
 # }

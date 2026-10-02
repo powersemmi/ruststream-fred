@@ -321,8 +321,9 @@ async fn standalone_nack_requeue_republishes_to_same_stream() {
         2,
         "a requeue on this mode is a second entry, not a redelivery of the first",
     );
-    assert!(
-        pending(&broker, &key, "workers").await.is_empty(),
+    assert_eq!(
+        pending(&broker, &key, "workers").await,
+        Vec::<String>::new(),
         "and the original is acknowledged, so the group owes nothing on it",
     );
 
@@ -1312,8 +1313,9 @@ async fn stream_drop_acks_the_entry_without_appending_a_copy() {
         1,
         "a drop appends no copy: the stream still holds the one entry",
     );
-    assert!(
-        pending(&broker, &key, "workers").await.is_empty(),
+    assert_eq!(
+        pending(&broker, &key, "workers").await,
+        Vec::<String>::new(),
         "and the group owes nothing on it any more",
     );
     none_within(&mut stream, "after a drop").await;

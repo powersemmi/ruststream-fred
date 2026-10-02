@@ -23,13 +23,76 @@ use crate::message::PARTITION_KEY_HEADER;
 /// # Examples
 ///
 /// ```
-/// use ruststream_fred::RedisPublishOptions;
+/// # use std::error::Error;
+/// # #[cfg(feature = "testing")]
+/// # mod demo {
+/// use std::error::Error;
 ///
-/// let options = RedisPublishOptions {
-///     partition_key: Some(b"tenant-a".to_vec()),
-///     ..RedisPublishOptions::default()
-/// };
-/// assert_eq!(options.partition_key.as_deref(), Some(b"tenant-a".as_slice()));
+/// use ruststream::testing::TestApp;
+/// use ruststream_fred::stream::prelude::*;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Deserialize, Serialize, Outgoing)]
+/// struct Order {
+///     tenant: String,
+///     id: u64,
+/// }
+///
+/// #[derive(OutSlot)]
+/// #[publishes(Order)]
+/// struct Ledger;
+///
+/// #[subscriber(RedisStream::new("orders.in").group("workers"))]
+/// async fn forward(
+///     order: &Order,
+///     Out(ledger): Out<impl Publisher<Options = RedisPublishOptions>, Ledger>,
+/// ) -> HandlerOutcome {
+///     let sent = ledger
+///         .message(order)
+///         .to("orders.keyed")
+///         .partition_key(&order.tenant)
+///         .publish()
+///         .await;
+///     match sent {
+///         Ok(_) => HandlerOutcome::ack(),
+///         Err(_) => HandlerOutcome::retry(),
+///     }
+/// }
+///
+/// pub fn app() -> impl App<State = ()> {
+///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+///         .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
+///             b.include(forward).out(Ledger, Publish).build();
+///         })
+/// }
+///
+/// pub async fn the_ledger_is_keyed_by_tenant() -> Result<(), Box<dyn Error>> {
+///     let tb = TestApp::start(app()).await?;
+///     let order = Order {
+///         tenant: "tenant-a".to_owned(),
+///         id: 7,
+///     };
+///     tb.broker::<RedisBroker>()
+///         .message(&order)
+///         .to("orders.in")
+///         .publish()
+///         .await?;
+///
+///     tb.out::<Ledger>()
+///         .assert_called_once()
+///         .with_options(&RedisPublishOptions {
+///             partition_key: Some(b"tenant-a".to_vec()),
+///             ..RedisPublishOptions::default()
+///         });
+///     Ok(())
+/// }
+/// # }
+/// # #[cfg(feature = "testing")]
+/// # fn main() -> Result<(), Box<dyn Error>> {
+/// #     tokio::runtime::Runtime::new()?.block_on(demo::the_ledger_is_keyed_by_tenant())
+/// # }
+/// # #[cfg(not(feature = "testing"))]
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RedisPublishOptions {
@@ -54,26 +117,46 @@ pub struct RedisPublishOptions {
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```
+/// # mod demo {
 /// use ruststream_fred::stream::prelude::*;
-/// use serde::Serialize;
+/// use serde::{Deserialize, Serialize};
 ///
-/// #[derive(Outgoing, Serialize)]
+/// #[derive(Deserialize, Serialize, Outgoing)]
 /// #[outgoing(name = "orders")]
 /// struct Order {
+///     tenant: String,
 ///     id: u64,
 /// }
 ///
-/// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-/// let connected = RedisBroker::standalone("redis://localhost:6379").connect().await?;
-/// let publisher = connected.publisher();
+/// #[derive(OutSlot)]
+/// #[publishes(Order)]
+/// struct Orders;
 ///
-/// // Every order of one tenant lands in the same `workers(n, by_key)` lane, so their relative
-/// // order is preserved while other tenants run in parallel.
-/// publisher.message(&Order { id: 7 }).partition_key("tenant-a").publish().await?;
-/// publisher.message(&Order { id: 8 }).partition_key("tenant-a").publish().await?;
-/// # Ok(())
+/// // Every order of one tenant lands in the same `workers(n, by_key)` lane downstream, so their
+/// // relative order is preserved while other tenants run in parallel.
+/// #[subscriber(RedisStream::new("orders.in").group("intake"))]
+/// async fn intake(
+///     order: &Order,
+///     Out(orders): Out<impl Publisher<Options = RedisPublishOptions>, Orders>,
+/// ) -> HandlerOutcome {
+///     match orders.message(order).partition_key(&order.tenant).publish().await {
+///         Ok(_) => HandlerOutcome::ack(),
+///         Err(_) => HandlerOutcome::retry(),
+///     }
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             b.include(intake).out(Orders, Publish).build();
+///         },
+///     )
+/// }
 /// # }
+/// # fn main() {}
 /// ```
 pub trait RedisPublishSteps {
     /// Sends this one message under `key`, whatever the rest of the chain says.

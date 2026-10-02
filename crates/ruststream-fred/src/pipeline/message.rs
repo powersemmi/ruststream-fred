@@ -26,7 +26,7 @@ use super::window::{Form, Round, Window};
 ///
 /// #[subscriber(RedisStream::new("orders").group("workers"))]
 /// async fn work(order: &Order) -> HandlerOutcome {
-///     let _ = order.id;
+///     println!("order {}", order.id);
 ///     HandlerOutcome::ack()
 /// }
 ///

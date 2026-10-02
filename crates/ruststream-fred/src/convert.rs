@@ -89,6 +89,6 @@ mod tests {
         map.insert("not-a-header".to_owned(), b"x".to_vec());
         let (payload, headers) = parts_from_fields(map);
         assert_eq!(payload.as_ref(), b"body");
-        assert!(headers.is_empty());
+        assert_eq!(headers, HeaderMap::new());
     }
 }

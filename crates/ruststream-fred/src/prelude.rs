@@ -7,12 +7,45 @@
 //! # Examples
 //!
 //! ```
+//! # mod demo {
 //! use ruststream_fred::prelude::*;
+//! use serde::{Deserialize, Serialize};
 //!
-//! let orders = RedisStream::new("orders").group("workers");
-//! let broker = RedisBroker::standalone("redis://localhost:6379");
-//! let replies: stream::Publish = stream::Publish;
-//! let _ = (orders, broker, replies);
+//! #[derive(Deserialize)]
+//! struct Order {
+//!     id: u64,
+//! }
+//!
+//! #[derive(Serialize, Outgoing)]
+//! #[outgoing(name = "orders.shipped")]
+//! struct Shipped {
+//!     id: u64,
+//! }
+//!
+//! #[subscriber(RedisStream::new("orders").group("workers"), publish)]
+//! async fn ship(order: &Order) -> Shipped {
+//!     Shipped { id: order.id }
+//! }
+//!
+//! #[subscriber(RedisList::new("invoices").reliable())]
+//! async fn invoice(order: &Order) -> HandlerOutcome {
+//!     println!("invoicing order {}", order.id);
+//!     HandlerOutcome::ack()
+//! }
+//!
+//! #[ruststream::app]
+//! fn app() -> impl App {
+//!     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+//!         RedisBroker::standalone("redis://localhost:6379"),
+//!         |b| {
+//!             // A stream in, a Pub/Sub broadcast out: the form prefix says which `Publish`.
+//!             b.include(ship).out_reply(pubsub::Publish::default());
+//!             b.include(invoice);
+//!         },
+//!     )
+//! }
+//! # }
+//! # fn main() {}
 //! ```
 //!
 //! A service on a single form globs that form's prelude instead, which carries `Publish` under the

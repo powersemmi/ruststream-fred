@@ -49,12 +49,35 @@ pub use crate::publisher::RedisPublish as TransactionalPublish;
 /// # Examples
 ///
 /// ```
+/// # mod demo {
 /// use ruststream_fred::stream::prelude::*;
+/// use serde::{Deserialize, Serialize};
 ///
-/// let orders = RedisStream::new("orders").group("workers");
-/// let broker = RedisBroker::standalone("redis://localhost:6379");
-/// let replies: TransactionalPublish = TransactionalPublish;
-/// let _ = (orders, broker, replies);
+/// #[derive(Deserialize, Serialize, Outgoing)]
+/// #[outgoing(name = "orders.priced")]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[subscriber(RedisStream::new("orders").group("workers"), publish)]
+/// async fn price(orders: &[Order]) -> Result<Vec<Order>, HandlerOutcome> {
+///     Ok(orders.iter().map(|order| Order { id: order.id }).collect())
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             // One batch's replies land together, as one MULTI / EXEC block.
+///             b.include(price.batch(nonzero!(32)))
+///                 .out_reply(TransactionalPublish)
+///                 .transactional();
+///         },
+///     )
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 ///
 /// Two vocabularies that do not mix. A handler body imports `ruststream::prelude::*` and bounds an
@@ -164,18 +187,43 @@ pub(crate) enum RequeueMode {
 /// # Examples
 ///
 /// ```
+/// # mod demo {
 /// use std::time::Duration;
-/// use ruststream_fred::RedisStream;
 ///
-/// // Fresh tail: a normal worker reading new entries.
-/// let fresh = RedisStream::new("orders").group("workers");
+/// use ruststream_fred::stream::prelude::*;
+/// use serde::Deserialize;
 ///
-/// // Recovery: reclaim entries a crashed worker left pending for over 30s.
-/// let recover = RedisStream::reclaim("orders", Duration::from_secs(30)).group("workers");
+/// #[derive(Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
 ///
-/// // Redis 8.4 and later: both sets in one read, stale entries first.
-/// let both = RedisStream::claiming("orders", Duration::from_secs(30)).group("workers");
-/// # let _ = (fresh, recover, both);
+/// // Fresh tail: the normal worker, reading new entries.
+/// #[subscriber(RedisStream::new("orders").group("workers"))]
+/// async fn handle(order: &Order) -> HandlerOutcome {
+///     println!("order {}", order.id);
+///     HandlerOutcome::ack()
+/// }
+///
+/// // Recovery on the same group: entries a crashed worker left pending for over 30s.
+/// #[subscriber(RedisStream::reclaim("orders", Duration::from_secs(30)).group("workers"))]
+/// async fn recover(order: &Order) -> HandlerOutcome {
+///     println!("recovered order {}", order.id);
+///     HandlerOutcome::ack()
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             b.include(handle);
+///             b.include(recover);
+///         },
+///     )
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone)]
 #[must_use]
@@ -258,16 +306,43 @@ impl RedisStream {
     /// # Examples
     ///
     /// ```
+    /// # mod demo {
     /// use std::time::Duration;
-    /// use ruststream_fred::RedisStream;
     ///
-    /// # fn build() -> Result<(), Box<dyn std::error::Error>> {
-    /// let orders = RedisStream::claiming("orders", Duration::from_secs(30)).group("workers");
-    /// assert_eq!(orders.key(), "orders");
-    /// # Ok(())
+    /// use ruststream_fred::stream::prelude::*;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Order {
+    ///     id: u64,
+    ///     in_stock: bool,
+    /// }
+    ///
+    /// // New orders and the ones a dead worker took and never finished, in one subscription. A
+    /// // retry stays pending and comes back after 30s under its own id.
+    /// #[subscriber(RedisStream::claiming("orders", Duration::from_secs(30)).group("workers"))]
+    /// async fn handle(order: &Order) -> HandlerOutcome {
+    ///     if !order.in_stock {
+    ///         return HandlerOutcome::retry();
+    ///     }
+    ///     println!("order {}", order.id);
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+    ///         RedisBroker::standalone("redis://localhost:6379"),
+    ///         |b| {
+    ///             // The server's delivery count feeds the cap.
+    ///             b.include(handle)
+    ///                 .max_attempts(nonzero!(5u32))
+    ///                 .dead_letter("orders.dlq");
+    ///         },
+    ///     )
+    /// }
     /// # }
-    /// # build()?;
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// # fn main() {}
     /// ```
     pub fn claiming(key: impl Into<String>, min_idle: Duration) -> Self {
         Self {
