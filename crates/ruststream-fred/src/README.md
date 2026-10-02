@@ -633,7 +633,7 @@ struct Receipt {
     id: u64,
 }
 
-#[subscriber(RedisStream::new("orders").group("workers"), publish)]
+#[subscriber(RedisStream::new("orders").group("workers"), reply)]
 async fn record(
     order: &Order,
     Ctx(pipeline): Ctx<keys::Pipeline>,
@@ -755,7 +755,7 @@ struct AuditEntry {
     kind: String,
 }
 
-#[subscriber(RedisPubSub::new("events"), publish)]
+#[subscriber(RedisPubSub::new("events"), reply)]
 async fn on_event(event: &Event) -> AuditEntry {
     AuditEntry {
         kind: event.kind.clone(),
@@ -779,7 +779,7 @@ fn app() -> impl App {
 ```
 
 A reply type that declares no destination takes the one the mount site gives it,
-`#[subscriber("src", publish("dest"))]`. Redis has no request-reply primitive, so this crate
+`#[subscriber("src", reply("dest"))]`. Redis has no request-reply primitive, so this crate
 implements no `RequestReply` capability: nothing on the wire carries a reply address or
 correlates a reply with its request, and a reply here is an ordinary publish to a name both
 sides agreed on beforehand.
@@ -888,7 +888,7 @@ struct Order {
     id: u64,
 }
 
-#[subscriber("orders", publish("processed"))]
+#[subscriber("orders", reply("processed"))]
 async fn process(orders: &[Order]) -> Result<Vec<Order>, HandlerOutcome> {
     Ok(orders.iter().map(|order| Order { id: order.id }).collect())
 }
@@ -961,7 +961,7 @@ glob. A publisher reports the same vocabulary from the other side: the delivery 
 goes out in, the expiry a list push re-arms, the framing it writes. It also names where it
 lands, in the word Redis uses for it: a stream or list publisher writes a `key`, a Pub/Sub
 publisher a `channel`. That name is the destination the mount site resolved, so a reply
-declared with `publish("orders.done")` reports `orders.done` whichever subscription produced
+declared with `reply("orders.done")` reports `orders.done` whichever subscription produced
 it, and a dead-letter destination is reported as a channel the service publishes to.
 
 Every value comes from the descriptor or the policy alone, because the document is built before

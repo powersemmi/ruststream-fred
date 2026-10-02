@@ -29,7 +29,7 @@ struct Order {
 // A batch-publishing handler: each reply in the returned Vec is published to `processed`, all
 // committed atomically when the transactional publisher commits. The batch shape is read off the
 // signature - a slice payload is what makes this a batch handler.
-#[subscriber("orders", publish("processed"))]
+#[subscriber("orders", reply("processed"))]
 async fn process(orders: &[Order]) -> Result<Vec<Order>, HandlerOutcome> {
     if orders.is_empty() {
         return Err(HandlerOutcome::drop());

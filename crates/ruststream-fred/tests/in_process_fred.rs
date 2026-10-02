@@ -1315,7 +1315,7 @@ struct Confirmation {
     id: u64,
 }
 
-/// A reply that declares no destination: the mount site's `publish("..")` is the one that applies.
+/// A reply that declares no destination: the mount site's `reply("..")` is the one that applies.
 #[derive(Serialize, Deserialize, PartialEq, Debug, Outgoing)]
 struct Receipt {
     id: u64,
@@ -1328,12 +1328,12 @@ struct Announced {
     id: u64,
 }
 
-#[subscriber(RedisStream::new("orders.confirmed").group("workers"), publish)]
+#[subscriber(RedisStream::new("orders.confirmed").group("workers"), reply)]
 async fn confirm_order(order: &Order) -> Confirmation {
     Confirmation { id: order.id }
 }
 
-#[subscriber(RedisStream::new("orders.receipted").group("workers"), publish("receipts"))]
+#[subscriber(RedisStream::new("orders.receipted").group("workers"), reply("receipts"))]
 async fn receipt_for_order(order: &Order) -> Receipt {
     Receipt { id: order.id }
 }
@@ -1390,7 +1390,7 @@ async fn shared_audit(order: &Order) -> HandlerOutcome {
 }
 
 /// Announces every order on the `events.eu` channel.
-#[subscriber(RedisStream::new("orders.announced").group("workers"), publish)]
+#[subscriber(RedisStream::new("orders.announced").group("workers"), reply)]
 async fn announce(order: &Order) -> Announced {
     Announced { id: order.id }
 }
@@ -1509,7 +1509,7 @@ async fn a_reply_lands_on_the_stream_its_type_declares() {
 }
 
 // The reply type declares nothing, so the stream key comes from the mount site's
-// `publish("receipts")`.
+// `reply("receipts")`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reply_without_a_declared_stream_lands_where_the_mount_site_says() {
     let tb = TestApp::start(app()).await.expect("start");

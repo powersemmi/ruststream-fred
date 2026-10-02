@@ -830,7 +830,7 @@ async fn list_publisher_ttl_sets_key_expiry() {
     let key = unique_key("list_ttl");
 
     broker
-        .list_publisher(RedisListPublish::new().ttl(Duration::from_secs(60)))
+        .list_publisher(RedisListPublish::new().ttl(Duration::from_mins(1)))
         .publish(OutgoingMessage::new(key.as_str(), b"job"), None)
         .await
         .expect("lpush with ttl");
@@ -1471,7 +1471,7 @@ async fn list_recovery_ttl_arms_an_expiry_on_the_tracking_key() {
     // `min_idle` well above the case's own runtime, so the watchdog does not recover the entry
     // while it is being looked at.
     let idle = Duration::from_secs(30);
-    let ttl = Duration::from_secs(60);
+    let ttl = Duration::from_mins(1);
 
     for (base, recovery_ttl, expected) in [("with_ttl", Some(ttl), true), ("no_ttl", None, false)] {
         let key = unique_key(base);
@@ -1527,7 +1527,7 @@ async fn delay_queue_ttl_arms_an_expiry_on_the_zset() {
 
     // Long enough that the subscription's own sweeper cannot replay the entry mid-case.
     let delay = Duration::from_secs(30);
-    let ttl = Duration::from_secs(60);
+    let ttl = Duration::from_mins(1);
 
     for (base, queue_ttl, expected) in [
         ("delay_ttl", Some(ttl), true),

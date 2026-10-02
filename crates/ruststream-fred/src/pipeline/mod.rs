@@ -564,7 +564,7 @@ impl bindable::Named for crate::RedisDefaultPublisher {
 ///     id: u64,
 /// }
 ///
-/// #[subscriber(RedisStream::new("orders").group("workers"), publish)]
+/// #[subscriber(RedisStream::new("orders").group("workers"), reply)]
 /// async fn issue(order: &Order) -> Receipt {
 ///     Receipt { id: order.id }
 /// }

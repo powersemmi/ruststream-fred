@@ -29,7 +29,7 @@ const URL: &str = "redis://localhost:6379";
 const MIN_IDLE: Duration = Duration::from_secs(30);
 
 /// The expiry the list publisher below re-arms on its key.
-const BATCH_TTL: Duration = Duration::from_secs(60);
+const BATCH_TTL: Duration = Duration::from_mins(1);
 
 #[derive(Debug, Deserialize, Serialize)]
 struct Order {
@@ -41,7 +41,7 @@ struct Receipt {
     id: u64,
 }
 
-#[subscriber(RedisStream::claiming("orders", MIN_IDLE).group("workers").consumer("worker-1"), publish("orders.done"))]
+#[subscriber(RedisStream::claiming("orders", MIN_IDLE).group("workers").consumer("worker-1"), reply("orders.done"))]
 async fn handle_order(order: &Order) -> Receipt {
     Receipt { id: order.id }
 }
@@ -58,12 +58,12 @@ async fn handle_event(order: &Order) -> HandlerOutcome {
     HandlerOutcome::ack()
 }
 
-#[subscriber(RedisStream::new("audit").group("workers"), publish("audit.done"))]
+#[subscriber(RedisStream::new("audit").group("workers"), reply("audit.done"))]
 async fn handle_audit(order: &Order) -> Receipt {
     Receipt { id: order.id }
 }
 
-#[subscriber(RedisList::new("batches"), publish("batches.done"))]
+#[subscriber(RedisList::new("batches"), reply("batches.done"))]
 async fn handle_batch(order: &Order) -> Receipt {
     Receipt { id: order.id }
 }

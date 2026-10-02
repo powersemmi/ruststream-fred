@@ -40,7 +40,7 @@ struct Receipt {
     id: u64,
 }
 
-#[subscriber(RedisStream::new("orders").group("workers"), publish)]
+#[subscriber(RedisStream::new("orders").group("workers"), reply)]
 async fn handle(
     order: &Order,
     Ctx(pipeline): Ctx<keys::Pipeline>,

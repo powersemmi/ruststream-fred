@@ -9,7 +9,7 @@
   <a href="https://crates.io/crates/ruststream-fred"><img src="https://img.shields.io/crates/v/ruststream-fred.svg" alt="crates.io"></a>
   <a href="https://crates.io/crates/ruststream-fred"><img src="https://img.shields.io/crates/dr/ruststream-fred" alt="Recent downloads"></a>
   <a href="https://docs.rs/ruststream-fred"><img src="https://img.shields.io/docsrs/ruststream-fred" alt="docs.rs"></a>
-  <img src="https://img.shields.io/badge/MSRV-1.88-blue.svg" alt="MSRV 1.88">
+  <img src="https://img.shields.io/badge/MSRV-1.95-blue.svg" alt="MSRV 1.95">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
 </p>
 
@@ -45,7 +45,7 @@ framework; this crate is the transport.
 
 ```toml
 [dependencies]
-ruststream = { version = ">=0.7.0-rc.11, <0.8.0", features = ["macros", "json"] }
+ruststream = { version = ">=0.7.0-rc.12, <0.8.0", features = ["macros", "json"] }
 ruststream-fred = "0.7"
 serde = { version = "1", features = ["derive"] }
 
@@ -72,7 +72,7 @@ struct Confirmation {
     id: u64,
 }
 
-#[subscriber(RedisStream::new("orders").group("workers"), publish("confirmations"))]
+#[subscriber(RedisStream::new("orders").group("workers"), reply("confirmations"))]
 async fn confirm(order: &Order) -> Confirmation {
     Confirmation { id: order.id }
 }
@@ -130,7 +130,7 @@ tb.broker::<RedisBroker>()
 
 ## Minimum supported Rust version
 
-The MSRV is **1.88**, edition 2024.
+The MSRV is **1.95**, edition 2024.
 
 ## Contributing
 

@@ -26,9 +26,9 @@ git clone https://github.com/powersemmi/ruststream-fred.git
 ## Environment
 
 - **Rust** through rustup. `rust-toolchain.toml` selects stable with rustfmt and clippy. The
-  minimum supported version is 1.88, the `rust-version` in `Cargo.toml`:
-  `rustup toolchain install 1.88` builds against it with
-  `cargo +1.88 check --workspace --all-features`.
+  minimum supported version is 1.95, the `rust-version` in `Cargo.toml`:
+  `rustup toolchain install 1.95` builds against it with
+  `cargo +1.95 check --workspace --all-features`.
 - **just**, which runs every recipe below.
 - **Docker** with Compose, for the Redis stand the live suite and the benchmarks run against: standalone on 7.x and on 8.4, a six-node cluster and a sentinel set, on host networking.
 - Per task:

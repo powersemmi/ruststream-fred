@@ -80,7 +80,7 @@ pub use crate::list::RedisListPublish as Publish;
 ///     id: u64,
 /// }
 ///
-/// #[subscriber(RedisList::new("jobs").reliable(), publish)]
+/// #[subscriber(RedisList::new("jobs").reliable(), reply)]
 /// async fn run_job(job: &Job) -> Done {
 ///     Done { id: job.id }
 /// }
@@ -1052,7 +1052,7 @@ impl Partitioned for RedisListMessage {
 ///     id: u64,
 /// }
 ///
-/// #[subscriber(RedisList::new("jobs").reliable(), publish)]
+/// #[subscriber(RedisList::new("jobs").reliable(), reply)]
 /// async fn run_job(job: &Job) -> Done {
 ///     Done { id: job.id }
 /// }
@@ -1269,7 +1269,7 @@ mod tests {
 
     #[test]
     fn ttl_millis_converts_and_clamps() {
-        assert_eq!(ttl_millis(Duration::from_secs(60)), 60_000);
+        assert_eq!(ttl_millis(Duration::from_mins(1)), 60_000);
         assert_eq!(ttl_millis(Duration::from_millis(1)), 1);
         // A sub-millisecond TTL must not become PEXPIRE 0 (which deletes the key).
         assert_eq!(ttl_millis(Duration::from_nanos(1)), 1);

@@ -164,7 +164,7 @@ struct Receipt {
 
 #[subscriber(
     RedisStream::new(key("bound")).group("workers"),
-    publish("{it.pipeline.bound}.receipts"),
+    reply("{it.pipeline.bound}.receipts"),
     start_at(RedisGroupPosition::beginning())
 )]
 async fn bound(
@@ -352,7 +352,7 @@ async fn run_window(url: &str, base: &'static str, app: RustStream) {
     start_at(RedisGroupPosition::beginning())
 )]
 async fn retried(_order: &Order) -> HandlerOutcome {
-    HandlerOutcome::retry_after(Duration::from_secs(60))
+    HandlerOutcome::retry_after(Duration::from_mins(1))
 }
 
 // A windowed retry whose schedule Redis refuses leaves its entry pending: the `XACK` goes out

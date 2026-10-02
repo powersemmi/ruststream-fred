@@ -1,5 +1,5 @@
 //! Redis Pub/Sub subscribers: classic broadcast, a glob pattern, and sharded (cluster-scalable)
-//! delivery, plus re-publishing from a handler with the macro `publish` form.
+//! delivery, plus re-publishing from a handler with the macro `reply` clause.
 //!
 //! Pub/Sub is fire-and-forget: no durability, no consumer groups, no ack. A descriptor selects the
 //! mode. Classic (`SUBSCRIBE`) broadcasts cluster-wide and supports patterns; sharded
@@ -33,9 +33,9 @@ struct AuditEntry {
 }
 
 // Classic broadcast subscription that re-publishes each event to the `audit` channel. The bare
-// `publish` clause sends the handler's return value through the publisher wired at mount, to the
+// `reply` clause sends the handler's return value through the publisher wired at mount, to the
 // destination the reply type declares.
-#[subscriber(RedisPubSub::new("events"), publish)]
+#[subscriber(RedisPubSub::new("events"), reply)]
 async fn on_event(event: &Event) -> AuditEntry {
     println!("event: {}", event.kind);
     AuditEntry {

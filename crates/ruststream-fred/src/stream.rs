@@ -59,7 +59,7 @@ pub use crate::publisher::RedisPublish as TransactionalPublish;
 ///     id: u64,
 /// }
 ///
-/// #[subscriber(RedisStream::new("orders").group("workers"), publish)]
+/// #[subscriber(RedisStream::new("orders").group("workers"), reply)]
 /// async fn price(orders: &[Order]) -> Result<Vec<Order>, HandlerOutcome> {
 ///     Ok(orders.iter().map(|order| Order { id: order.id }).collect())
 /// }

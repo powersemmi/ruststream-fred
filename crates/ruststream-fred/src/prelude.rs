@@ -22,7 +22,7 @@
 //!     id: u64,
 //! }
 //!
-//! #[subscriber(RedisStream::new("orders").group("workers"), publish)]
+//! #[subscriber(RedisStream::new("orders").group("workers"), reply)]
 //! async fn ship(order: &Order) -> Shipped {
 //!     Shipped { id: order.id }
 //! }
