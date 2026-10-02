@@ -65,12 +65,38 @@ pub use crate::list::RedisListPublish as Publish;
 /// # Examples
 ///
 /// ```
+/// # mod demo {
 /// use ruststream_fred::list::prelude::*;
+/// use serde::{Deserialize, Serialize};
 ///
-/// let jobs = RedisList::new("jobs").reliable();
-/// let broker = RedisBroker::standalone("redis://localhost:6379");
-/// let replies: Publish = Publish::default();
-/// let _ = (jobs, broker, replies);
+/// #[derive(Deserialize)]
+/// struct Job {
+///     id: u64,
+/// }
+///
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "jobs.done")]
+/// struct Done {
+///     id: u64,
+/// }
+///
+/// #[subscriber(RedisList::new("jobs").reliable(), publish)]
+/// async fn run_job(job: &Job) -> Done {
+///     Done { id: job.id }
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             // The reply is `LPUSH`ed onto `jobs.done`, a queue of its own.
+///             b.include(run_job).out_reply(Publish::default());
+///         },
+///     )
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 ///
 /// Two vocabularies that do not mix. A handler body imports `ruststream::prelude::*` and bounds an
@@ -126,12 +152,43 @@ fn empty_on_timeout<T>(
 /// # Examples
 ///
 /// ```
+/// # mod demo {
 /// use std::time::Duration;
-/// use ruststream_fred::RedisList;
 ///
-/// let simple = RedisList::new("jobs");
-/// let reliable = RedisList::new("jobs").reliable().block(Duration::from_secs(2));
-/// # let _ = (simple, reliable);
+/// use ruststream_fred::list::prelude::*;
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize)]
+/// struct Job {
+///     id: u64,
+/// }
+///
+/// // Reliable: the entry waits on a processing list until the handler acknowledges it.
+/// #[subscriber(RedisList::new("jobs").reliable().block(Duration::from_secs(2)))]
+/// async fn run_job(job: &Job) -> HandlerOutcome {
+///     println!("running job {}", job.id);
+///     HandlerOutcome::ack()
+/// }
+///
+/// // Simple: popped and gone, so a crash mid-handler loses the entry.
+/// #[subscriber(RedisList::new("metrics"))]
+/// async fn record(job: &Job) -> HandlerOutcome {
+///     println!("recorded {}", job.id);
+///     HandlerOutcome::ack()
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             b.include(run_job);
+///             b.include(record);
+///         },
+///     )
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 #[derive(Clone)]
 #[must_use]
@@ -976,14 +1033,47 @@ impl Partitioned for RedisListMessage {
 /// # Examples
 ///
 /// ```
+/// # mod demo {
 /// use std::time::Duration;
+///
 /// use ruststream::codec::JsonCodec;
 /// use ruststream_fred::RedisListPublish;
+/// use ruststream_fred::list::prelude::*;
+/// use serde::{Deserialize, Serialize};
 ///
-/// let publish = RedisListPublish::new()
-///     .codec(JsonCodec)
-///     .ttl(Duration::from_secs(300));
-/// # let _ = publish;
+/// #[derive(Deserialize)]
+/// struct Job {
+///     id: u64,
+/// }
+///
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "jobs.done")]
+/// struct Done {
+///     id: u64,
+/// }
+///
+/// #[subscriber(RedisList::new("jobs").reliable(), publish)]
+/// async fn run_job(job: &Job) -> Done {
+///     Done { id: job.id }
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             // A readable JSON frame, and a `jobs.done` nobody drains expires five minutes
+///             // after the last push.
+///             b.include(run_job).out_reply(
+///                 RedisListPublish::new()
+///                     .codec(JsonCodec)
+///                     .ttl(Duration::from_secs(300)),
+///             );
+///         },
+///     )
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 #[derive(Clone, Default)]
 #[must_use]

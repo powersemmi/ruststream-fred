@@ -152,10 +152,29 @@ mod sealed {
 /// # Examples
 ///
 /// ```
-/// use ruststream_fred::pipeline::{Atomic, Plain, WindowMode};
+/// # mod demo {
+/// use ruststream_fred::stream::prelude::*;
+/// # #[derive(serde::Deserialize)]
+/// # struct Order { id: u64 }
 ///
-/// assert!(!Plain::ATOMIC);
-/// assert!(Atomic::ATOMIC);
+/// #[subscriber(RedisStream::new("{orders}").group("workers"))]
+/// async fn invoice(order: &Order, Ctx(pipeline): Ctx<keys::Pipeline>) -> HandlerOutcome {
+///     match pipeline.lpush("{orders}:invoices", order.id.to_string()).await {
+///         Ok(()) => HandlerOutcome::ack(),
+///         Err(_) => HandlerOutcome::retry(),
+///     }
+/// }
+///
+/// fn app() -> RustStream {
+///     RustStream::new(AppInfo::new("invoices", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             // `.pipeline()` opens the window as `Plain`, and `.atomic()` makes it `Atomic`.
+///             b.include(invoice.pipeline().atomic());
+///         },
+///     )
+/// }
+/// # }
 /// ```
 pub trait WindowMode: sealed::Sealed + Send + Sync + 'static {
     /// Whether a segment is wrapped in `MULTI` / `EXEC`.
@@ -427,9 +446,10 @@ mod bindable {
 /// ```
 /// # mod demo {
 /// use ruststream_fred::stream::prelude::*;
+/// use serde::Serialize;
 /// # #[derive(serde::Deserialize)]
 /// # struct Order { id: u64 }
-/// #[derive(serde::Serialize, Outgoing)]
+/// #[derive(Serialize, Outgoing)]
 /// #[outgoing(name = "audit")]
 /// struct Audit {
 ///     id: u64,
@@ -535,9 +555,10 @@ impl bindable::Named for crate::RedisDefaultPublisher {
 /// ```
 /// # mod demo {
 /// use ruststream_fred::stream::prelude::*;
+/// use serde::Serialize;
 /// # #[derive(serde::Deserialize)]
 /// # struct Order { id: u64 }
-/// #[derive(serde::Serialize, Outgoing)]
+/// #[derive(Serialize, Outgoing)]
 /// #[outgoing(name = "receipts")]
 /// struct Receipt {
 ///     id: u64,
@@ -677,17 +698,39 @@ impl RedisPipeline {
     /// # Examples
     ///
     /// ```
-    /// use std::ops::Deref;
-    /// use ruststream_fred::pipeline::{Bindable, RedisPipeline};
-    ///
-    /// fn bound<'o, O>(pipeline: &RedisPipeline, out: &'o O) -> &'o O
-    /// where
-    ///     O: Deref,
-    ///     O::Target: Bindable,
-    /// {
-    ///     pipeline.bind(out)
+    /// # mod demo {
+    /// use ruststream_fred::stream::prelude::*;
+    /// use serde::Serialize;
+    /// # #[derive(serde::Deserialize)]
+    /// # struct Order { id: u64 }
+    /// #[derive(Serialize, Outgoing)]
+    /// #[outgoing(name = "audit")]
+    /// struct Audit {
+    ///     id: u64,
     /// }
-    /// # let _ = bound::<Box<ruststream_fred::RedisPublisher>>;
+    ///
+    /// #[subscriber(RedisStream::new("orders").group("workers"))]
+    /// async fn record(
+    ///     order: &Order,
+    ///     Ctx(pipeline): Ctx<keys::Pipeline>,
+    ///     Out(out): Out<impl Bindable>,
+    /// ) -> HandlerOutcome {
+    ///     // Queued into the delivery's segment: the audit entry leaves only with the `XACK`.
+    ///     match pipeline.bind(out).message(&Audit { id: order.id }).publish().await {
+    ///         Ok(()) => HandlerOutcome::ack(),
+    ///         Err(_) => HandlerOutcome::retry(),
+    ///     }
+    /// }
+    /// #
+    /// # fn app() -> RustStream {
+    /// #     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+    /// #         RedisBroker::standalone("redis://localhost:6379"),
+    /// #         |b| {
+    /// #             b.include(record.pipeline()).out(DefaultSlot, Publish).build();
+    /// #         },
+    /// #     )
+    /// # }
+    /// # }
     /// ```
     pub fn bind<'o, O>(&self, out: &'o O) -> &'o O
     where
@@ -711,12 +754,32 @@ impl RedisPipeline {
     /// # Examples
     ///
     /// ```
-    /// use ruststream_fred::pipeline::RedisPipeline;
+    /// # mod demo {
+    /// use ruststream_fred::stream::prelude::*;
+    /// # #[derive(serde::Deserialize)]
+    /// # struct Order { id: u64 }
     ///
-    /// async fn run(pipeline: &RedisPipeline, sha: &str) -> Result<(), fred::error::Error> {
-    ///     pipeline.evalsha(sha, vec!["orders:seen"], vec!["1"]).await
+    /// /// The digest of a script the service loaded with `SCRIPT LOAD` at startup.
+    /// const MARK_SEEN: &str = "a42059b356c875f0717db19a51f6aaca9ae659ea";
+    ///
+    /// #[subscriber(RedisStream::new("orders").group("workers"))]
+    /// async fn record(order: &Order, Ctx(pipeline): Ctx<keys::Pipeline>) -> HandlerOutcome {
+    ///     let id = order.id.to_string();
+    ///     match pipeline.evalsha(MARK_SEEN, vec!["orders:seen"], vec![id]).await {
+    ///         Ok(()) => HandlerOutcome::ack(),
+    ///         Err(_) => HandlerOutcome::retry(),
+    ///     }
     /// }
-    /// # let _ = run;
+    /// #
+    /// # fn app() -> RustStream {
+    /// #     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+    /// #         RedisBroker::standalone("redis://localhost:6379"),
+    /// #         |b| {
+    /// #             b.include(record.pipeline());
+    /// #         },
+    /// #     )
+    /// # }
+    /// # }
     /// ```
     pub async fn evalsha<S, K, V>(&self, hash: S, keys: K, args: V) -> Result<(), Error>
     where
@@ -742,13 +805,31 @@ impl RedisPipeline {
     /// # Examples
     ///
     /// ```
-    /// use ruststream_fred::pipeline::RedisPipeline;
+    /// # mod demo {
+    /// use ruststream_fred::stream::prelude::*;
+    /// # #[derive(serde::Deserialize)]
+    /// # struct Order { id: u64 }
     ///
-    /// async fn run(pipeline: &RedisPipeline) -> Result<(), fred::error::Error> {
-    ///     let script = "return redis.call('INCR', KEYS[1])";
-    ///     pipeline.eval(script, vec!["orders:seen"], Vec::<String>::new()).await
+    /// const MARK_SEEN: &str = "return redis.call('SADD', KEYS[1], ARGV[1])";
+    ///
+    /// #[subscriber(RedisStream::new("orders").group("workers"))]
+    /// async fn record(order: &Order, Ctx(pipeline): Ctx<keys::Pipeline>) -> HandlerOutcome {
+    ///     let id = order.id.to_string();
+    ///     match pipeline.eval(MARK_SEEN, vec!["orders:seen"], vec![id]).await {
+    ///         Ok(()) => HandlerOutcome::ack(),
+    ///         Err(_) => HandlerOutcome::retry(),
+    ///     }
     /// }
-    /// # let _ = run;
+    /// #
+    /// # fn app() -> RustStream {
+    /// #     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+    /// #         RedisBroker::standalone("redis://localhost:6379"),
+    /// #         |b| {
+    /// #             b.include(record.pipeline());
+    /// #         },
+    /// #     )
+    /// # }
+    /// # }
     /// ```
     pub async fn eval<S, K, V>(&self, script: S, keys: K, args: V) -> Result<(), Error>
     where
@@ -800,14 +881,31 @@ impl RedisPipeline {
     /// # Examples
     ///
     /// ```
+    /// # mod demo {
     /// use fred::types::{ClusterHash, CustomCommand};
-    /// use ruststream_fred::pipeline::RedisPipeline;
+    /// use ruststream_fred::stream::prelude::*;
+    /// # #[derive(serde::Deserialize)]
+    /// # struct Order { id: u64 }
     ///
-    /// async fn touch(pipeline: &RedisPipeline) -> Result<(), fred::error::Error> {
-    ///     let command = CustomCommand::new_static("TOUCH", ClusterHash::FirstKey, false);
-    ///     pipeline.custom(command, vec!["orders:seen"]).await
+    /// #[subscriber(RedisStream::new("orders").group("workers"))]
+    /// async fn record(order: &Order, Ctx(pipeline): Ctx<keys::Pipeline>) -> HandlerOutcome {
+    ///     // Refreshes the order's last-access time, so an LRU eviction keeps it.
+    ///     let touch = CustomCommand::new_static("TOUCH", ClusterHash::FirstKey, false);
+    ///     match pipeline.custom(touch, vec![format!("order:{}", order.id)]).await {
+    ///         Ok(()) => HandlerOutcome::ack(),
+    ///         Err(_) => HandlerOutcome::retry(),
+    ///     }
     /// }
-    /// # let _ = touch;
+    /// #
+    /// # fn app() -> RustStream {
+    /// #     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+    /// #         RedisBroker::standalone("redis://localhost:6379"),
+    /// #         |b| {
+    /// #             b.include(record.pipeline());
+    /// #         },
+    /// #     )
+    /// # }
+    /// # }
     /// ```
     pub async fn custom<T>(&self, command: CustomCommand, args: Vec<T>) -> Result<(), Error>
     where

@@ -180,18 +180,35 @@ impl std::fmt::Debug for AuthConfig {
 ///
 /// # Examples
 ///
-/// ```no_run
-/// use ruststream::{Broker, ConnectedBroker};
-/// use ruststream_fred::{RedisBroker, RedisStream};
+/// ```
+/// # mod demo {
+/// use ruststream_fred::stream::prelude::*;
+/// use serde::Deserialize;
 ///
-/// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-/// let connected = RedisBroker::standalone("redis://localhost:6379").connect().await?;
-/// let publisher = connected.publisher();
-/// let sub = connected.subscribe(RedisStream::new("orders").group("workers")).await?;
-/// # let _ = (publisher, sub);
-/// let _closed = connected.shutdown().await?;
-/// # Ok(())
+/// #[derive(Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[subscriber(RedisStream::new("orders").group("workers"))]
+/// async fn handle(order: &Order) -> HandlerOutcome {
+///     println!("order {}", order.id);
+///     HandlerOutcome::ack()
+/// }
+///
+/// // The broker is a plain value here; the runtime connects it at startup and shuts it down
+/// // when the service stops.
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             b.include(handle);
+///         },
+///     )
+/// }
 /// # }
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone)]
 #[must_use]
@@ -275,11 +292,32 @@ impl RedisBroker {
     ///
     /// # Examples
     ///
-    /// ```no_run
-    /// use ruststream_fred::RedisBroker;
+    /// ```
+    /// # mod demo {
+    /// use ruststream_fred::stream::prelude::*;
+    /// # use serde::Deserialize;
+    /// # #[derive(Deserialize)]
+    /// # struct Order {
+    /// #     id: u64,
+    /// # }
+    /// #
+    /// # #[subscriber(RedisStream::new("orders").group("workers"))]
+    /// # async fn handle(order: &Order) -> HandlerOutcome {
+    /// #     println!("order {}", order.id);
+    /// #     HandlerOutcome::ack()
+    /// # }
     ///
-    /// let broker = RedisBroker::cluster(["10.0.0.1:6379"]).credentials("worker", "s3cr3t");
-    /// # let _ = broker;
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+    ///         RedisBroker::cluster(["10.0.0.1:6379"]).credentials("worker", "s3cr3t"),
+    ///         |b| {
+    ///             b.include(handle);
+    ///         },
+    ///     )
+    /// }
+    /// # }
+    /// # fn main() {}
     /// ```
     pub fn credentials(mut self, username: impl Into<String>, password: impl Into<String>) -> Self {
         self.auth.username = Some(username.into());
@@ -292,11 +330,32 @@ impl RedisBroker {
     ///
     /// # Examples
     ///
-    /// ```no_run
-    /// use ruststream_fred::RedisBroker;
+    /// ```
+    /// # mod demo {
+    /// use ruststream_fred::stream::prelude::*;
+    /// # use serde::Deserialize;
+    /// # #[derive(Deserialize)]
+    /// # struct Order {
+    /// #     id: u64,
+    /// # }
+    /// #
+    /// # #[subscriber(RedisStream::new("orders").group("workers"))]
+    /// # async fn handle(order: &Order) -> HandlerOutcome {
+    /// #     println!("order {}", order.id);
+    /// #     HandlerOutcome::ack()
+    /// # }
     ///
-    /// let broker = RedisBroker::sentinel("mymaster", ["10.0.0.1:26379"]).password("s3cr3t");
-    /// # let _ = broker;
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+    ///         RedisBroker::sentinel("mymaster", ["10.0.0.1:26379"]).password("s3cr3t"),
+    ///         |b| {
+    ///             b.include(handle);
+    ///         },
+    ///     )
+    /// }
+    /// # }
+    /// # fn main() {}
     /// ```
     pub fn password(mut self, password: impl Into<String>) -> Self {
         self.auth.password = Some(password.into());
@@ -313,12 +372,37 @@ impl RedisBroker {
     ///
     /// # Examples
     ///
-    /// ```no_run
-    /// use ruststream_fred::{RedisBroker, TlsConfig};
+    /// ```
+    /// # #[cfg(feature = "tls-rustls")]
+    /// # mod demo {
+    /// use std::error::Error;
     ///
-    /// fn build(tls: TlsConfig) -> RedisBroker {
-    ///     RedisBroker::cluster(["10.0.0.1:6379"]).tls(tls)
+    /// use ruststream_fred::stream::prelude::*;
+    /// # use serde::Deserialize;
+    /// # #[derive(Deserialize)]
+    /// # struct Order {
+    /// #     id: u64,
+    /// # }
+    /// #
+    /// # #[subscriber(RedisStream::new("orders").group("workers"))]
+    /// # async fn handle(order: &Order) -> HandlerOutcome {
+    /// #     println!("order {}", order.id);
+    /// #     HandlerOutcome::ack()
+    /// # }
+    ///
+    /// pub async fn serve() -> Result<(), Box<dyn Error>> {
+    ///     // System trust roots, no client certificate.
+    ///     let tls = TlsConnector::default_rustls()?;
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+    ///         .with_broker(RedisBroker::cluster(["10.0.0.1:6379"]).tls(tls), |b| {
+    ///             b.include(handle);
+    ///         })
+    ///         .run()
+    ///         .await?;
+    ///     Ok(())
     /// }
+    /// # }
+    /// # fn main() {}
     /// ```
     #[cfg(any(
         feature = "tls-rustls",
@@ -337,13 +421,36 @@ impl RedisBroker {
     ///
     /// # Examples
     ///
-    /// ```no_run
-    /// use ruststream_fred::RedisBroker;
+    /// ```
+    /// # mod demo {
+    /// use ruststream_fred::stream::prelude::*;
+    /// # use serde::Deserialize;
+    /// # #[derive(Deserialize)]
+    /// # struct Order {
+    /// #     id: u64,
+    /// # }
+    /// #
+    /// # #[subscriber(RedisStream::new("orders").group("workers"))]
+    /// # async fn handle(order: &Order) -> HandlerOutcome {
+    /// #     println!("order {}", order.id);
+    /// #     HandlerOutcome::ack()
+    /// # }
     ///
-    /// let broker = RedisBroker::sentinel("mymaster", ["10.0.0.1:26379"])
-    ///     .credentials("worker", "data-pass")
-    ///     .sentinel_credentials("sentinel-user", "sentinel-pass");
-    /// # let _ = broker;
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     // The data nodes and the sentinels each check their own pair.
+    ///     let broker = RedisBroker::sentinel("mymaster", ["10.0.0.1:26379"])
+    ///         .credentials("worker", "data-pass")
+    ///         .sentinel_credentials("sentinel-user", "sentinel-pass");
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+    ///         broker,
+    ///         |b| {
+    ///             b.include(handle);
+    ///         },
+    ///     )
+    /// }
+    /// # }
+    /// # fn main() {}
     /// ```
     #[cfg(feature = "sentinel-auth")]
     pub fn sentinel_credentials(
@@ -363,12 +470,35 @@ impl RedisBroker {
     ///
     /// # Examples
     ///
-    /// ```no_run
-    /// use ruststream_fred::RedisBroker;
+    /// ```
+    /// # mod demo {
+    /// use ruststream_fred::stream::prelude::*;
+    /// # use serde::Deserialize;
+    /// # #[derive(Deserialize)]
+    /// # struct Order {
+    /// #     id: u64,
+    /// # }
+    /// #
+    /// # #[subscriber(RedisStream::new("orders").group("workers"))]
+    /// # async fn handle(order: &Order) -> HandlerOutcome {
+    /// #     println!("order {}", order.id);
+    /// #     HandlerOutcome::ack()
+    /// # }
     ///
-    /// let broker = RedisBroker::sentinel("mymaster", ["10.0.0.1:26379"])
-    ///     .sentinel_password("sentinel-pass");
-    /// # let _ = broker;
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     let broker = RedisBroker::sentinel("mymaster", ["10.0.0.1:26379"])
+    ///         .password("data-pass")
+    ///         .sentinel_password("sentinel-pass");
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+    ///         broker,
+    ///         |b| {
+    ///             b.include(handle);
+    ///         },
+    ///     )
+    /// }
+    /// # }
+    /// # fn main() {}
     /// ```
     #[cfg(feature = "sentinel-auth")]
     pub fn sentinel_password(mut self, password: impl Into<String>) -> Self {
@@ -384,13 +514,51 @@ impl RedisBroker {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
+    /// # mod demo {
     /// use std::sync::Arc;
-    /// use ruststream_fred::{CredentialProvider, RedisBroker};
     ///
-    /// fn build(provider: Arc<dyn CredentialProvider>) -> RedisBroker {
-    ///     RedisBroker::standalone("redis://localhost:6379").credential_provider(provider)
+    /// use ruststream_fred::stream::prelude::*;
+    /// # use serde::Deserialize;
+    /// # use fred::error::Error as FredError;
+    /// # use fred::types::config::Server;
+    /// # use ruststream_fred::CredentialProvider;
+    /// # #[derive(Debug)]
+    /// # struct IamTokens;
+    /// # #[async_trait::async_trait]
+    /// # impl CredentialProvider for IamTokens {
+    /// #     async fn fetch(
+    /// #         &self,
+    /// #         _server: Option<&Server>,
+    /// #     ) -> Result<(Option<String>, Option<String>), FredError> {
+    /// #         Ok((Some("worker".to_owned()), Some("token".to_owned())))
+    /// #     }
+    /// # }
+    /// # #[derive(Deserialize)]
+    /// # struct Order {
+    /// #     id: u64,
+    /// # }
+    /// #
+    /// # #[subscriber(RedisStream::new("orders").group("workers"))]
+    /// # async fn handle(order: &Order) -> HandlerOutcome {
+    /// #     println!("order {}", order.id);
+    /// #     HandlerOutcome::ack()
+    /// # }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     // `IamTokens` fetches a fresh token from the identity service on every `AUTH`.
+    ///     let broker = RedisBroker::standalone("redis://localhost:6379")
+    ///         .credential_provider(Arc::new(IamTokens));
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+    ///         broker,
+    ///         |b| {
+    ///             b.include(handle);
+    ///         },
+    ///     )
     /// }
+    /// # }
+    /// # fn main() {}
     /// ```
     #[cfg(feature = "credential-provider")]
     pub fn credential_provider(mut self, provider: Arc<dyn CredentialProvider>) -> Self {

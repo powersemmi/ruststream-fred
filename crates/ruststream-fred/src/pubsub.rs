@@ -63,12 +63,41 @@ pub use crate::pubsub::RedisPubSubPublish as Publish;
 /// # Examples
 ///
 /// ```
+/// # mod demo {
 /// use ruststream_fred::pubsub::prelude::*;
+/// use serde::{Deserialize, Serialize};
 ///
-/// let events = RedisPubSub::new("events").mode(PubSubMode::Sharded);
-/// let broker = RedisBroker::standalone("redis://localhost:6379");
-/// let replies: Publish = Publish::new().mode(PubSubMode::Sharded);
-/// let _ = (events, broker, replies);
+/// #[derive(Deserialize)]
+/// struct Event {
+///     kind: String,
+/// }
+///
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "events.seen")]
+/// struct Seen {
+///     kind: String,
+/// }
+///
+/// #[subscriber(RedisPubSub::new("events").mode(PubSubMode::Sharded), publish)]
+/// async fn on_event(event: &Event) -> Seen {
+///     Seen {
+///         kind: event.kind.clone(),
+///     }
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("events", "0.1.0")).with_broker(
+///         RedisBroker::cluster(["10.0.0.1:6379"]),
+///         |b| {
+///             // Sharded in, sharded out: an `SPUBLISH` reaches only sharded subscribers.
+///             b.include(on_event)
+///                 .out_reply(Publish::new().mode(PubSubMode::Sharded));
+///         },
+///     )
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 ///
 /// Two vocabularies that do not mix. A handler body imports `ruststream::prelude::*` and bounds an
@@ -123,11 +152,41 @@ impl PubSubMode {
 /// # Examples
 ///
 /// ```
-/// use ruststream_fred::{PubSubMode, RedisPubSub};
+/// # mod demo {
+/// use ruststream_fred::pubsub::prelude::*;
+/// use serde::Deserialize;
 ///
-/// let classic = RedisPubSub::new("events");
-/// let sharded = RedisPubSub::new("events").mode(PubSubMode::Sharded);
-/// # let _ = (classic, sharded);
+/// #[derive(Deserialize)]
+/// struct Event {
+///     kind: String,
+/// }
+///
+/// // Classic: `SUBSCRIBE`, broadcast to every node of a cluster.
+/// #[subscriber(RedisPubSub::new("events"))]
+/// async fn on_event(event: &Event) -> HandlerOutcome {
+///     println!("event: {}", event.kind);
+///     HandlerOutcome::ack()
+/// }
+///
+/// // Sharded: `SSUBSCRIBE`, served by the node that owns the channel's slot.
+/// #[subscriber(RedisPubSub::new("metrics").mode(PubSubMode::Sharded))]
+/// async fn on_metric(event: &Event) -> HandlerOutcome {
+///     println!("metric: {}", event.kind);
+///     HandlerOutcome::ack()
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("events", "0.1.0")).with_broker(
+///         RedisBroker::cluster(["10.0.0.1:6379"]),
+///         |b| {
+///             b.include(on_event);
+///             b.include(on_metric);
+///         },
+///     )
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 #[derive(Clone)]
 #[must_use]
@@ -195,12 +254,28 @@ impl RedisPubSub {
     /// # Examples
     ///
     /// ```
+    /// # mod demo {
     /// use ruststream::nonzero;
-    /// use ruststream_fred::RedisPubSub;
+    /// use ruststream_fred::pubsub::prelude::*;
+    /// # #[derive(serde::Deserialize)]
+    /// # struct Event { kind: String }
     ///
     /// // A handler that falls behind a burst of up to ten thousand events loses none of them.
-    /// let events = RedisPubSub::new("events").buffer(nonzero!(10_000));
-    /// # let _ = events;
+    /// #[subscriber(RedisPubSub::new("events").buffer(nonzero!(10_000)))]
+    /// async fn on_event(event: &Event) -> HandlerOutcome {
+    ///     println!("event {}", event.kind);
+    ///     HandlerOutcome::ack()
+    /// }
+    /// #
+    /// # fn app() -> RustStream {
+    /// #     RustStream::new(AppInfo::new("events", "0.1.0")).with_broker(
+    /// #         RedisBroker::standalone("redis://localhost:6379"),
+    /// #         |b| {
+    /// #             b.include(on_event);
+    /// #         },
+    /// #     )
+    /// # }
+    /// # }
     /// ```
     pub const fn buffer(mut self, messages: NonZeroUsize) -> Self {
         self.buffer = Some(messages);
@@ -272,10 +347,36 @@ impl RedisPubSub {
 /// # Examples
 ///
 /// ```
-/// use ruststream_fred::RedisPubSubPattern;
+/// # mod demo {
+/// use ruststream_fred::pubsub::prelude::*;
+/// use serde::Deserialize;
 ///
-/// let events = RedisPubSubPattern::new("events.*");
-/// assert_eq!(events.pattern(), "events.*");
+/// #[derive(Deserialize)]
+/// struct Event {
+///     kind: String,
+/// }
+///
+/// #[subscriber(RedisPubSubPattern::new("events.*"))]
+/// async fn on_any_event(event: &Event, Ctx(channel): Ctx<keys::Channel>) -> HandlerOutcome {
+///     println!("{} on {channel}", event.kind);
+///     HandlerOutcome::ack()
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("events", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             // A glob is no channel a `PUBLISH` can name, so the mount site says where a
+///             // retry copy goes.
+///             b.include(on_any_event)
+///                 .out_retry(Publish::default())
+///                 .to("events.retry");
+///         },
+///     )
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 ///
 /// Sharded Pub/Sub has no pattern subscription, so a pattern takes no mode:
@@ -337,12 +438,28 @@ impl RedisPubSubPattern {
     /// # Examples
     ///
     /// ```
+    /// # mod demo {
     /// use ruststream::nonzero;
-    /// use ruststream_fred::RedisPubSubPattern;
+    /// use ruststream_fred::pubsub::prelude::*;
+    /// # #[derive(serde::Deserialize)]
+    /// # struct Event { kind: String }
     ///
     /// // A handler that falls behind a burst of up to ten thousand events loses none of them.
-    /// let events = RedisPubSubPattern::new("events.*").buffer(nonzero!(10_000));
-    /// # let _ = events;
+    /// #[subscriber(RedisPubSubPattern::new("events.*").buffer(nonzero!(10_000)))]
+    /// async fn on_event(event: &Event) -> HandlerOutcome {
+    ///     println!("event {}", event.kind);
+    ///     HandlerOutcome::ack()
+    /// }
+    /// #
+    /// # fn app() -> RustStream {
+    /// #     RustStream::new(AppInfo::new("events", "0.1.0")).with_broker(
+    /// #         RedisBroker::standalone("redis://localhost:6379"),
+    /// #         |b| {
+    /// #             b.include(on_event);
+    /// #         },
+    /// #     )
+    /// # }
+    /// # }
     /// ```
     pub const fn buffer(mut self, messages: NonZeroUsize) -> Self {
         self.buffer = Some(messages);
@@ -808,11 +925,40 @@ impl Partitioned for RedisPubSubMessage {
 /// # Examples
 ///
 /// ```
+/// # mod demo {
+/// use ruststream_fred::stream::prelude::*;
 /// use ruststream_fred::{PubSubMode, RedisPubSubPublish};
+/// use serde::{Deserialize, Serialize};
 ///
-/// let classic = RedisPubSubPublish::default();
-/// let sharded = RedisPubSubPublish::new().mode(PubSubMode::Sharded);
-/// # let _ = (classic, sharded);
+/// #[derive(Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "orders.live")]
+/// struct Placed {
+///     id: u64,
+/// }
+///
+/// #[subscriber(RedisStream::new("orders").group("workers"), publish)]
+/// async fn announce(order: &Order) -> Placed {
+///     Placed { id: order.id }
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+///         RedisBroker::cluster(["10.0.0.1:6379"]),
+///         |b| {
+///             // Read from a durable stream, broadcast to whoever is listening with `SPUBLISH`.
+///             b.include(announce)
+///                 .out_reply(RedisPubSubPublish::new().mode(PubSubMode::Sharded));
+///         },
+///     )
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 #[derive(Clone, Default)]
 #[must_use]

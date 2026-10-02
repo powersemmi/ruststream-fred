@@ -46,13 +46,46 @@ const SWEEP_BATCH: i64 = 128;
 /// # Examples
 ///
 /// ```
+/// # mod demo {
 /// use std::time::Duration;
-/// use ruststream_fred::{DelayedRetry, RedisStream};
 ///
-/// let sub = RedisStream::new("orders").group("workers").delayed_retry(
-///     DelayedRetry::DurableZset { key: "orders.delayed".to_owned(), ttl: None },
-/// );
-/// # let _ = sub;
+/// use ruststream_fred::stream::prelude::*;
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize)]
+/// struct Order {
+///     id: u64,
+///     paid: bool,
+/// }
+///
+/// // An unpaid order waits a minute in the ZSET, where a restart does not lose it.
+/// #[subscriber(
+///     RedisStream::new("orders")
+///         .group("workers")
+///         .delayed_retry(DelayedRetry::DurableZset {
+///             key: "orders.delayed".to_owned(),
+///             ttl: Some(Duration::from_secs(3600)),
+///         })
+/// )]
+/// async fn handle(order: &Order) -> HandlerOutcome {
+///     if !order.paid {
+///         return HandlerOutcome::retry_after(Duration::from_secs(60));
+///     }
+///     println!("shipping order {}", order.id);
+///     HandlerOutcome::ack()
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             b.include(handle);
+///         },
+///     )
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone)]
 #[non_exhaustive]

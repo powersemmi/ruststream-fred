@@ -41,16 +41,38 @@
 //! # Examples
 //!
 //! ```
-//! use ruststream::runtime::{Context, HandlerOutcome};
-//! use ruststream_fred::context::{StreamContext, keys};
+//! # mod demo {
+//! use ruststream_fred::stream::prelude::*;
+//! use serde::Deserialize;
 //!
-//! // A handler over the Streams transport reading the native entry id and consumer group.
-//! async fn handle(order: &Vec<u8>, ctx: &mut Context<'_, StreamContext>) -> HandlerOutcome {
-//!     let id = ctx.context(keys::EntryId); // e.g. the stream entry id `1700000000000-0`
-//!     println!("{} read through {}", id, ctx.context(keys::ConsumerGroup));
+//! #[derive(Deserialize)]
+//! struct Order {
+//!     id: u64,
+//! }
+//!
+//! #[subscriber(RedisStream::new("orders").group("workers"))]
+//! async fn handle(order: &Order, ctx: &mut Context<'_, StreamContext>) -> HandlerOutcome {
+//!     // The entry id reads like `1700000000000-0`.
+//!     println!(
+//!         "order {} read at {} through {}",
+//!         order.id,
+//!         ctx.context(keys::EntryId),
+//!         ctx.context(keys::ConsumerGroup)
+//!     );
 //!     HandlerOutcome::ack()
 //! }
-//! # let _ = handle;
+//!
+//! #[ruststream::app]
+//! fn app() -> impl App {
+//!     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+//!         RedisBroker::standalone("redis://localhost:6379"),
+//!         |b| {
+//!             b.include(handle);
+//!         },
+//!     )
+//! }
+//! # }
+//! # fn main() {}
 //! ```
 
 use std::convert::Infallible;
@@ -76,20 +98,24 @@ use crate::seek::{EntryId, RedisGroupPosition, RedisGroupSeeker};
 ///
 /// ```
 /// # mod demo {
-/// use ruststream::prelude::*;
-/// use ruststream::{Seeker, subscriber};
-/// use ruststream_fred::context::keys;
-/// use ruststream_fred::{RedisGroupPosition, RedisStream};
-/// # #[derive(serde::Deserialize)]
-/// # struct Order { id: u64 }
+/// use ruststream_fred::stream::prelude::*;
+/// # use serde::Deserialize;
+/// # #[derive(Deserialize)]
+/// # struct Order {
+/// #     id: u64,
+/// # }
 ///
-/// /// Skips the group past a region the producer marked poisoned.
+/// /// Skips the group past a region the producer marked poisoned, and logs where it was.
 /// #[subscriber(RedisStream::new("orders").group("workers"))]
-/// async fn work(order: &Order, Ctx(seeker): Ctx<keys::SeekHandle>) -> HandlerOutcome {
-///     if order.id == 0 && seeker.seek(RedisGroupPosition::end()).await.is_err() {
-///         return HandlerOutcome::retry();
+/// async fn work(order: &Order, ctx: &mut Context<'_, StreamContext>) -> HandlerOutcome {
+///     if order.id != 0 {
+///         return HandlerOutcome::ack();
 ///     }
-///     HandlerOutcome::ack()
+///     println!("poison marker at {}", ctx.context(keys::EntryId));
+///     match ctx.context(keys::SeekHandle).seek(RedisGroupPosition::end()).await {
+///         Ok(()) => HandlerOutcome::ack(),
+///         Err(_) => HandlerOutcome::retry(),
+///     }
 /// }
 /// # }
 /// ```
@@ -162,12 +188,12 @@ impl BuildContext<RedisMessage> for StreamContext {
 ///
 /// ```
 /// # mod demo {
-/// use ruststream::prelude::*;
-/// use ruststream::{Seeker, subscriber};
-/// use ruststream_fred::context::{StreamBatchContext, keys};
-/// use ruststream_fred::{RedisGroupPosition, RedisStream};
-/// # #[derive(serde::Deserialize)]
-/// # struct Order { id: u64 }
+/// use ruststream_fred::stream::prelude::*;
+/// # use serde::Deserialize;
+/// # #[derive(Deserialize)]
+/// # struct Order {
+/// #     id: u64,
+/// # }
 ///
 /// /// A batch that saw the poison marker rewinds the group once the batch is settled.
 /// #[subscriber(RedisStream::new("orders").group("workers"))]
@@ -238,15 +264,22 @@ impl PubSubContext {
     /// # Examples
     ///
     /// ```
+    /// use std::error::Error;
+    ///
     /// use fred::clients::Pool;
     /// use fred::types::config::Config;
     /// use ruststream_fred::context::PubSubContext;
     ///
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// /// The region a fan-out delivery belongs to, read off the channel it arrived on.
+    /// fn region(cx: &PubSubContext) -> &str {
+    ///     cx.channel().rsplit_once('.').map_or("", |(_, region)| region)
+    /// }
+    ///
+    /// # fn main() -> Result<(), Box<dyn Error>> {
     /// // An unconnected pool: `Pool::new` opens no socket.
     /// let pool = Pool::new(Config::default(), None, None, None, 1)?;
     /// let cx = PubSubContext::new("events.eu", true, pool);
-    /// assert_eq!(cx.channel(), "events.eu");
+    /// assert_eq!(region(&cx), "eu");
     /// # Ok(())
     /// # }
     /// ```
@@ -304,12 +337,12 @@ impl BuildContext<RedisPubSubMessage> for PubSubContext {
 /// # #[derive(serde::Deserialize)]
 /// # struct Job { id: u64 }
 ///
-/// /// Counts every job in a key the handler reads back at once.
+/// /// Runs a job once: a delivery of a job seen before counts past one and is dropped.
 /// #[subscriber(RedisList::new("jobs").reliable())]
 /// async fn work(job: &Job, Ctx(pool): Ctx<keys::FredPool>) -> HandlerOutcome {
-///     let _ = job.id;
-///     match pool.incr::<i64, _>("jobs.seen").await {
-///         Ok(_) => HandlerOutcome::ack(),
+///     match pool.incr::<i64, _>(format!("jobs.seen:{}", job.id)).await {
+///         Ok(1) => HandlerOutcome::ack(),
+///         Ok(_) => HandlerOutcome::drop(),
 ///         Err(_) => HandlerOutcome::retry(),
 ///     }
 /// }
@@ -366,9 +399,8 @@ impl BuildContext<RedisPubSubMessage> for PoolContext {
 ///
 /// #[subscriber(RedisStream::new("orders").group("workers"))]
 /// async fn work(order: &Order, ctx: &mut Context<'_, PipelineContext>) -> HandlerOutcome {
-///     let queued = ctx.context(keys::Pipeline).incr("orders.seen").await;
-///     let _ = order.id;
-///     if queued.is_err() {
+///     let key = format!("orders.seen:{}", order.id);
+///     if ctx.context(keys::Pipeline).incr(key).await.is_err() {
 ///         return HandlerOutcome::retry();
 ///     }
 ///     HandlerOutcome::ack()
