@@ -230,7 +230,7 @@ mod tests {
     fn binary_raw_value_falls_back_to_payload() {
         let (payload, headers) = unframe(None, b"hi");
         assert_eq!(payload.as_ref(), b"hi");
-        assert!(headers.is_empty());
+        assert_eq!(headers, HeaderMap::new());
     }
 
     #[test]
@@ -252,7 +252,7 @@ mod tests {
         let codec: SharedEnvelope = Arc::new(JsonCodec);
         let (payload, headers) = unframe(Some(&codec), b"not-json");
         assert_eq!(payload.as_ref(), b"not-json");
-        assert!(headers.is_empty());
+        assert_eq!(headers, HeaderMap::new());
     }
 
     /// Bytes that are not text (a lone 0xff is invalid UTF-8, and a NUL byte survives the trip
