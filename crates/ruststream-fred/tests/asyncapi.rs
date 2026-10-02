@@ -29,7 +29,7 @@ const URL: &str = "redis://localhost:6379";
 const MIN_IDLE: Duration = Duration::from_secs(30);
 
 /// The expiry the list publisher below re-arms on its key.
-const BATCH_TTL: Duration = Duration::from_secs(60);
+const BATCH_TTL: Duration = Duration::from_mins(1);
 
 #[derive(Debug, Deserialize, Serialize)]
 struct Order {

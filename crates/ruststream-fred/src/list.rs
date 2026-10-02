@@ -1269,7 +1269,7 @@ mod tests {
 
     #[test]
     fn ttl_millis_converts_and_clamps() {
-        assert_eq!(ttl_millis(Duration::from_secs(60)), 60_000);
+        assert_eq!(ttl_millis(Duration::from_mins(1)), 60_000);
         assert_eq!(ttl_millis(Duration::from_millis(1)), 1);
         // A sub-millisecond TTL must not become PEXPIRE 0 (which deletes the key).
         assert_eq!(ttl_millis(Duration::from_nanos(1)), 1);
