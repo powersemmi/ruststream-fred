@@ -11,13 +11,18 @@ use fred::types::Value;
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::Bindings;
 use ruststream::{
-    DefaultPublish, OutgoingMessage, OwnedTransactions, PairError, PublishPolicy, Publisher, Take,
-    Transaction, TransactionalPublisher,
+    DefaultPublish, HeaderMap, OutgoingMessage, OwnedTransactions, PairError, PublishPolicy,
+    Publisher, Take, Transaction, TransactionalPublisher,
 };
 use tracing::warn;
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
+use crate::envelope::frame;
+use crate::list::push;
 use crate::partition::{RedisPublishOptions, resolved_headers};
+use crate::pubsub::PubSubMode;
+use crate::pubsub::send;
+use crate::route::Route;
 use crate::{convert::fields_for_publish, error::RedisError};
 
 /// One buffered `XADD` (stream key plus its encoded entry fields), held while a transaction is open.
@@ -95,34 +100,180 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisPublish {
     }
 }
 
-impl DefaultPublish for ConnectedRedisBroker {
-    type Policy = RedisPublish;
-}
-
-/// Pairs the production policy against the in-process stand-in, so a routes file's
-/// `.out_reply(Publish)` mounts on both without naming a second type.
+/// The broker's default policy, what a registration publishes through when its mount site names
+/// none: a reply, a retry copy, a dead-letter move.
 ///
-/// The policy carries nothing to honour (`XADD` takes its key from each message), and the
-/// stand-in's publisher offers the same surface the live one does, both transaction kinds
-/// included, so this form loses nothing in process.
-#[cfg(feature = "testing")]
-impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisPublish {
-    type Live = crate::testing::RedisTestPublisher;
+/// It writes each name the way this service reads it. A name a [`RedisList`] subscription reads,
+/// or dead-letters to, is `LPUSH`ed in that subscription's framing; a name a [`RedisPubSub`]
+/// subscription reads or dead-letters to is published on in its mode and framing; any other name,
+/// a stream key included, is `XADD`ed. So a retry copy and a dead-letter move leave through the
+/// publish of the form the delivery came from, with nothing named at the mount site.
+///
+/// The route is recorded when a subscription opens, so a name this service does not subscribe to
+/// is a stream. A pattern subscription records nothing: its mount site names both the destination
+/// and the policy of its copies.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ruststream::{Broker, OutgoingMessage, PublishPolicy, Publisher};
+/// use ruststream_fred::{RedisBroker, RedisDefaultPublish, RedisList};
+///
+/// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+/// let connected = RedisBroker::standalone("redis://localhost:6379").connect().await?;
+/// let _jobs = connected.subscribe_list(RedisList::new("jobs").reliable()).await?;
+/// let publisher = RedisDefaultPublish.pair(&connected).await?;
+/// // `jobs` is read as a list here, so this is an `LPUSH`.
+/// publisher.publish(OutgoingMessage::new("jobs", b"{}".as_slice()), None).await?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// [`RedisList`]: crate::RedisList
+/// [`RedisPubSub`]: crate::RedisPubSub
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[must_use]
+pub struct RedisDefaultPublish;
+
+impl PublishPolicy<ConnectedRedisBroker> for RedisDefaultPublish {
+    type Live = RedisDefaultPublisher;
 
     fn pair(
         self,
-        connected: &crate::testing::ConnectedRedisTestBroker,
+        connected: &ConnectedRedisBroker,
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
-        ready(Ok(connected.publisher()))
+        ready(Ok(connected.default_publisher()))
     }
 
-    /// An `XADD` carries its headers as entry fields and the policy has no settings of its own, so
-    /// what the document learns from here is which Redis structure the channel is and which stream
-    /// key the entries are appended to.
+    /// Described as the stream publish, the family of a name no subscription of the service reads;
+    /// the document is built before any subscription opens, so a name that turns out to be read as
+    /// a list or a channel is described as a stream.
     #[cfg(feature = "asyncapi")]
     fn channel_bindings(&self, channel: &str) -> Bindings {
         crate::asyncapi::channel(&crate::asyncapi::Publish::stream(channel))
     }
+}
+
+impl DefaultPublish for ConnectedRedisBroker {
+    type Policy = RedisDefaultPublish;
+}
+
+/// The live form of [`RedisDefaultPublish`]: writes each name the way this connection's
+/// subscriptions read it. Cheap to clone.
+///
+/// Obtain it from [`ConnectedRedisBroker::default_publisher`] or by pairing the policy. Like every
+/// publisher here it may outlive the connection, so publishing after shutdown reports
+/// [`RedisError::ShutDown`].
+#[derive(Clone)]
+pub struct RedisDefaultPublisher {
+    core: Arc<RedisCore>,
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    round_name: u64,
+}
+
+impl Debug for RedisDefaultPublisher {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RedisDefaultPublisher")
+            .field("core", &self.core)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RedisDefaultPublisher {
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    pub(crate) const fn round_name(&self) -> u64 {
+        self.round_name
+    }
+
+    pub(crate) fn new(core: Arc<RedisCore>) -> Self {
+        Self {
+            round_name: core.rounds().publisher(),
+            core,
+        }
+    }
+}
+
+impl Publisher for RedisDefaultPublisher {
+    /// As on [`RedisPublisher`]: a name nothing reads is a stream, whose `XADD` keeps the body.
+    type Payload = Take;
+
+    type Error = RedisError;
+    /// The options every publisher of this crate takes, so a partition key resolves the same
+    /// whichever family the name is written in.
+    type Options = RedisPublishOptions;
+
+    async fn publish(
+        &self,
+        msg: OutgoingMessage<'_, BytesMut>,
+        options: Option<&Self::Options>,
+    ) -> Result<(), Self::Error> {
+        let (key, payload, headers) = msg.into_parts();
+        let headers = resolved_headers(headers, options);
+        if let Some(round) = self
+            .core
+            .rounds()
+            .joined(self.round_name, joins_round(options))
+        {
+            let joined = match self.core.routes().route(key) {
+                Route::Stream => {
+                    round
+                        .xadd(key, fields_for_publish(Vec::from(payload), &headers))
+                        .await
+                }
+                Route::List { envelope } => {
+                    round
+                        .lpush(key, frame(envelope.as_ref(), &payload, &headers), None)
+                        .await
+                }
+                Route::Channel { mode, envelope } => {
+                    round
+                        .publish(
+                            key,
+                            frame(envelope.as_ref(), &payload, &headers),
+                            mode == PubSubMode::Sharded,
+                        )
+                        .await
+                }
+            };
+            return joined.map_err(RedisError::publish);
+        }
+        match self.core.routes().route(key) {
+            Route::Stream => append(&self.core, key, Vec::from(payload), &headers).await,
+            Route::List { envelope } => {
+                push(&self.core, envelope.as_ref(), None, key, &payload, headers).await
+            }
+            Route::Channel { mode, envelope } => {
+                send(&self.core, mode, envelope.as_ref(), key, &payload, headers).await
+            }
+        }
+    }
+}
+
+/// Whether the call site asked this message to join the round of the delivery being handled.
+pub(crate) fn joins_round(options: Option<&RedisPublishOptions>) -> bool {
+    options.is_some_and(|options| options.join_round)
+}
+
+/// `XADD`s one entry onto the stream `key`: the stream publish, shared by [`RedisPublisher`] and
+/// [`RedisDefaultPublisher`].
+async fn append(
+    core: &RedisCore,
+    key: &str,
+    payload: Vec<u8>,
+    headers: &HeaderMap,
+) -> Result<(), RedisError> {
+    let pool = core.pool()?;
+    let _: String = pool
+        .xadd(
+            key,
+            false,
+            None::<()>,
+            "*",
+            fields_for_publish(payload, headers),
+        )
+        .await
+        .map_err(RedisError::publish)?;
+    Ok(())
 }
 
 /// The live stream publisher: [`RedisPublish`] paired with a connection. Cheap to clone.
@@ -163,6 +314,8 @@ impl PublishPolicy<crate::testing::ConnectedRedisTestBroker> for RedisPublish {
 pub struct RedisPublisher {
     core: Arc<RedisCore>,
     txn: Arc<Mutex<Option<Vec<Buffered>>>>,
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    round_name: u64,
 }
 
 impl Debug for RedisPublisher {
@@ -174,8 +327,14 @@ impl Debug for RedisPublisher {
 }
 
 impl RedisPublisher {
+    /// What `pipeline.bind(&out)` names this publisher and its clones by.
+    pub(crate) const fn round_name(&self) -> u64 {
+        self.round_name
+    }
+
     pub(crate) fn new(core: Arc<RedisCore>) -> Self {
         Self {
+            round_name: core.rounds().publisher(),
             core,
             txn: Arc::new(Mutex::new(None)),
         }
@@ -221,6 +380,16 @@ impl Publisher for RedisPublisher {
         msg: OutgoingMessage<'_, BytesMut>,
         options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
+        if let Some(round) = self
+            .core
+            .rounds()
+            .joined(self.round_name, joins_round(options))
+        {
+            let (key, payload, headers) = msg.into_parts();
+            let fields =
+                fields_for_publish(Vec::from(payload), &resolved_headers(headers, options));
+            return round.xadd(key, fields).await.map_err(RedisError::publish);
+        }
         let (key, payload, headers) = msg.into_parts();
         let entry: Buffered = (
             key.to_owned(),
