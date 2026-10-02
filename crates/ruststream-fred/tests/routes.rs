@@ -30,7 +30,7 @@ mod stream_routes {
         accepted: bool,
     }
 
-    #[subscriber(RedisStream::new("orders").group("workers"), publish("confirmations"))]
+    #[subscriber(RedisStream::new("orders").group("workers"), reply("confirmations"))]
     async fn confirm(order: &Order) -> Confirmation {
         Confirmation {
             id: order.id,
@@ -85,7 +85,7 @@ mod list_routes {
         id: u64,
     }
 
-    #[subscriber(RedisList::new("jobs").reliable(), publish("receipts"))]
+    #[subscriber(RedisList::new("jobs").reliable(), reply("receipts"))]
     async fn run_job(job: &Job) -> Receipt {
         Receipt { id: job.id }
     }
@@ -134,7 +134,7 @@ mod pubsub_routes {
         id: u64,
     }
 
-    #[subscriber(RedisPubSub::new("events"), publish("audit"))]
+    #[subscriber(RedisPubSub::new("events"), reply("audit"))]
     async fn on_event(event: &Event) -> Audit {
         Audit { id: event.id }
     }
@@ -185,7 +185,7 @@ mod default_reply {
         id: u64,
     }
 
-    #[subscriber(RedisStream::new("orders").group("workers"), publish("confirmations"))]
+    #[subscriber(RedisStream::new("orders").group("workers"), reply("confirmations"))]
     async fn confirm(order: &Order) -> Confirmation {
         Confirmation { id: order.id }
     }

@@ -28,7 +28,7 @@ struct Confirmation {
     id: u64,
 }
 
-#[subscriber(RedisStream::new(common::INPUT).group("workers"), publish)]
+#[subscriber(RedisStream::new(common::INPUT).group("workers"), reply)]
 async fn confirm(order: &Order, ctx: &mut Context<'_, (), Latch>) -> Confirmation {
     ctx.state().arrived();
     Confirmation {

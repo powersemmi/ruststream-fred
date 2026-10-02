@@ -35,9 +35,9 @@ pub struct Confirmation {
 /// Confirms an incoming order and publishes a `Confirmation` to the `confirmations` stream.
 ///
 /// The subscription reads through the `workers` consumer group, so it is durable: the entry is
-/// `XACK`ed once this returns. The `publish` clause makes the runtime encode the return value and
+/// `XACK`ed once this returns. The `reply` clause makes the runtime encode the return value and
 /// `XADD` it through the publisher wired in `routes`, at the destination `Confirmation` declares.
-#[subscriber(RedisStream::new("orders").group("workers"), publish)]
+#[subscriber(RedisStream::new("orders").group("workers"), reply)]
 pub async fn confirm(order: &Order) -> Confirmation {
     Confirmation {
         id: order.id,

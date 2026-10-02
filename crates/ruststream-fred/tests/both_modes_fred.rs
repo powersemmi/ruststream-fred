@@ -44,7 +44,7 @@ struct Announced {
     id: u64,
 }
 
-#[subscriber(RedisStream::new("both.orders").group("workers").block(BLOCK), publish)]
+#[subscriber(RedisStream::new("both.orders").group("workers").block(BLOCK), reply)]
 async fn confirm(order: &Order) -> Confirmation {
     Confirmation { id: order.id }
 }
@@ -66,7 +66,7 @@ async fn invoice(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
     }
 }
 
-#[subscriber(RedisStream::new("both.announcements").group("workers").block(BLOCK), publish)]
+#[subscriber(RedisStream::new("both.announcements").group("workers").block(BLOCK), reply)]
 async fn announce(order: &Order) -> Announced {
     Announced { id: order.id }
 }

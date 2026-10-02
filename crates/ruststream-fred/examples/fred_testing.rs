@@ -64,7 +64,7 @@ async fn process_payment(
 }
 
 /// Settles a payment taken off a work queue and answers with a receipt.
-#[subscriber(RedisList::new("settlements").reliable(), publish)]
+#[subscriber(RedisList::new("settlements").reliable(), reply)]
 async fn settle_payment(payment: &Payment) -> Receipt {
     Receipt { id: payment.id }
 }

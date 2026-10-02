@@ -113,7 +113,7 @@ case!(
     1
 );
 
-#[subscriber(RedisStream::new("orders").group("workers"), publish)]
+#[subscriber(RedisStream::new("orders").group("workers"), reply)]
 async fn replies(order: &Order, Ctx(pipeline): Ctx<keys::Pipeline>) -> Audit {
     let queued = Audit {
         what: "queued".to_owned(),

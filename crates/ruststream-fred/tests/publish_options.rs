@@ -78,14 +78,14 @@ async fn forward_unkeyed(
 
 /// The consumer end of the keyed publish: it reports the key its own delivery carried, which is
 /// where the runtime's `workers(n, by_key)` lanes read it from.
-#[subscriber(RedisStream::new("orders.keyed").group("watchers"), publish)]
+#[subscriber(RedisStream::new("orders.keyed").group("watchers"), reply)]
 async fn watch_keyed(order: &Order, ctx: &mut Context<'_>) -> Seen {
     let _ = order;
     Seen { key: seen_key(ctx) }
 }
 
 /// The same, for the destination nothing keyed.
-#[subscriber(RedisStream::new("orders.plain").group("watchers"), publish)]
+#[subscriber(RedisStream::new("orders.plain").group("watchers"), reply)]
 async fn watch_unkeyed(order: &Order, ctx: &mut Context<'_>) -> Seen {
     let _ = order;
     Seen { key: seen_key(ctx) }

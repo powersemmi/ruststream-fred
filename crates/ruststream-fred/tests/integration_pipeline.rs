@@ -164,7 +164,7 @@ struct Receipt {
 
 #[subscriber(
     RedisStream::new(key("bound")).group("workers"),
-    publish("{it.pipeline.bound}.receipts"),
+    reply("{it.pipeline.bound}.receipts"),
     start_at(RedisGroupPosition::beginning())
 )]
 async fn bound(

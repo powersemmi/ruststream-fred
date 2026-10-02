@@ -80,7 +80,7 @@ pub use crate::list::RedisListPublish as Publish;
 ///     id: u64,
 /// }
 ///
-/// #[subscriber(RedisList::new("jobs").reliable(), publish)]
+/// #[subscriber(RedisList::new("jobs").reliable(), reply)]
 /// async fn run_job(job: &Job) -> Done {
 ///     Done { id: job.id }
 /// }
@@ -1052,7 +1052,7 @@ impl Partitioned for RedisListMessage {
 ///     id: u64,
 /// }
 ///
-/// #[subscriber(RedisList::new("jobs").reliable(), publish)]
+/// #[subscriber(RedisList::new("jobs").reliable(), reply)]
 /// async fn run_job(job: &Job) -> Done {
 ///     Done { id: job.id }
 /// }

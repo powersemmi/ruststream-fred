@@ -78,7 +78,7 @@ pub use crate::pubsub::RedisPubSubPublish as Publish;
 ///     kind: String,
 /// }
 ///
-/// #[subscriber(RedisPubSub::new("events").mode(PubSubMode::Sharded), publish)]
+/// #[subscriber(RedisPubSub::new("events").mode(PubSubMode::Sharded), reply)]
 /// async fn on_event(event: &Event) -> Seen {
 ///     Seen {
 ///         kind: event.kind.clone(),
@@ -941,7 +941,7 @@ impl Partitioned for RedisPubSubMessage {
 ///     id: u64,
 /// }
 ///
-/// #[subscriber(RedisStream::new("orders").group("workers"), publish)]
+/// #[subscriber(RedisStream::new("orders").group("workers"), reply)]
 /// async fn announce(order: &Order) -> Placed {
 ///     Placed { id: order.id }
 /// }

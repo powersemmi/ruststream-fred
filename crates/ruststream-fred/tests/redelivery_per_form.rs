@@ -268,7 +268,7 @@ async fn a_dead_letter_read_as_another_type_refuses_to_start() {
     );
 }
 
-#[subscriber(RedisStream::new("orders").group("workers"), publish("jobs"))]
+#[subscriber(RedisStream::new("orders").group("workers"), reply("jobs"))]
 async fn order_to_job(order: &Order) -> Order {
     Order { id: order.id }
 }

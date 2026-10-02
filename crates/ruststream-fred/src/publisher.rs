@@ -81,7 +81,7 @@ async fn flush_block(core: &RedisCore, buffered: Vec<Buffered>) -> Result<(), Re
 ///     id: u64,
 /// }
 ///
-/// #[subscriber(RedisStream::new("orders").group("workers"), publish)]
+/// #[subscriber(RedisStream::new("orders").group("workers"), reply)]
 /// async fn accept(order: &Order) -> Accepted {
 ///     Accepted { id: order.id }
 /// }
@@ -155,7 +155,7 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisPublish {
 ///     order: u64,
 /// }
 ///
-/// #[subscriber(RedisStream::new("orders").group("planners"), publish)]
+/// #[subscriber(RedisStream::new("orders").group("planners"), reply)]
 /// async fn plan(order: &Order) -> Job {
 ///     Job { order: order.id }
 /// }

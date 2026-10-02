@@ -72,7 +72,7 @@ struct Confirmation {
     id: u64,
 }
 
-#[subscriber(RedisStream::new("orders").group("workers"), publish("confirmations"))]
+#[subscriber(RedisStream::new("orders").group("workers"), reply("confirmations"))]
 async fn confirm(order: &Order) -> Confirmation {
     Confirmation { id: order.id }
 }
