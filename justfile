@@ -62,7 +62,14 @@ bench *ARGS: brokers-up
 # the standalone server of the compose stand. The counts cover the service's thread, fred's work on
 # it included, and not the server. The page it feeds is the code table of docs/benchmarks.md.
 # RUSTFLAGS is cleared because valgrind aborts on the instructions a recent CPU advertises. Needs
-# valgrind and the runner the benches pin: cargo install --locked gungraun-runner --version =0.19.4
+# valgrind.
+#
+# The benchmarks hand the measurement to gungraun's runner, which has to be the release of the
+# library the lock file pins. The recipe installs that release into `target/gungraun-runner` on
+# the first run and after the library moves, and puts it first on PATH, where the benchmarks look
+# the runner up. A `GUNGRAUN_RUNNER` in the environment would win over PATH when the benchmarks
+# build, so the recipe clears it.
+#
 # Extra arguments reach the runner: `just bench-code --save-baseline=main` records a baseline,
 # `just bench-code --baseline=main` compares against it.
 bench-code *ARGS: brokers-up
@@ -70,8 +77,16 @@ bench-code *ARGS: brokers-up
     set -euo pipefail
     trap 'just brokers-down' EXIT
     mkdir -p target
-    RUSTFLAGS="" REDIS_TEST_URL=redis://127.0.0.1:6379 \
-        cargo bench -p ruststream-fred-bench --bench consume --bench reply --bench batch \
+    version="$(cargo pkgid gungraun)"
+    version="${version##*@}"
+    runner="$PWD/target/gungraun-runner"
+    installed="$("$runner/bin/gungraun-runner" --version 2> /dev/null || true)"
+    if [ "$installed" != "gungraun-runner $version" ]; then
+        cargo install --locked --root "$runner" gungraun-runner --version "=$version"
+    fi
+    unset GUNGRAUN_RUNNER
+    export PATH="$runner/bin:$PATH" RUSTFLAGS="" REDIS_TEST_URL=redis://127.0.0.1:6379
+    cargo bench -p ruststream-fred-bench --bench consume --bench reply --bench batch \
         --bench list --bench pubsub --bench pipeline_stream --bench pipeline_list \
         --bench pipeline_pubsub --bench pipeline_pattern \
         -- --output-format=json {{ ARGS }} > target/bench-code.json

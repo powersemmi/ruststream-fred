@@ -141,5 +141,5 @@ just bench-code
 ```
 
 The recipe starts the same stand, counts the code table under valgrind against its standalone
-server, stops the stand and rewrites the `code` section of the same document. It needs valgrind
-and the benchmark runner: `cargo install --locked gungraun-runner --version =0.19.4`.
+server, stops the stand and rewrites the `code` section of the same document. It needs valgrind.
+The recipe installs the benchmark runner itself, at the release `Cargo.lock` pins.
