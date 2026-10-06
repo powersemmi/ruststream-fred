@@ -67,7 +67,7 @@ use fred::interfaces::{
 };
 use fred::types::Value;
 use fred::types::config::Config;
-use gungraun::{Callgrind, Dhat, DhatMetric, EntryPoint, EventKind, LibraryBenchmarkConfig};
+use gungraun::{Callgrind, Dhat, DhatMetric, EntryPoint, LibraryBenchmarkConfig};
 use ruststream::nonzero;
 use ruststream::runtime::{AppInfo, BrokerScope, Identity, RunningApp, RustStream};
 use ruststream_fred::RedisBroker;
@@ -158,9 +158,10 @@ pub const MESSAGES: usize = 1_000;
 /// (twice [`MESSAGES`] deliveries) is held to, so the run fails when the path allocates more
 /// than it does today. Against a real server a count moves by a few blocks between runs, so each
 /// scenario states its floor as the highest total it reached plus a margin; a number that goes
-/// down is lowered there in the same change. The instruction limit is relative:
-/// `just bench-code --save-baseline=main` records a baseline and `just bench-code
-/// --baseline=main` compares against it.
+/// down is lowered there in the same change. The instruction limit is relative, and
+/// `just bench-code` sets it only for a run against a named baseline:
+/// `just bench-code --save-baseline=main` records one, and `just bench-code --baseline=main`
+/// fails on two percent more instructions than it.
 pub fn config(steady: u64, cold: u64) -> LibraryBenchmarkConfig {
     config_every(steady, 1, cold)
 }
@@ -171,7 +172,7 @@ pub fn config_every(steady: u64, per: u64, cold: u64) -> LibraryBenchmarkConfig 
     let mut config = LibraryBenchmarkConfig::default();
     config
         .pass_through_env(ADDRESS_VARIABLE)
-        .tool(callgrind().soft_limits([(EventKind::Ir, 2f64)]))
+        .tool(callgrind())
         .tool(dhat().hard_limits([(DhatMetric::TotalBlocks, blocks(steady, per, cold))]));
     config
 }
