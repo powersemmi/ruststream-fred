@@ -3,6 +3,11 @@ set dotenv-load := false
 
 export PATH := env("HOME") + "/.cargo/bin:" + env("HOME") + "/.local/bin:" + env("PATH")
 
+# The scenarios `just bench-code` counts, one benchmark file each. Every one of them is gated: a run
+# against a baseline holds it to the instruction limit, and every run holds it to its allocation
+# floor.
+code_benches := "--bench consume --bench reply --bench batch --bench list --bench pubsub --bench pipeline_stream --bench pipeline_list --bench pipeline_pubsub --bench pipeline_pattern"
+
 default: check
 
 check:
@@ -70,8 +75,19 @@ bench *ARGS: brokers-up
 # the runner up. A `GUNGRAUN_RUNNER` in the environment would win over PATH when the benchmarks
 # build, so the recipe clears it.
 #
-# Extra arguments reach the runner: `just bench-code --save-baseline=main` records a baseline,
-# `just bench-code --baseline=main` compares against it.
+# The arguments reach the runner: `just bench-code --save-baseline=main` records a baseline,
+# `just bench-code --baseline=main` measures against it.
+#
+# A run against a baseline, named with `--baseline` or in `GUNGRAUN_BASELINE`, fails on two
+# percent more instructions than the baseline in a scenario. The limit is relative, so it applies
+# only there: a plain run would be held to whichever run came before it, and a count taken against
+# a real server moves a little from run to run. The allocation limits are absolute, and every run
+# is held to them.
+#
+# A benchmark that breaches a limit fails the run, and the run still goes to the end: the table
+# prints, every breach under it with the value it was compared against beside the new one, and the
+# recipe fails after that. A build error stops it before anything runs.
+[positional-arguments]
 bench-code *ARGS: brokers-up
     #!/usr/bin/env bash
     set -euo pipefail
@@ -86,11 +102,21 @@ bench-code *ARGS: brokers-up
     fi
     unset GUNGRAUN_RUNNER
     export PATH="$runner/bin:$PATH" RUSTFLAGS="" REDIS_TEST_URL=redis://127.0.0.1:6379
-    cargo bench -p ruststream-fred-bench --bench consume --bench reply --bench batch \
-        --bench list --bench pubsub --bench pipeline_stream --bench pipeline_list \
-        --bench pipeline_pubsub --bench pipeline_pattern \
-        -- --output-format=json {{ ARGS }} > target/bench-code.json
+    # A baseline named on the command line or in the environment brings the instruction limit.
+    baseline="${GUNGRAUN_BASELINE:-}"
+    for arg in "$@"; do
+        case "$arg" in --baseline | --baseline=*) baseline="$arg" ;; esac
+    done
+    limits=()
+    if [ -n "$baseline" ]; then
+        limits=(--callgrind-limits='ir=2.0%')
+    fi
+    cargo bench -p ruststream-fred-bench {{ code_benches }} --no-run
+    status=0
+    cargo bench -p ruststream-fred-bench {{ code_benches }} --no-fail-fast \
+        -- --output-format=json "${limits[@]}" "$@" > target/bench-code.json || status=$?
     python3 scripts/bench_results.py --code target/bench-code.json docs/benchmarks/results.json
+    exit "$status"
 
 fmt:
     cargo fmt --all
