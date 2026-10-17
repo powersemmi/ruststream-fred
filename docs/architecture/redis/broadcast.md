@@ -33,8 +33,9 @@ client that is not subscribed, or loses its connection, never gets the message
 ([Pub/Sub](https://redis.io/docs/latest/develop/pubsub/)).
 
 Each [`RedisPubSub`](api:ruststream_fred::pubsub::RedisPubSub) subscription opens a client of its
-own and subscribes it. A classic subscription returns once a `PING` on the same connection has
-been answered, so a message published after the subscription opened reaches it.
+own and subscribes it. At startup, the subscribe step of a classic subscription finishes once a
+`PING` sent after `SUBSCRIBE` on the same connection has been answered, so a message published after
+the subscription opened reaches it.
 [`RedisPubSubPattern`](api:ruststream_fred::pubsub::RedisPubSubPattern) subscribes to a glob with
 `PSUBSCRIBE` and receives every channel that matches it.
 
