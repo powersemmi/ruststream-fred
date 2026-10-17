@@ -12,7 +12,7 @@ import TabItem from '@theme/TabItem';
 
 The step chains where the handler is mounted, `b.include(handler.pipeline())`, like `.workers(..)` or [`.block(..)`](../subscriptions/block.md).
 It applies to a [`RedisStream`](../streams/index.md), a [`RedisList`](../lists/index.md), a [`RedisPubSub`](../pubsub/index.md) and a [`RedisPubSubPattern`](../pubsub/pattern.md), and keeps every setting the descriptor carries.
-Each form's [prelude](../broker/prelude.md) brings the step in with [`RedisPipelineSteps`](api:ruststream_fred::pipeline::RedisPipelineSteps).
+Each form's [prelude](../broker/prelude.md) brings the step in with [`RedisPipelineSteps`](api:ruststream_fred::pipeline::RedisPipelineSteps), together with the [`InRound`](./in-round.md) transform and the [`Bindable`](./bind.md) bound.
 
 A handler takes the delivery's round with `Ctx<keys::Pipeline>`, a [`RedisPipeline`](api:ruststream_fred::pipeline::RedisPipeline).
 What it queues there runs after the handler returns, in one pipeline with the settles of the whole window: under load, one round trip per fetched batch instead of one per command.

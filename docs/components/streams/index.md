@@ -20,6 +20,8 @@ The consumers of one group share its entries: each entry goes to one of them.
 An entry is handed out once and waits in the group's pending entries list until its handler settles it.
 An [ack](../acknowledgement/index.md) is `XACK`, which takes it off that list.
 An entry whose consumer died before settling stays there, and a [`reclaim`](./reclaim.md) or a [`claiming`](./claiming.md) subscription takes it back.
+That makes a stream the recommended form for durable work: the server itself keeps what each consumer holds and how often it was delivered.
+A [reliable list](../lists/reliable.md) recovers the same work only through a recovery set that the service sweeps.
 The three constructors are the three read modes, because each returns a different set of entries.
 A stream keeps its entries until it is trimmed, so a group can be [moved](../positions/index.md) back over them or forward past them.
 

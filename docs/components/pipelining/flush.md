@@ -31,6 +31,7 @@ The [Window](../../architecture/window.md) page draws the flush and the [Settlem
 A [batch](../subscriptions/batches.md) mount's segment is the whole batch.
 The body's commands and the settles of every entry leave together, and the commands only if every entry is acknowledged.
 A pipelined reliable list reads its batch with one pipeline of `LMOVE`, a simple one with `RPOP key count`.
+On an empty queue both wait with their blocking pop, `BLMOVE` or `BRPOP`, for the next entry.
 
 ## Example
 

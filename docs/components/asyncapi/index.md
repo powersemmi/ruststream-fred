@@ -21,6 +21,8 @@ Everything comes from the service's own declarations: the broker, the descriptor
 The Redis server's version stays out, because the client learns it only in the handshake.
 The document is published and shared, so it carries no credential.
 The binary `#[ruststream::app]` writes prints the document with `asyncapi gen`.
+This crate's `asyncapi` feature turns on the core's `asyncapi` feature with it.
+The core's feature alone produces a document without the extension.
 
 ## Example
 

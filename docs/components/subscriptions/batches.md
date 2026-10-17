@@ -12,6 +12,8 @@ import TabItem from '@theme/TabItem';
 A slice handler reads one `XREADGROUP` `COUNT` on a stream; a list or a channel builds its batch on the client up to the same size.
 
 A handler over `&[T]` is a batch handler, and [`batch(n)`](api:ruststream::runtime::SubscriberSettings::batch) at the mount site is its largest batch.
+The step is required on a slice handler: mounting one without it does not compile.
+A single-message handler does not offer the step at all; its concurrency is `workers(n)`.
 On a stream the size is the `COUNT` of the read that fetches the batch, `XREADGROUP` or `XAUTOCLAIM`.
 The server sends at most `n` entries, and the handler gets exactly what one read returned, never an empty batch.
 A list and a channel deliver one value at a time.

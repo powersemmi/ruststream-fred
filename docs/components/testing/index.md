@@ -18,7 +18,10 @@ Every command it sends, a publish, a group read, an acknowledgement, a delay-que
 The model reads every setting off the broker.
 Its address is parsed as the connect parses it, and the [pool size](../broker/pool.md), the [default group](../broker/default-group.md) and the [cluster](../broker/cluster.md) topology carry over.
 It answers as Redis 8.4, so a [`claiming`](../streams/claiming.md) subscription mounts.
-It keeps key types, consumer groups with their pending entries and delivery counts, lists with the processing list and its recovery set, Pub/Sub channels, globs and sharded channels, sorted sets, key expiry and `MULTI` / `EXEC`.
+It keeps key types: a write or a read of the wrong type fails with `WRONGTYPE`.
+It keeps consumer groups with their cursor, pending entries and delivery counts, the group's [`start_id`](../streams/stream-start.md), `XAUTOCLAIM` and `XREADGROUP ... CLAIM` at their idle thresholds, and a [seek](../positions/seek.md).
+It keeps lists with the processing list and its recovery set, sorted sets, key expiry and `MULTI` / `EXEC`.
+Pub/Sub channels, globs and sharded channels deliver to the subscriptions open at that moment and store nothing for one that is not.
 On a cluster topology it refuses a command or a transaction that spans hash slots.
 It runs no scripts: `EVAL`, `EVALSHA`, `FCALL` and a command it does not know fail with an error naming them.
 No handshake runs, so `AUTH`, `HELLO` and TLS are for a [live test](./live.md).
@@ -26,6 +29,8 @@ No handshake runs, so `AUTH`, `HELLO` and TLS are for a [live test](./live.md).
 A test's input goes where the default publisher writes its name: an `XADD`, or the `LPUSH` or `PUBLISH` of the subscription that reads the name.
 A publish through the harness returns once every handler it woke has settled, a reply included, so the assertions that follow read finished state.
 `published::<T>(name)` reads every write to the name back, a requeued copy and an entry a delay queue adds back included.
+The model's time is the test's clock: entry ids, idle times and the scores of the delay queue and the recovery set stand still on a paused clock, and `tb.advance(by)` moves them.
+A handler's own commands, through [`FredPool`](../context/fred-pool.md) or a [pipeline](../pipelining/index.md) window, reach the model too.
 
 ## Example
 
