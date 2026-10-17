@@ -2,6 +2,7 @@ import {broadcast} from './broadcast';
 import {delay} from './delay';
 import type {Box, Lane, Link} from './flow';
 import {lifecycle} from './lifecycle';
+import {path} from './path';
 import {pel} from './pel';
 import {queue} from './queue';
 import {settlement} from './settlement';
@@ -21,6 +22,7 @@ export const LAYOUTS = {
   pel,
   queue,
   broadcast,
+  path,
   lifecycle,
   settlement,
   delay,
