@@ -31,8 +31,8 @@ handles per second.
 
 An instruction count holds the runtime, this crate and `fred`'s work on the service's thread. It
 includes the framework's own cost; the core publishes that cost alone on its
-[benchmarks page](https://powersemmi.github.io/ruststream/latest/benchmarks/). The same count costs
-more time where it misses the cache, so a count is not a time.
+[benchmarks page](https://powersemmi.github.io/ruststream/latest/architecture/benchmarks/). The
+same count costs more time where it misses the cache, so a count is not a time.
 
 Every figure is the steady state, the difference between a run of 1000 deliveries and one of 2000.
 Connecting, creating the group and the first allocations behind them are the cold start, paid

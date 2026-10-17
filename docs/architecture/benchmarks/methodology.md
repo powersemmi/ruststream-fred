@@ -7,7 +7,7 @@ description: "How ruststream-fred measures itself: the three loops, the run on a
 
 How `ruststream-fred` measures itself: the three loops, the run on a real Redis server, the
 broker-bound arithmetic and the code count. The procedure is the framework's own
-([RustStream methodology](https://powersemmi.github.io/ruststream/latest/benchmarks/#methodology)),
+([RustStream methodology](https://powersemmi.github.io/ruststream/latest/architecture/benchmarks/methodology/)),
 and this page states what it is on Redis.
 
 ## The three loops

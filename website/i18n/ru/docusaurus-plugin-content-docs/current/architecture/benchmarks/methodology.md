@@ -7,7 +7,7 @@ description: "Как ruststream-fred измеряет себя: три цикл�
 
 Как `ruststream-fred` измеряет себя: три цикла, прогон на настоящем сервере Redis, арифметика
 «упирается в брокер» и подсчёт кода. Процедура общая для всего фреймворка
-([методология RustStream](https://powersemmi.github.io/ruststream/latest/benchmarks/#methodology)),
+([методология RustStream](https://powersemmi.github.io/ruststream/latest/ru/architecture/benchmarks/methodology/)),
 а эта страница говорит, как она выглядит на Redis.
 
 ## Три цикла {/* #the-three-loops */}
