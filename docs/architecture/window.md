@@ -35,10 +35,11 @@ The outcome decides the segment: `ack` keeps it, and `drop`, `retry` and `retry_
 Each outcome sends the settle the form sends without a window. A delivery dropped unsettled sends
 no settle: its segment goes, and its entry stays pending.
 
-A window flushes when the read's `COUNT` has settled, when nothing is outstanding, or when the
-subscription stops. The flush sends the kept segments in the order they were committed, then the
-settles of the read in one pipeline, on a connection of the pool. A stream's settles leave as one
-`XACK`, and a reliable list's as one `LREM` per entry. Under load that is one round trip per read.
+A window flushes when the settled deliveries reach the read's `COUNT`, when nothing is outstanding,
+or when the subscription stops. The flush sends the kept segments in the order they were committed,
+then the settles of the read in one pipeline, on a connection of the pool. A stream's settles leave
+as one `XACK`, and a reliable list's as one `LREM` per entry. Under load that is one round trip per
+read.
 
 [`.atomic()`](api:ruststream_fred::pipeline::RedisPipelineSteps::atomic) wraps each segment in
 `MULTI` and `EXEC` and puts the delivery's own settle inside it. The handler's side effects and

@@ -96,6 +96,7 @@ A claiming subscription leaves the entry pending, and its next read claims it ba
 A list and a Pub/Sub subscription take the runtime's copy, which goes back to the list or the
 channel. A pattern subscription names the destination of its copies at its mount site.
 
-A `max_attempts` cap reads one count. The claiming and reclaim modes count with the server's
-delivery count from the pending entries list. Every other form counts with the retry-count header
-that the copies carry, which the delay queue raises on every round.
+A `max_attempts` cap counts attempts with one of two numbers, and the form decides which. The
+claiming and reclaim modes count with the server's delivery count from the pending entries list.
+Every other form counts with the retry-count header that the copies carry, which the delay queue
+raises on every round.
