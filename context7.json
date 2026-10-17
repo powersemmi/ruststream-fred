@@ -1,4 +1,19 @@
 {
+  "$schema": "https://context7.com/schema/context7.json",
+  "folders": [
+    "docs",
+    "crates/ruststream-fred/src",
+    "crates/ruststream-fred/examples",
+    "website/static"
+  ],
+  "excludeFolders": [
+    "docs/benchmarks",
+    "website/i18n",
+    "website/build",
+    "website/.docusaurus",
+    "website/node_modules",
+    "target"
+  ],
   "rules": [
     "Import one form's prelude in a routes file (`ruststream_fred::stream::prelude::*`, `::list::prelude::*` or `::pubsub::prelude::*`), `ruststream_fred::prelude::*` only where a file mixes forms, and `ruststream::prelude::*` in a handler file.",
     "Name the subscription descriptor inside `#[subscriber(..)]`: `RedisStream` for a consumer group, `RedisList` for a work queue, `RedisPubSub` for a channel and `RedisPubSubPattern` for a glob; the bare `#[subscriber(\"key\")]` form opens a stream group and needs `RedisBroker::default_group`.",

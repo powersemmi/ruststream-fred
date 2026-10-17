@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <b><a href="https://powersemmi.github.io/ruststream-fred/">Documentation</a></b>
+  <b><a href="https://powersemmi.github.io/ruststream-fred/latest/">Documentation</a></b>
 </p>
 
 ---
@@ -125,8 +125,12 @@ tb.broker::<RedisBroker>()
 
 ## Documentation
 
-- This crate: <https://docs.rs/ruststream-fred>
-- The framework: <https://powersemmi.github.io/ruststream/latest>
+- [Guides](https://powersemmi.github.io/ruststream-fred/latest/) - building a Redis service with the crate.
+- [Components](https://powersemmi.github.io/ruststream-fred/latest/components/) - one page per part of the crate.
+- [Architecture](https://powersemmi.github.io/ruststream-fred/latest/architecture/) - how the crate sits between Redis and the runtime.
+- [Benchmarks](https://powersemmi.github.io/ruststream-fred/latest/architecture/benchmarks/) - what the crate costs over the raw client.
+- [API reference](https://docs.rs/ruststream-fred) - every item on docs.rs.
+- The framework: <https://powersemmi.github.io/ruststream/latest/>
 
 ## Minimum supported Rust version
 
