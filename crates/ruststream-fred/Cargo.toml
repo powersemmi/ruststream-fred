@@ -435,4 +435,16 @@ path = "examples/manual/guide/cluster.rs"
 required-features = ["testing"]
 test = true
 
+[[example]]
+name = "guide_production"
+path = "examples/guide/production.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_production"
+path = "examples/manual/guide/production.rs"
+required-features = ["testing"]
+test = true
+
 # --- examples: end ---
