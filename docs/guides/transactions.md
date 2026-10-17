@@ -6,7 +6,7 @@ description: "Publish a group of messages to Redis streams all or nothing with M
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
-# Transactions
+# Transactions on streams
 
 This guide publishes groups of messages to Redis streams all or nothing.
 

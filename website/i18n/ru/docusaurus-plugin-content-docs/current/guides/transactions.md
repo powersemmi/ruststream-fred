@@ -6,7 +6,7 @@ description: "Публикация группы сообщений в поток
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
-# Транзакции
+# Транзакции в потоках
 
 Это руководство публикует группы сообщений в потоки Redis по принципу «всё или ничего».
 

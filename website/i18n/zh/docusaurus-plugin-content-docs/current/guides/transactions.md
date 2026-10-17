@@ -6,7 +6,7 @@ description: "用 MULTI 和 EXEC 把一组消息以全有或全无的方式发�
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
-# 事务
+# 流上的事务
 
 本指南以全有或全无的方式把一组消息发布到 Redis 流。
 
