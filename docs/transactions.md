@@ -13,12 +13,10 @@ buffer, and `abort` discards it. Clones of a handle share the same open transact
 The idiomatic way to use it is a batch-publishing handler wired with a `.transactional()` publisher:
 every reply of one batch is committed together.
 
-```rust
---8<-- "crates/ruststream-fred/examples/fred_transaction.rs:batch"
+```rust reference="examples/fred_transaction.rs#batch"
 ```
 
-```rust
---8<-- "crates/ruststream-fred/examples/fred_transaction.rs:mount"
+```rust reference="examples/fred_transaction.rs#mount"
 ```
 
 Misuse errors rather than passing silently: a second `begin_transaction` while one is open leaves
@@ -32,8 +30,7 @@ be open on one handle at a time and the handle keeps publishing directly meanwhi
 never touches another, and `commit` / `abort` consume the value, which makes a double commit or a
 publish after settling a compile error rather than a runtime check.
 
-```rust
---8<-- "crates/ruststream-fred/examples/fred_transaction.rs:owned"
+```rust reference="examples/fred_transaction.rs#owned"
 ```
 
 Dropping an unsettled transaction discards the buffer like an abort and logs a warning, because a

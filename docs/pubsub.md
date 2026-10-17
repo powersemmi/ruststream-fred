@@ -4,22 +4,19 @@ Pub/Sub is fire-and-forget: no durability, no consumer groups, no ack (`ack` / `
 `Unsupported`). A `RedisPubSub` descriptor selects the channel and mode. Classic broadcasts
 cluster-wide and supports patterns:
 
-```rust
---8<-- "crates/ruststream-fred/examples/fred_pubsub.rs:classic"
+```rust reference="examples/fred_pubsub.rs#classic"
 ```
 
 Sharded delivery (`SSUBSCRIBE`, Redis 7+) stays slot-local so it scales across a cluster, at the cost
 of patterns. Enable it per subscription with `.mode(PubSubMode::Sharded)`:
 
-```rust
---8<-- "crates/ruststream-fred/examples/fred_pubsub.rs:sharded"
+```rust reference="examples/fred_pubsub.rs#sharded"
 ```
 
 Because RustStream is multi-broker, one service can run classic Pub/Sub on a standalone server and
 sharded Pub/Sub on a cluster at the same time - each handler mounts on its own broker:
 
-```rust
---8<-- "crates/ruststream-fred/examples/fred_pubsub.rs:app"
+```rust reference="examples/fred_pubsub.rs#app"
 ```
 
 To publish, chain `.publisher(..)` on the include site with a `RedisPubSubPublish` policy (add
