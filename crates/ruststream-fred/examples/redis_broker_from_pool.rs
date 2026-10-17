@@ -11,12 +11,10 @@
 // A plain build compiles the service; the tests that use it exist only in the test build.
 #![cfg_attr(not(test), allow(dead_code, unused_imports))]
 
-use std::error::Error;
 use std::time::Duration;
 
 use fred::clients::Pool;
 use fred::error::Error as FredError;
-use fred::interfaces::ClientLike;
 use fred::types::Builder;
 use fred::types::config::{Config, ReconnectPolicy};
 use serde::{Deserialize, Serialize};
@@ -56,13 +54,12 @@ fn pool(url: &str) -> Result<Pool, FredError> {
         .build_pool(8)
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = pool("redis://localhost:6379")?;
-    // The broker adopts the pool as it is, so the pool connects before the service starts.
-    pool.init().await?;
-    service(RedisBroker::from_pool(pool)).run().await?;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App<State = ()> {
+    // A constant URL and a non-zero size: the pool always builds.
+    let pool = pool("redis://localhost:6379").expect("a pool over a valid URL");
+    // The pool is not connected here: the broker dials it when the service starts.
+    service(RedisBroker::from_pool(pool))
 }
 // --8<-- [end:pool]
 
@@ -70,11 +67,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 mod tests {
     use std::error::Error;
 
-    use fred::interfaces::ClientLike;
     use ruststream::testing::TestApp;
     use ruststream_fred::stream::prelude::*;
 
-    use super::{Order, live, pool, service};
+    use super::{Order, app, live, pool, service};
 
     /// The body both modes run.
     async fn takes_an_order(tb: TestApp<()>) -> Result<(), Box<dyn Error>> {
@@ -95,8 +91,7 @@ mod tests {
     #[tokio::test]
     async fn in_process() -> Result<(), Box<dyn Error>> {
         // The in-process mode reads the pool's size and settings and dials nothing.
-        let broker = RedisBroker::from_pool(pool("redis://localhost:6379")?);
-        takes_an_order(TestApp::start(service(broker)).await?).await
+        takes_an_order(TestApp::start(app()).await?).await
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -104,8 +99,8 @@ mod tests {
         let Some(url) = live::url("REDIS_TEST_URL") else {
             return Ok(());
         };
-        let pool = pool(&url)?;
-        pool.init().await?;
-        takes_an_order(TestApp::start_live(service(RedisBroker::from_pool(pool))).await?).await
+        // The pool is handed over unconnected, as the app builds it: the broker dials it at startup.
+        let broker = RedisBroker::from_pool(pool(&url)?);
+        takes_an_order(TestApp::start_live(service(broker)).await?).await
     }
 }

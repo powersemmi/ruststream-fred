@@ -37,7 +37,8 @@ runtime connects the broker when the app starts. Connect turns the topology, the
 the TLS settings into a `fred` configuration, and opens a pool of
 [`pool`](api:ruststream_fred::RedisBroker::pool) connections, four by default. An unreachable
 server fails the start. A broker built with
-[`from_pool`](api:ruststream_fred::RedisBroker::from_pool) adopts the pool it was given.
+[`from_pool`](api:ruststream_fred::RedisBroker::from_pool) adopts the pool it was given and
+dials it here, unless the service connected it already.
 
 Publishes, settlements and the commands a handler sends go out on the pool. Each subscription
 opens a client of its own when it subscribes. A stream or list subscription reads on it, because a
