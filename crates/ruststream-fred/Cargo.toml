@@ -223,6 +223,39 @@ path = "examples/manual/redis_broker_prelude.rs"
 required-features = ["testing"]
 test = true
 
+[[example]]
+name = "redis_asyncapi"
+required-features = ["asyncapi"]
+test = true
+
+[[example]]
+name = "manual_redis_asyncapi"
+path = "examples/manual/redis_asyncapi.rs"
+required-features = ["asyncapi"]
+test = true
+
+[[example]]
+name = "redis_testing"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_testing"
+path = "examples/manual/redis_testing.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_testing_live"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_testing_live"
+path = "examples/manual/redis_testing_live.rs"
+required-features = ["testing"]
+test = true
+
 # --- examples: streams ---
 
 [[example]]
