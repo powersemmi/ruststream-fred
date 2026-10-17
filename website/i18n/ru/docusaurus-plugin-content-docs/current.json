@@ -6,5 +6,9 @@
   "sidebar.architecture.category.Benchmarks": {
     "message": "Бенчмарки",
     "description": "The label for category 'Benchmarks' in sidebar 'architecture'"
+  },
+  "sidebar.architecture.category.Redis": {
+    "message": "Redis",
+    "description": "The label for category 'Redis' in sidebar 'architecture'"
   }
 }

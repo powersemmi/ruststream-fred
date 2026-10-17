@@ -39,3 +39,12 @@ describe('a box that links to a page', () => {
     }
   });
 });
+
+describe('a box that names a page', () => {
+  it('links the path of an entry to the pages that explain each step', () => {
+    expect(hrefs('path')).toEqual({
+      read: '/architecture/redis/groups/',
+      settle: '/architecture/settlement/',
+    });
+  });
+});
