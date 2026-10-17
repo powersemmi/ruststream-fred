@@ -354,3 +354,20 @@ en_match = "stand[-\\s]ins?"
 ru = "тестовый брокер"
 ru_match = "тестов\\w*\\s+брокер"
 zh = "替身"
+
+# Terms the Russian guides settle, with the renderings the pilot's glossary already uses for the
+# other language.
+
+[[term]]
+en = "commit"
+en_match = "commit(s|ted|ting)?"
+ru = "фиксация"
+ru_match = "фиксац|фиксир|зафиксир"
+zh = "提交"
+
+[[term]]
+en = "producer"
+en_match = "producers?"
+ru = "производитель"
+ru_match = "производител"
+zh = "生产者"
