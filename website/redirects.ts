@@ -1,17 +1,16 @@
 // Pages of the earlier site, by their address within a version. Every language of a build gets
 // the same set.
 
-// The guides of the earlier site moved to the crate's rustdoc, where each topic is a section of
-// the crate overview.
+// Each guide of the earlier site taught one topic that now has a component page of its own.
 const guides: Record<string, string> = {
-  streams: 'index.html#streams',
-  lists: 'index.html#lists',
-  pubsub: 'index.html#pubsub',
-  'dead-letter': 'index.html#capping-the-retries',
-  'auth-tls': 'index.html#operations',
-  transactions: 'index.html#transactions',
-  asyncapi: 'index.html#the-generated-document',
-  testing: 'index.html#testing',
+  streams: '/components/streams/',
+  lists: '/components/lists/',
+  pubsub: '/components/pubsub/',
+  'dead-letter': '/components/acknowledgement/dead-letter/',
+  'auth-tls': '/components/broker/authentication/',
+  transactions: '/components/transactions/',
+  asyncapi: '/components/asyncapi/',
+  testing: '/components/testing/',
 };
 
 // Pages that moved within the site.
@@ -20,15 +19,7 @@ const pages: Record<string, string> = {
   benchmarks: '/architecture/benchmarks/',
 };
 
-/**
- * Old address to its target, relative to the build's base URL. `docsRs` is the crate's rustdoc
- * for the version built, with a trailing slash.
- */
-export function redirects(docsRs: string): Record<string, string> {
-  return {
-    ...Object.fromEntries(
-      Object.entries(guides).map(([from, to]) => [from, `${docsRs}ruststream_fred/${to}`]),
-    ),
-    ...pages,
-  };
+/** Old address to its target, relative to the build's base URL. */
+export function redirects(): Record<string, string> {
+  return {...guides, ...pages};
 }

@@ -58,7 +58,7 @@ const redirects: Record<string, string> = archive
   ? existsSync(archiveRedirects)
     ? JSON.parse(readFileSync(archiveRedirects, 'utf8'))
     : {}
-  : guideRedirects(version.docsRs);
+  : guideRedirects();
 
 // The language a build renders: Docusaurus loads this file once per language and names it here.
 const buildLocale = process.env.DOCUSAURUS_CURRENT_LOCALE ?? 'en';

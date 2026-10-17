@@ -9,11 +9,7 @@ const docsRoot = path.resolve(__dirname, '../docs');
 // keeps a home. Once the page exists, its entry here goes.
 const awaited = new Set<string>();
 
-// The rustdoc of this checkout (`scripts/site_rustdoc.sh`), which docs.rs renders for the
-// version built.
-const rustdocRoot = path.resolve(__dirname, '../target/doc');
-const docsRs = 'https://docs.rs/ruststream-fred/0.8/';
-const moved = redirects(docsRs);
+const moved = redirects();
 
 // The site address of every page: its `slug` when the front matter names one, otherwise its path
 // (`a/b.md` and `a/b/index.md` both serve `a/b/`). A page no locale translated is served from the
@@ -43,33 +39,22 @@ describe('redirects', () => {
     expect(moved.benchmarks).toBe('/architecture/benchmarks/');
   });
 
-  it('sends the guides of the old site that moved to docs.rs to the rustdoc of the version built', () => {
-    const rustdoc = 'https://docs.rs/ruststream-fred/0.8/ruststream_fred';
-    expect(moved.streams).toBe(`${rustdoc}/index.html#streams`);
-    expect(moved.lists).toBe(`${rustdoc}/index.html#lists`);
-    expect(moved.pubsub).toBe(`${rustdoc}/index.html#pubsub`);
-    expect(moved['dead-letter']).toBe(`${rustdoc}/index.html#capping-the-retries`);
-    expect(moved['auth-tls']).toBe(`${rustdoc}/index.html#operations`);
-    expect(moved.transactions).toBe(`${rustdoc}/index.html#transactions`);
-    expect(moved.asyncapi).toBe(`${rustdoc}/index.html#the-generated-document`);
-    expect(moved.testing).toBe(`${rustdoc}/index.html#testing`);
+  it('sends each guide of the old site to the component page that holds its topic now', () => {
+    expect(moved.streams).toBe('/components/streams/');
+    expect(moved.lists).toBe('/components/lists/');
+    expect(moved.pubsub).toBe('/components/pubsub/');
+    expect(moved['dead-letter']).toBe('/components/acknowledgement/dead-letter/');
+    expect(moved['auth-tls']).toBe('/components/broker/authentication/');
+    expect(moved.transactions).toBe('/components/transactions/');
+    expect(moved.asyncapi).toBe('/components/asyncapi/');
+    expect(moved.testing).toBe('/components/testing/');
   });
 
-  it('points every docs.rs target at a page and a section the rustdoc of this checkout has', () => {
-    const external = Object.values(moved).filter((to) => to.startsWith(docsRs));
-    expect(external.length).toBeGreaterThan(0);
-    for (const to of external) {
-      const [file, anchor] = to.slice(docsRs.length).split('#');
-      const html = path.join(rustdocRoot, file);
-      expect(fs.existsSync(html), `${to}: run scripts/site_rustdoc.sh`).toBe(true);
-      if (anchor) expect(fs.readFileSync(html, 'utf8').includes(`id="${anchor}"`), to).toBe(true);
-    }
-  });
-
-  it('points every address on the site at a page the build has', () => {
-    const internal = Object.entries(moved).filter(([, to]) => to.startsWith('/'));
-    expect(internal.length).toBeGreaterThan(0);
-    for (const [from, to] of internal) {
+  it('points every old address at a page the build has', () => {
+    const targets = Object.entries(moved);
+    expect(targets.length).toBeGreaterThan(0);
+    for (const [from, to] of targets) {
+      expect(to.startsWith('/'), `${from} -> ${to}`).toBe(true);
       if (awaited.has(to)) {
         expect(page(to), `${to} exists now: drop it from the awaited targets`).toBe(false);
       } else {
