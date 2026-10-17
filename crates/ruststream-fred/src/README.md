@@ -164,7 +164,8 @@ item's own documentation keeps the detail.
 
 ## Transactions
 
-- [Transactions][c-transactions]: one `MULTI` / `EXEC` block of publishes on a stream publisher.
+- [Transactions][c-transactions]: [`RedisTransactionalPublish`], one `MULTI` / `EXEC` block of
+  publishes on a stream publisher; a cluster refuses it at startup.
 - [transaction][c-transaction]: [`RedisTransaction`], a transaction that owns its buffer.
 - [owned_transaction][c-owned-transaction]: the same over values.
 

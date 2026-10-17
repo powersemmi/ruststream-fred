@@ -49,6 +49,7 @@ pub use pipeline::{
 };
 pub use publisher::{
     RedisDefaultPublish, RedisDefaultPublisher, RedisPublish, RedisPublisher, RedisTransaction,
+    RedisTransactionalPublish,
 };
 pub use pubsub::{
     PubSubMode, RedisPubSub, RedisPubSubMessage, RedisPubSubPattern, RedisPubSubPublish,

@@ -7,10 +7,12 @@
 //! - [claiming][claiming]: [`RedisStream::claiming`], pending and fresh entries in one read
 //!   (Redis 8.4 and later).
 //! - [StreamStart][stream-start]: [`StreamStart`], where a group starts when it is created.
-//! - [RedisPublish][publish]: [`Publish`], `XADD` to a stream, also named
-//!   [`TransactionalPublish`].
+//! - [RedisPublish][publish]: [`Publish`], `XADD` to a stream.
+//! - [Transactions][transactions]: [`TransactionalPublish`], the same publisher for replies
+//!   committed in one `MULTI` / `EXEC` block; a cluster refuses it at startup.
 //! - [Prelude][prelude]: [`prelude`], everything a Redis Streams service imports.
 //!
+//! [transactions]: https://powersemmi.github.io/ruststream-fred/latest/components/transactions/
 //! [streams]: https://powersemmi.github.io/ruststream-fred/latest/components/streams/
 //! [reclaim]: https://powersemmi.github.io/ruststream-fred/latest/components/streams/reclaim/
 //! [claiming]: https://powersemmi.github.io/ruststream-fred/latest/components/streams/claiming/
@@ -39,10 +41,10 @@ use crate::{error::RedisError, subscriber::RedisSubscriber};
 /// every form gives its own.
 pub use crate::publisher::RedisPublish as Publish;
 
-/// The same policy under the transactional mount-site name: a stream publisher buffers on the
-/// handle and owns transactions as it is, so the plain policy *is* the transactional one and
-/// there is no second type to transition to.
-pub use crate::publisher::RedisPublish as TransactionalPublish;
+/// This form's transactional publish policy,
+/// [`RedisTransactionalPublish`](crate::RedisTransactionalPublish), under the mount-site name: the
+/// same live publisher as [`Publish`], refused at startup on a cluster.
+pub use crate::publisher::RedisTransactionalPublish as TransactionalPublish;
 
 /// The core prelude plus everything a Redis Streams service writes.
 ///
