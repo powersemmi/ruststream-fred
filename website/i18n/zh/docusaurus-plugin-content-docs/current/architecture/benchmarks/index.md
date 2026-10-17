@@ -1,4 +1,15 @@
-# 基准测试 { #benchmarks }
+---
+title: 基准测试
+description: "ruststream-fred 在每条消息上的开销：与裸 fred 客户端对比的吞吐量，以及其代码的指令数和内存分配次数。"
+---
+
+import {BenchmarkEnvironment, BenchmarkResults} from '@site/src/components/Benchmarks';
+
+export const labels = {"loading": "正在读取结果...", "scenario": "场景", "raw": "裸客户端", "adapter": "Broker crate", "framework": "RustStream", "overhead": "额外开销", "against": "（比客户端 {percent}）", "indistinguishable": "无法区分", "brokerBound": "受 Broker 限制", "measured": "测量于", "details": "这些数字是怎样测得的", "pending": "尚未公布结果：{brokers}。", "instructions": "指令数", "allocations": "内存分配", "cold": "冷启动", "table": "以表格显示数字", "axis": "各循环比裸客户端最佳一轮低多少", "rounds": "各轮，从最佳到最慢", "best": "最佳一轮", "median": "中位一轮", "noise": "轮次的波动范围", "comparison": "与裸客户端对照", "code": "代码的开销", "broker": "Broker", "plugin": "{plugin} 插件", "pluginRaw": "不用插件", "pluginAdapter": "手写的插件", "pluginFramework": "crate 自带的插件", "pluginAxis": "各循环比不用插件的应用最佳一轮低多少", "pluginAgainst": "（比不用插件 {percent}）", "pluginOverhead": "比手写插件", "pluginOverHand": "（比手写插件 {percent}）"};
+
+export const machine = {"cpu": "处理器", "architecture": "架构", "cpu_frequency": "频率", "cores": "核心数", "memory": "内存", "memory_speed": "内存速度", "os": "操作系统", "broker": "Broker", "rustc": "编译器", "profile": "构建配置", "features": "特性", "rustflags": "RUSTFLAGS", "round_trip": "往返时间", "valgrind": "Valgrind"};
+
+# 基准测试
 
 在 Redis 客户端和消息类型之间，这层适配在每次投递上都要花时间：读取、解码、确认。这一页说明它
 花了多少，参照物是同样的活用 `fred` 手写一遍。
@@ -24,12 +35,12 @@ crate 上手写的同一个循环：Broker、订阅、它产出的投递流和 a
 所以这些行之间的差别说的正是路由。唯一一处有意的例外：集群上的 Pub/Sub 一行用的是分片形态，即
 `SSUBSCRIBE` 和 `SPUBLISH`，这才是集群实际使用的形态，而经典的 `PUBLISH` 会广播到每一个节点。
 
-## 数字 { #the-numbers }
+## 数字 {/* #the-numbers */}
 
 三个交错轮次中的最佳值，括号里是中位的一轮。越大越好。小于多次运行之间离散范围的差值，
 按「无法区分」公布，而不是给出百分比。
 
-<div id="benchmark-results" data-benchmark-results="../../benchmarks/results.json" data-benchmark-labels='{"loading": "正在加载已公布的结果……", "scenario": "场景", "raw": "裸客户端", "adapter": "ruststream-fred", "framework": "RustStream 服务", "adapterOverhead": "适配层相对裸客户端", "overhead": "服务相对裸客户端", "indistinguishable": "无法区分", "brokerBound": "受 Broker 限制", "instructions": "每条消息的指令数", "allocations": "每条消息的内存分配次数", "cold": "冷启动（指令 / 分配）", "unavailable": "已公布的结果加载失败。", "cpu": "CPU", "architecture": "架构", "cpu_frequency": "频率", "cores": "核心", "memory": "内存", "memory_speed": "内存速率", "os": "操作系统", "broker": "Broker", "rustc": "Rust", "valgrind": "valgrind", "profile": "构建配置", "features": "feature", "rustflags": "RUSTFLAGS", "versions": "版本", "measured": "测量日期", "codeMeasured": "代码开销测量"}'></div>
+<BenchmarkResults labels={labels} details="/architecture/benchmarks/#running-it-yourself" />
 
 这张表每次打开页面时都从下面那份文档读取，所以它显示的是最近一次运行，别的都不是。
 
@@ -46,9 +57,7 @@ Pub/Sub 不做任何确认，套接字之上的活在这一行才有地方显现
 [`benchmarks/results.json`](https://powersemmi.github.io/ruststream-fred/latest/benchmarks/results.json)，
 框架的站点用它拼出跨 Broker 的汇总表。
 
-## crate 自身的代码 { #the-crates-own-code }
-
-<div id="benchmark-code"></div>
+## crate 自身的代码 {/* #the-crates-own-code */}
 
 第二张表是这个 crate 自身在每条消息上的开销，是数出来的，不是计时得来的：指令数由 callgrind 统计，
 内存分配次数由 DHAT 统计。每个场景都是用户会写的那种服务，建立在 `RedisBroker` 上，对着测试台的
@@ -73,14 +82,14 @@ Pub/Sub 不做任何确认，套接字之上的活在这一行才有地方显现
 余量。`just bench-code` 在分配次数超过场景声明的下限时失败，加上 `--baseline=main` 时，
 指令数多出百分之二以上也算失败；改变开销的合并请求要附上自己的数字。
 
-## 机器 { #the-machine }
+## 机器 {/* #the-machine */}
 
-<div id="benchmark-machine"></div>
+<BenchmarkEnvironment labels={machine} />
 
 构建标志和数字一起公布，因为它们会改变这些数字。用 `-C target-cpu=native` 构建出的二进制给出的
 结果，换一台机器就复现不了，所以这条 recipe 在构建前先把这个变量清空。
 
-## 这些数字不代表什么 { #what-they-do-not-mean }
+## 这些数字不代表什么 {/* #what-they-do-not-mean */}
 
 这里只有一个消费者、一个键、一个很小的消息体，以及一台跑在回环地址上的服务器。它测的是一次投递
 在这个 crate 里、以及在它之上的运行时里的开销，不是 Redis 能扛多少。这里的一行也不能拿去和另一个 Broker 公布的一行比较：
@@ -102,7 +111,7 @@ Pub/Sub 的数字取自一个从不等待消费者的发布者。Redis Pub/Sub �
 这些数字是一台机器在某一天的快照。
 它们由人手工重测，测量期间机器只跑这一项：这一页要讲的差值，比与其他任务共用的机器上的噪声还小。
 
-## 自己跑一遍 { #running-it-yourself }
+## 自己跑一遍 {/* #running-it-yourself */}
 
 ```bash
 just bench

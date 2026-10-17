@@ -4,14 +4,22 @@
 
 A subscription is a descriptor: `RedisStream`, `RedisList` (or `RedisList::reliable`), `RedisPubSub` or `RedisPubSubPattern`; a bare `#[subscriber("key")]` opens a consumer group over that stream key. A service on one transport imports that form's prelude (`ruststream_fred::stream::prelude::*`, `list::prelude` or `pubsub::prelude`), which offers its policy as `Publish` (`RedisPublish`, `RedisListPublish`, `RedisPubSubPublish`); a file mixing forms imports `ruststream_fred::prelude::*`. The partition key of one publish is its per-message setting. Three `cargo generate` templates (`redis-stream`, `redis-pubsub`, `redis-list`) scaffold a service.
 
-This site holds the entry pages. The crate's guide is its overview on docs.rs, and the framework itself is documented on the RustStream site.
+This site holds the guides, one page per component and the architecture of the crate; the API reference is on docs.rs, and the framework itself is documented on the RustStream site.
 
-## Site
+## Guides
 
-- [Home](https://powersemmi.github.io/ruststream-fred/latest/): the transports, the dependency lines, the scaffolds and the three topologies
-- [Benchmarks](https://powersemmi.github.io/ruststream-fred/latest/benchmarks/): what this crate and the framework's runtime cost over the raw `fred` client, and how to re-measure it with `just bench`
+- [Guides](https://powersemmi.github.io/ruststream-fred/latest/): building a Redis or Valkey service with the crate, from a first subscriber to production
 
-## Guide
+## Components
+
+- [Components](https://powersemmi.github.io/ruststream-fred/latest/components/): the parts of the crate a Redis service uses, one page each
+
+## Architecture
+
+- [Architecture](https://powersemmi.github.io/ruststream-fred/latest/architecture/): how Redis delivers messages, where the crate sits between Redis and the RustStream runtime, and what that costs
+- [Benchmarks](https://powersemmi.github.io/ruststream-fred/latest/architecture/benchmarks/): what this crate and the framework's runtime cost over the raw `fred` client, and how to re-measure it with `just bench`
+
+## Crate overview on docs.rs
 
 - [Overview](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html): the transport and a service
 - [Subscribing](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html#subscribing): the descriptors, what each settles and where its retry copy goes

@@ -1,3 +1,14 @@
+---
+title: Benchmarks
+description: "What ruststream-fred costs on every message: throughput against the raw fred client, and instructions and allocations of its code."
+---
+
+import {BenchmarkEnvironment, BenchmarkResults} from '@site/src/components/Benchmarks';
+
+export const labels = {"loading": "Loading the results...", "scenario": "Scenario", "raw": "Raw client", "adapter": "Broker crate", "framework": "RustStream", "overhead": "Overhead", "against": "({percent} over the client)", "indistinguishable": "indistinguishable", "brokerBound": "broker-bound", "measured": "measured", "details": "How the numbers were taken", "pending": "No results published yet: {brokers}.", "instructions": "Instructions", "allocations": "Allocations", "cold": "Cold start", "table": "Show the numbers as a table", "axis": "How far each loop falls below the raw client's best round", "rounds": "rounds, best to slowest", "best": "best round", "median": "median round", "noise": "spread of the rounds", "comparison": "Against a raw client", "code": "Cost of the code", "broker": "The broker", "plugin": "The {plugin} plugin", "pluginRaw": "Without the plugin", "pluginAdapter": "Plugin written by hand", "pluginFramework": "The crate's plugin", "pluginAxis": "How far each loop falls below the best round of the app without the plugin", "pluginAgainst": "({percent} over no plugin)", "pluginOverhead": "Over the plugin by hand", "pluginOverHand": "({percent} over by hand)"};
+
+export const machine = {"cpu": "Processor", "architecture": "Architecture", "cpu_frequency": "Frequency", "cores": "Cores", "memory": "Memory", "memory_speed": "Memory speed", "os": "Operating system", "broker": "Broker", "rustc": "Compiler", "profile": "Build profile", "features": "Features", "rustflags": "RUSTFLAGS", "round_trip": "Round trip", "valgrind": "Valgrind"};
+
 # Benchmarks
 
 An adapter between the Redis client and a message type costs time on every delivery: the read,
@@ -37,7 +48,7 @@ The best of three interleaved rounds, with the median round in parentheses. High
 better. A difference smaller than the spread between runs is reported as `indistinguishable`
 rather than as a percentage.
 
-<div id="benchmark-results" data-benchmark-labels='{"loading": "Loading the published results...", "scenario": "Scenario", "raw": "Raw client", "adapter": "ruststream-fred", "framework": "RustStream service", "adapterOverhead": "Adapter over the client", "overhead": "Service over the client", "indistinguishable": "indistinguishable", "brokerBound": "broker-bound", "instructions": "Instructions per message", "allocations": "Allocations per message", "cold": "Cold start (instructions / allocations)", "unavailable": "The published results could not be loaded.", "cpu": "CPU", "architecture": "Architecture", "cpu_frequency": "Frequency", "cores": "Cores", "memory": "Memory", "memory_speed": "Memory speed", "os": "OS", "broker": "Broker", "rustc": "Rust", "valgrind": "valgrind", "profile": "Profile", "features": "Features", "rustflags": "RUSTFLAGS", "versions": "Versions", "measured": "Measured on", "codeMeasured": "Code costs measured"}'></div>
+<BenchmarkResults labels={labels} details="/architecture/benchmarks/#running-it-yourself" />
 
 The table is read from the document below every time the page is opened, so what it shows is the
 last run and nothing else.
@@ -59,8 +70,6 @@ cross-broker table, is at
 [`benchmarks/results.json`](https://powersemmi.github.io/ruststream-fred/latest/benchmarks/results.json).
 
 ## The crate's own code
-
-<div id="benchmark-code"></div>
 
 The second table is this crate's own cost per message, counted rather than timed: instructions
 under callgrind and allocations under DHAT. Each scenario is the service a user writes, built on
@@ -93,7 +102,7 @@ cost cites its numbers.
 
 ## The machine
 
-<div id="benchmark-machine"></div>
+<BenchmarkEnvironment labels={machine} />
 
 The build flags are published with the numbers because they change them: a binary built with
 `-C target-cpu=native` produces a figure no other machine can reproduce, so the recipe clears the
