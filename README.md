@@ -125,8 +125,12 @@ tb.broker::<RedisBroker>()
 
 ## Documentation
 
-- [Guides](https://powersemmi.github.io/ruststream-fred/latest/) - building a Redis service with the crate.
-- [Components](https://powersemmi.github.io/ruststream-fred/latest/components/) - one page per part of the crate.
+- [Getting started](https://powersemmi.github.io/ruststream-fred/latest/guides/getting-started/) - installation and a first service against a
+  local Redis.
+- [Guides](https://powersemmi.github.io/ruststream-fred/latest/) - choosing a transport, consumer groups and recovery, work queues,
+  retries, fan-out, pipelining, transactions, replay, cluster, production, testing and interop.
+- [Components](https://powersemmi.github.io/ruststream-fred/latest/components/) - one page per part of the crate: the broker, the
+  stream, list and Pub/Sub descriptors, publish policies, the pipeline window and the in-process Redis.
 - [Architecture](https://powersemmi.github.io/ruststream-fred/latest/architecture/) - how the crate sits between Redis and the runtime.
 - [Benchmarks](https://powersemmi.github.io/ruststream-fred/latest/architecture/benchmarks/) - what the crate costs over the raw client.
 - [API reference](https://docs.rs/ruststream-fred) - every item on docs.rs.
