@@ -371,3 +371,10 @@ en_match = "producers?"
 ru = "производитель"
 ru_match = "производител"
 zh = "生产者"
+
+[[term]]
+en = "settlement"
+en_match = "settl(e|es|ed|ing|ement|ements)"
+ru = "завершение"
+ru_match = "заверш"
+zh = "结算"
