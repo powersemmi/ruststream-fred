@@ -17,7 +17,7 @@ The message's name is the stream key, and the entry id is `*`, the one Redis ass
 The payload becomes the entry's `_payload` field, and each header a field of its own named `h:<header>`.
 A publish returns once Redis has answered the `XADD`.
 
-The stream prelude also names the policy `TransactionalPublish`: the stream publisher carries both [transaction](../transactions/index.md) kinds.
+The stream prelude also brings `TransactionalPublish`, the policy of a mount that publishes in [transactions](../transactions/index.md); it pairs into the same publisher, and a cluster refuses it at startup.
 A list or a channel has its own policy: [`RedisListPublish`](./list-publish.md) and [`RedisPubSubPublish`](./pubsub-publish.md).
 A registration that names no policy for its reply publishes through [`RedisDefaultPublish`](./default.md).
 Per message, a publish carries a [partition key](./partition-key.md).

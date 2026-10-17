@@ -19,7 +19,7 @@ As with [transaction](./transaction.md), any number can be open on one publisher
 [`after_startup`](api:ruststream::runtime::BrokerScope::after_startup) runs its hook once the broker is connected and the subscriptions are open, with the policy it names paired into a live publisher.
 That makes it the place for a service's first publishes, such as seed data that must arrive whole.
 A hook that returns an error fails the startup.
-On a cluster the transaction does not open, so the service stops at startup instead of seeding part of its data.
+On a cluster `TransactionalPublish` refuses to pair, so the service does not start and seeds nothing.
 
 ## Example
 
