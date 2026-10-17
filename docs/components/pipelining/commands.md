@@ -21,7 +21,7 @@ A command whose answer the handler needs runs on the pool instead, through [`Fre
 On a cluster a script goes to the node of its first key.
 [`custom`](api:ruststream_fred::pipeline::RedisPipeline::custom) queues any command by name, for one the methods do not cover.
 The first command a delivery queues opens a `fred` pipeline for it; a delivery that queues nothing allocates none.
-The in-process Redis of the [test harness](api:ruststream::testing::TestApp) runs no scripts, so a test of a script runs against a server.
+The in-process Redis of the [test harness](../testing/index.md) runs no scripts, so a test of a script runs against a server.
 
 ## Example
 

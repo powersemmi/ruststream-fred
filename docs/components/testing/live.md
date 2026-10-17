@@ -22,6 +22,16 @@ A server keeps what earlier runs left in it, so a run reads keys no other test w
 In the example, `live::url` returns the server's address from `REDIS_TEST_URL`, and the test returns early without one, so `cargo test` passes on a machine with no server.
 A job that stood a server up sets `RUSTSTREAM_REQUIRE_LIVE=1`, and a missing address then fails the test instead of skipping it.
 The repository's stand is `docker-compose.test.yml`, which `just brokers-up` starts.
+`just test-brokers` starts it, runs every suite against it with `RUSTSTREAM_REQUIRE_LIVE=1`, and stops it.
+Each topology has a variable of its own:
+
+| Variable | Server | Stand address |
+| --- | --- | --- |
+| `REDIS_TEST_URL` | a standalone Redis 7 | `redis://127.0.0.1:6379` |
+| `REDIS_84_TEST_URL` | a standalone Redis 8.4, for [`claiming`](../streams/claiming.md) | `redis://127.0.0.1:6386` |
+| `REDIS_AUTH_TEST_URL` | a password-protected Redis 7 with an ACL user | `redis://127.0.0.1:6385` |
+| `REDIS_CLUSTER_TEST_URL` | a seed node of a cluster | `127.0.0.1:7000` |
+| `REDIS_SENTINEL_TEST_URL` | a sentinel watching the primary `mymaster` | `127.0.0.1:26379` |
 
 ## Example
 

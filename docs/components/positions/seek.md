@@ -17,10 +17,13 @@ A batch body reads the same key off its [`StreamBatchContext`](api:ruststream_fr
 The cursor moves as soon as `seek` returns.
 A read blocked in `XREADGROUP` sees the move within one [`block`](../subscriptions/block.md), and the entries it had selected under the old cursor are discarded, never delivered.
 `Ctx<keys::Position>` binds the position of the delivery itself; a seek there delivers that entry again and the entries after it.
+The group's cursor is exclusive, so that position holds the id one below the entry's, and the crate computes it.
 A seek leaves three things alone.
 Entries delivered and not yet acknowledged stay in the pending entries list, where a [`reclaim`](../streams/reclaim.md) subscription can take them.
 Copies waiting in a delay queue are appended when they fall due, wherever the group reads.
-A replayed entry is a new delivery, so its delivery count in the pending entries list grows.
+A replayed entry is delivered as a new one: Redis starts its delivery count in the pending entries list over at one.
+So a cap that reads that count, on a [`claiming`](../streams/claiming.md) or a `reclaim` subscription, counts from the replay, and the retry-count header the entry carries stays as it was.
+Seeking is a stream's: a list and a Pub/Sub channel hand each value out once and keep no read position.
 A seek after the service shut down returns an error.
 A position that has to hold on every start belongs in [`start_at`](./start-at.md).
 

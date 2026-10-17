@@ -23,6 +23,7 @@ Each key is a type in [`context::keys`](api:ruststream_fred::context::keys), and
 | [`SeekHandle`](api:ruststream_fred::context::keys::SeekHandle) | [`RedisGroupSeeker`](api:ruststream_fred::RedisGroupSeeker) | the handle that moves the whole group to another position |
 | [`FredPool`](api:ruststream_fred::context::keys::FredPool) | `fred::clients::Pool` | the broker's connection pool, as [FredPool](./fred-pool.md) shows |
 
+Each key is a zero-sized type, and reading it is a plain field access the compiler resolves: no hashing, no boxing, no downcast.
 A key belongs to the context types that carry its field, so a key read off the wrong form's context does not compile.
 A batch handler reads [`StreamBatchContext`](./batch-context.md), a Pub/Sub handler [`PubSubContext`](./pubsub-context.md).
 A list delivery carries its payload and headers alone; a list handler reads the pool through `FredPool` or keeps the default `()` context.

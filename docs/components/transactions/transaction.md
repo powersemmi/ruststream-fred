@@ -22,6 +22,7 @@ Dropping a transaction that was neither committed nor aborted discards its buffe
 A commit that fails has consumed the transaction, and its buffer is gone.
 The recovery is to redeliver the input, which a `retry` outcome does, not to send the buffer again.
 The live transaction is a [`RedisTransaction`](api:ruststream_fred::RedisTransaction), with the same limits as the [borrowed kind](./index.md): standalone and sentinel only, no rollback.
+The slot's policy is `TransactionalPublish`, so a cluster refuses it at startup.
 
 ## Example
 

@@ -90,7 +90,16 @@ export function window(words: Words): {boxes: Box[]; links: Link[]} {
       code: true,
       lines: [sent.at(-1)!],
     },
-    {id: 'atomic', x: 0, y: 324, w: 360, h: 44, kind: 'note', lines: lines(words, 'atomic')},
+    {
+      id: 'atomic',
+      x: 0,
+      y: 324,
+      w: 360,
+      h: 44,
+      kind: 'note',
+      lines: lines(words, 'atomic'),
+      href: '/components/pipelining/atomic/',
+    },
   );
   const links: Link[] = DELIVERIES.flatMap(({id, acked}, index): Link[] => [
     {from: `delivery-${id}`, to: `outcome-${id}`},

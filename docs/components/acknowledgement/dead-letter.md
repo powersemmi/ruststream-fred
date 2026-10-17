@@ -19,6 +19,8 @@ A cap without a dead-letter name drops the spent delivery and logs a warning tha
 A dead-letter name without a cap carries every retry away on the first one.
 Under a cap an immediate retry travels as a copy the runtime publishes, so that the count moves with the message in [`RETRY_COUNT_HEADER`](api:ruststream::runtime::RETRY_COUNT_HEADER).
 A `claiming` subscription reads Redis's own [delivery count](./counts.md) instead and appends nothing.
+Redis keeps a delivery count only in a stream's pending entries list, which the claiming and reclaim modes read.
+On a list, a channel and a plain stream read, the runtime applies the cap with the count its copies carry.
 The dead-letter key is an ordinary key of the same broker, and a subscription reads it like any other.
 A name one subscription reads as one Redis type and another writes as a second type stops the service at startup, and the error names both.
 

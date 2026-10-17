@@ -10,13 +10,13 @@ import TabItem from '@theme/TabItem';
 
 [`.pipeline()`](api:ruststream_fred::pipeline::RedisPipelineSteps::pipeline) settles a subscription in a window, and a handler queues its own Redis commands to leave with its acknowledgement.
 
-The step chains where the handler is mounted, `b.include(handler.pipeline())`, like `.workers(..)` or `.block(..)`.
-It applies to a [`RedisStream`](api:ruststream_fred::stream::RedisStream), a [`RedisList`](api:ruststream_fred::list::RedisList), a [`RedisPubSub`](api:ruststream_fred::pubsub::RedisPubSub) and a [`RedisPubSubPattern`](api:ruststream_fred::pubsub::RedisPubSubPattern), and keeps every setting the descriptor carries.
-Each form's prelude brings the step in with [`RedisPipelineSteps`](api:ruststream_fred::pipeline::RedisPipelineSteps).
+The step chains where the handler is mounted, `b.include(handler.pipeline())`, like `.workers(..)` or [`.block(..)`](../subscriptions/block.md).
+It applies to a [`RedisStream`](../streams/index.md), a [`RedisList`](../lists/index.md), a [`RedisPubSub`](../pubsub/index.md) and a [`RedisPubSubPattern`](../pubsub/pattern.md), and keeps every setting the descriptor carries.
+Each form's [prelude](../broker/prelude.md) brings the step in with [`RedisPipelineSteps`](api:ruststream_fred::pipeline::RedisPipelineSteps), together with the [`InRound`](./in-round.md) transform and the [`Bindable`](./bind.md) bound.
 
 A handler takes the delivery's round with `Ctx<keys::Pipeline>`, a [`RedisPipeline`](api:ruststream_fred::pipeline::RedisPipeline).
 What it queues there runs after the handler returns, in one pipeline with the settles of the whole window: under load, one round trip per fetched batch instead of one per command.
-The queued commands follow the delivery's outcome: they leave when the delivery is acknowledged and are dropped otherwise.
+The queued commands follow the delivery's outcome: they leave when the delivery is [acknowledged](../acknowledgement/index.md) and are dropped otherwise.
 So a handler's Redis side effects never land for a delivery that comes back.
 The [Window](../../architecture/window.md) page draws a window from the read to the flush.
 

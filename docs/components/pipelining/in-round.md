@@ -11,7 +11,7 @@ import TabItem from '@theme/TabItem';
 
 The [`InRound`](api:ruststream_fred::pipeline::InRound) transform on the reply position puts a handler's reply into its delivery's round, after the commands it queued.
 
-The transform chains after the reply policy: `.out_reply(Publish).transform(InRound)`.
+The transform chains after the reply [policy](../publishing/index.md): `.out_reply(Publish).transform(InRound)`.
 The reply then leaves with the delivery's settle, in the window's pipeline, and only when the delivery is acknowledged.
 It follows what the handler queued and published through a [bound](./bind.md) slot, so a reader sees the handler's writes in the order the handler made them.
 Without the transform a reply is an ordinary publish: it leaves as the handler returns, before the window sends what the handler queued.

@@ -17,7 +17,7 @@ From then on it sends each command to the node that owns its key's hash slot.
 A cluster seed list carries no password, so a cluster that requires one takes [`credentials`](./authentication.md).
 
 Redis refuses a command or a transaction whose keys live in different hash slots.
-So a [transaction](../transactions/index.md) on a cluster refuses to begin.
+So the [transactional](../transactions/index.md) policy `TransactionalPublish` refuses a cluster, and a service that names it does not start.
 A [reliable list](../lists/reliable.md) moves an entry between its queue and its processing list in one command, so both keys need one slot.
 A hash tag gives them one: in `{jobs}` and `{jobs}.processing` only `jobs` is hashed.
 A reliable list whose two keys hash apart refuses to start, and the error names the hash tag that fixes it.

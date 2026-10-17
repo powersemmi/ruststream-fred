@@ -22,7 +22,11 @@ The connect opens the pool and waits for it, so an unreachable server fails star
 Every subscription and every publisher of the service opens against that connected form.
 At [shutdown](./shutdown.md) the runtime turns it into a [`ClosedRedisBroker`](api:ruststream_fred::ClosedRedisBroker).
 
-Every connection the broker opens reconnects after the server drops it, from 100 ms up to 10 s apart with no limit on the attempts; a Pub/Sub subscription subscribes again, and a consumer group the server lost is created again.
+Every connection the broker opens reconnects after the server drops it, with no limit on the attempts.
+The first attempt follows after 100 ms, and each next one twice as late, at most 10 s apart.
+A command issued while the connection is down waits for it.
+A Pub/Sub subscription subscribes again.
+A consumer group the server lost is created again and reads the stream from its start.
 
 ## Example
 

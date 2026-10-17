@@ -37,7 +37,8 @@ runtime connects the broker when the app starts. Connect turns the topology, the
 the TLS settings into a `fred` configuration, and opens a pool of
 [`pool`](api:ruststream_fred::RedisBroker::pool) connections, four by default. An unreachable
 server fails the start. A broker built with
-[`from_pool`](api:ruststream_fred::RedisBroker::from_pool) adopts the pool it was given.
+[`from_pool`](api:ruststream_fred::RedisBroker::from_pool) adopts the pool it was given and
+dials it here, unless the service connected it already.
 
 Publishes, settlements and the commands a handler sends go out on the pool. Each subscription
 opens a client of its own when it subscribes. A stream or list subscription reads on it, because a
@@ -49,8 +50,12 @@ When a subscription is dropped, its client sends `CLIENT UNBLOCK` on `fred`'s si
 which ends a read still blocked on the server, and then `QUIT`. A blocked pop left running would
 take the next entry for a subscription nobody reads.
 
-Shutdown marks the connection closed, waits until every read client has closed, and sends `QUIT`
-to the pool. [`ClosedRedisBroker`](api:ruststream_fred::ClosedRedisBroker) reports how many pool
-connections it closed. A publisher, a seeker or a delivery that outlives the connection checks the
+Every connection reconnects after the server drops it, backing off from 100 ms to 10 s, and a
+command issued meanwhile waits for it.
+
+[Shutdown](../components/broker/shutdown.md) marks the connection closed, waits until every read
+client has closed, and sends `QUIT` to the pool.
+[`ClosedRedisBroker`](api:ruststream_fred::ClosedRedisBroker) reports how many pool connections
+it closed. A publisher, a seeker or a delivery that outlives the connection checks the
 mark before it sends, and answers
 [`RedisError::ShutDown`](api:ruststream_fred::RedisError::ShutDown) at once.

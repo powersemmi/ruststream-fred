@@ -12,7 +12,8 @@ A stream publisher sends a group of publishes as one `MULTI` and `EXEC` block; a
 
 The stream publisher, [`RedisPublisher`](api:ruststream_fred::RedisPublisher), buffers the publishes of a transaction and sends them on commit, in publish order.
 Subscribers then see the whole group or none of it.
-It offers both kinds of transaction the framework defines, and the stream prelude names its policy `TransactionalPublish` for them.
+It offers both kinds of transaction the framework defines.
+A mount that publishes in transactions names [`RedisTransactionalPublish`](api:ruststream_fred::RedisTransactionalPublish), `TransactionalPublish` in the stream prelude, which pairs into the same publisher.
 This page is the borrowed kind; [transaction](./transaction.md) and [owned_transaction](./owned-transaction.md) are the owned kind.
 
 The borrowed kind is the core's [`TransactionalPublisher`](api:ruststream::TransactionalPublisher): one transaction on the publisher handle.
@@ -22,7 +23,8 @@ A `commit` or an `abort` with nothing open returns [`RedisError::NoTransaction`]
 Its usual shape is a batch handler whose replies commit together: `.transactional()` after `.out_reply(TransactionalPublish)` asks for it, and a policy without transactions does not compile there.
 
 Transactions run on standalone and sentinel deployments.
-A `MULTI` block cannot span hash slots, so on a cluster opening a transaction returns [`RedisError::InvalidOptions`](api:ruststream_fred::RedisError::InvalidOptions) instead of committing a group that is not atomic.
+A `MULTI` block cannot span hash slots, so on a cluster `TransactionalPublish` refuses to pair and the service does not start.
+The error is [`RedisError::InvalidOptions`](api:ruststream_fred::RedisError::InvalidOptions), raised before the service reads its first batch.
 Redis does not roll back: a command that fails inside `EXEC` leaves the commands before it committed.
 For a group of `XADD`s that happens when Redis runs out of memory or a key holds another type.
 A command the server refuses to queue discards the whole block instead.

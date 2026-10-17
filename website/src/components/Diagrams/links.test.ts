@@ -44,7 +44,26 @@ describe('a box that names a page', () => {
   it('links the path of an entry to the pages that explain each step', () => {
     expect(hrefs('path')).toEqual({
       read: '/architecture/redis/groups/',
+      body: '/components/subscriptions/',
       settle: '/architecture/settlement/',
+      ack: '/components/acknowledgement/',
     });
+  });
+
+  it('links the parts of the crate to their component pages', () => {
+    expect(hrefs('design')).toEqual({
+      descriptors: '/components/subscriptions/',
+      window: '/architecture/window/',
+      broker: '/components/broker/',
+      reader: '/architecture/lifecycle/',
+      pool: '/components/broker/pool/',
+    });
+  });
+
+  it('links each mechanism of a transport to the page that configures it', () => {
+    expect(hrefs('pel')).toEqual({claimer: '/components/streams/claiming/'});
+    expect(hrefs('queue')).toEqual({recovery: '/components/lists/recovery/'});
+    expect(hrefs('broadcast')).toEqual({buffer: '/components/pubsub/buffer/'});
+    expect(hrefs('window')).toEqual({atomic: '/components/pipelining/atomic/'});
   });
 });

@@ -21,8 +21,8 @@ export const words = {
 
 # Window
 
-A pipelined subscription settles in a window: the deliveries of a read queue their side effects,
-and one flush sends them with the settles.
+A [pipelined](../components/pipelining/index.md) subscription settles in a window: the
+deliveries of a read queue their side effects, and one flush sends them with the settles.
 
 <Diagram name="window" words={words} />
 
@@ -31,8 +31,9 @@ opens a window over the subscription. Each delivery of a read takes a slot in it
 queues through `Ctx<keys::Pipeline>` goes into the slot's segment, a `fred` pipeline opened at the
 first queued command. The handler does not see the command's reply.
 
-The outcome decides the segment: `ack` keeps it, and every other outcome drops it. The settle goes
-out either way, the one the form sends without a window.
+The outcome decides the segment: `ack` keeps it, and `drop`, `retry` and `retry_after` drop it.
+Each outcome sends the settle the form sends without a window. A delivery dropped unsettled sends
+no settle: its segment goes, and its entry stays pending.
 
 A window flushes when the read's `COUNT` has settled, when nothing is outstanding, or when the
 subscription stops. The flush sends the kept segments in the order they were committed, then the
