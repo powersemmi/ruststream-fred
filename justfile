@@ -47,7 +47,7 @@ test-brokers: brokers-up
 
 # What this crate costs over the `fred` client it wraps: each scenario run as a RustStream service
 # and as a hand-written loop, against the standalone server in the compose stand. On demand only -
-# it takes minutes and it wants the machine to itself. The page it feeds is docs/benchmarks.md.
+# it takes minutes and it wants the machine to itself. It feeds the site's benchmarks pages.
 bench *ARGS: brokers-up
     #!/usr/bin/env bash
     set -euo pipefail
@@ -65,7 +65,7 @@ bench *ARGS: brokers-up
 # What this crate's own code costs per message, counted under valgrind: instructions through
 # callgrind and allocations through DHAT, each scenario a service on the production broker against
 # the standalone server of the compose stand. The counts cover the service's thread, fred's work on
-# it included, and not the server. The page it feeds is the code table of docs/benchmarks.md.
+# it included, and not the server. It feeds the code table of the site's benchmarks pages.
 # RUSTFLAGS is cleared because valgrind aborts on the instructions a recent CPU advertises. Needs
 # valgrind.
 #
