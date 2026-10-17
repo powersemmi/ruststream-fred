@@ -110,19 +110,26 @@ name = "fred_seek"
 # --- examples: lists ---
 
 [[example]]
-name = "fred_list"
+name = "redis_lists"
+required-features = ["testing"]
+test = true
 
 [[example]]
-name = "fred_list_dead_letter"
+name = "manual_redis_lists"
+path = "examples/manual/redis_lists.rs"
+required-features = ["testing"]
+test = true
 
 [[example]]
-name = "fred_dead_letter"
+name = "redis_lists_processing"
+required-features = ["testing"]
+test = true
 
 [[example]]
-name = "fred_delayed_retry"
-
-[[example]]
-name = "fred_pubsub"
+name = "manual_redis_lists_processing"
+path = "examples/manual/redis_lists_processing.rs"
+required-features = ["testing"]
+test = true
 
 # --- examples: pipelining ---
 
