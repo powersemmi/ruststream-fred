@@ -1,5 +1,7 @@
+import {delay} from './delay';
 import type {Box, Lane, Link} from './flow';
 import {lifecycle} from './lifecycle';
+import {settlement} from './settlement';
 import {window} from './window';
 import type {Words} from './words';
 
@@ -12,6 +14,8 @@ export interface Layout {
 /** Every diagram a page can name: a layout places the boxes, the page supplies the words. */
 export const LAYOUTS = {
   lifecycle,
+  settlement,
+  delay,
   window,
 } satisfies Record<string, (words: Words) => Layout>;
 
