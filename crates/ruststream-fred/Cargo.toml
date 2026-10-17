@@ -387,4 +387,16 @@ name = "fred_transaction"
 
 # --- examples: guides-2 ---
 
+[[example]]
+name = "guide_pipelining"
+path = "examples/guide/pipelining.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_pipelining"
+path = "examples/manual/guide/pipelining.rs"
+required-features = ["testing"]
+test = true
+
 # --- examples: end ---
