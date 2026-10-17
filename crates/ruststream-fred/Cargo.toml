@@ -129,6 +129,61 @@ name = "fred_pubsub"
 [[example]]
 name = "fred_pipeline"
 
+[[example]]
+name = "redis_context_stream"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_context_stream"
+path = "examples/manual/redis_context_stream.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_context_consumer_group"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_context_consumer_group"
+path = "examples/manual/redis_context_consumer_group.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_context_batch"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_context_batch"
+path = "examples/manual/redis_context_batch.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_context_fred_pool"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_context_fred_pool"
+path = "examples/manual/redis_context_fred_pool.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_context_pubsub"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_context_pubsub"
+path = "examples/manual/redis_context_pubsub.rs"
+required-features = ["testing"]
+test = true
+
 # --- examples: publishing ---
 
 [[example]]
