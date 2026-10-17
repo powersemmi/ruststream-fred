@@ -78,8 +78,8 @@ import TabItem from '@theme/TabItem';
 挂载点上的 `.pipeline()` 打开窗口，只有用它挂载的订阅才能让处理器的命令入队。
 接收 `Ctx<keys::Pipeline>`、却在没有这一步的情况下挂载的处理器无法编译。
 
-没有它时，回复在处理器返回后立即发布，先于轮次发出。
-回复上的 [`InRound`](../components/pipelining/in-round.md) 变换把回复放入轮次，排在命令之后，所以收据只与拣货任务一起发出。
+没有 [`InRound`](../components/pipelining/in-round.md) 变换时，回复在处理器返回后立即发布，先于轮次发出。
+回复上的这个变换把回复放入轮次，排在命令之后，所以收据只与拣货任务一起发出。
 处理器用 `pipeline.bind(out)` [绑定](../components/pipelining/bind.md) `Out` 槽位之后，经由该槽位的发布也会加入轮次。
 
 窗口收集一次读取中每个投递的轮次。

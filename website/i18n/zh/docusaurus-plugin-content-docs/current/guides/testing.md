@@ -47,7 +47,7 @@ tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
 [`TestApp::start`](api:ruststream::testing::TestApp::start) 把 [`RedisBroker`](../components/broker/index.md) 连接到在测试进程内模拟的 Redis。
 测试从不连接这个 URL。
 测试按生产类型访问 Broker：`tb.broker::<RedisBroker>()`。
-测试的消息发往 Broker 的默认发布者写入其名字的地方：对流执行 `XADD`，或者执行读取该名字的订阅所对应的 `LPUSH` 或 `PUBLISH`。
+测试消息按读取该名字的订阅所期望的方式写入：列表用 `LPUSH`，频道或模式用 `PUBLISH`，流以及没有订阅读取的名字用 `XADD`。
 `publish` 在处理器及其回复都完成结算后才返回。
 所以接下来的几行断言的是已经完成的状态：订阅者如何结算，以及什么到达了 `card-receipts`。
 测试主体把已启动的应用作为参数接收，所以下面的 live 测试也运行它。

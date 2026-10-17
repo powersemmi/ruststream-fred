@@ -78,8 +78,8 @@ Beside `keys::Pipeline`, `keys::FredPool` comes second in the signature.
 `.pipeline()` at the mount site opens the window, and the handler's commands can only be queued on a subscription mounted with it.
 A handler that takes `Ctx<keys::Pipeline>` and is mounted without the step does not compile.
 
-Without it, a reply is published as soon as the handler returns, ahead of the round.
-The [`InRound`](../components/pipelining/in-round.md) transform on the reply puts it into the round, after the commands, so the receipt leaves only with the picks.
+Without the [`InRound`](../components/pipelining/in-round.md) transform, a reply is published as soon as the handler returns, ahead of the round.
+The transform on the reply puts it into the round, after the commands, so the receipt leaves only with the picks.
 A publish through an `Out` slot joins the round when the handler [binds](../components/pipelining/bind.md) the slot with `pipeline.bind(out)`.
 
 The window collects the rounds of every delivery of one read.

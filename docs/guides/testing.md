@@ -47,7 +47,7 @@ tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
 [`TestApp::start`](api:ruststream::testing::TestApp::start) connects [`RedisBroker`](../components/broker/index.md) to a Redis modelled inside the test process.
 The URL is never dialled.
 The test addresses the broker by its production type, `tb.broker::<RedisBroker>()`.
-A test's message goes where the broker's default publisher writes its name: an `XADD` to a stream, or the `LPUSH` or `PUBLISH` of the subscription that reads the name.
+A test's message is written to its name the way the subscription reading that name expects it: `LPUSH` for a list, `PUBLISH` for a channel or a pattern, `XADD` for a stream or a name no subscription reads.
 `publish` returns once the handler and its reply have settled.
 So the next lines assert on finished state: how the subscriber settled, and what reached `card-receipts`.
 The body takes the started app as an argument, so the live test below runs it too.
