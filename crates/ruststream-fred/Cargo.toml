@@ -241,6 +241,61 @@ test = true
 [[example]]
 name = "fred_transaction"
 
+[[example]]
+name = "redis_publishing"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_publishing"
+path = "examples/manual/redis_publishing.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_publishing_default"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_publishing_default"
+path = "examples/manual/redis_publishing_default.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_publishing_pubsub"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_publishing_pubsub"
+path = "examples/manual/redis_publishing_pubsub.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_publishing_list"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_publishing_list"
+path = "examples/manual/redis_publishing_list.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_publishing_partition_key"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_publishing_partition_key"
+path = "examples/manual/redis_publishing_partition_key.rs"
+required-features = ["testing"]
+test = true
+
 # --- examples: guides ---
 
 # --- examples: end ---
