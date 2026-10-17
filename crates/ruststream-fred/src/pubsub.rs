@@ -26,6 +26,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use fred::clients::{Client, Pool};
 use fred::interfaces::{ClientLike, PubsubInterface};
+use fred::types::config::Server;
 use fred::types::{Message, MessageKind};
 use futures::Stream;
 use futures::stream::unfold;
@@ -40,6 +41,7 @@ use ruststream::{
 use tokio::runtime::Handle;
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
+use tokio::task::JoinHandle;
 use tracing::warn;
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
@@ -611,11 +613,71 @@ impl BatchSubscriber for RedisPubSubSubscriber {
     }
 }
 
+/// What a Pub/Sub subscription's client subscribes to, kept so it can subscribe again.
+pub(crate) enum Resubscribe {
+    Channel(String),
+    ShardedChannel(String),
+    Pattern(String),
+}
+
+/// The dedicated client of a Pub/Sub subscription, and the task that subscribes it again each
+/// time it reconnects.
+///
+/// The server forgets a connection's subscriptions when the connection drops (a restart, a
+/// failover, a killed client), and `fred` reconnects the socket but does not repeat the
+/// `SUBSCRIBE`. Messages published between the drop and the new subscribe reach nobody, which is
+/// what Pub/Sub promises; every later one arrives. The task costs one spawn per subscription and
+/// nothing per message.
+pub(crate) struct Resubscribing {
+    client: Client,
+    resubscribing: JoinHandle<()>,
+}
+
+impl Resubscribing {
+    /// Starts the task on `runtime`. `reconnects` is taken from `client` before its first
+    /// subscribe, so a reconnect that lands in between is not missed.
+    pub(crate) fn new(
+        client: Client,
+        mut reconnects: Receiver<Server>,
+        target: Resubscribe,
+        runtime: &Handle,
+    ) -> Self {
+        let resubscriber = client.clone();
+        let resubscribing = runtime.spawn(async move {
+            loop {
+                match reconnects.recv().await {
+                    Ok(_) | Err(RecvError::Lagged(_)) => {}
+                    Err(RecvError::Closed) => return,
+                }
+                let (name, outcome) = match &target {
+                    Resubscribe::Channel(name) => (name, resubscriber.subscribe(name).await),
+                    Resubscribe::ShardedChannel(name) => {
+                        (name, resubscriber.ssubscribe(name).await)
+                    }
+                    Resubscribe::Pattern(name) => (name, resubscriber.psubscribe(name).await),
+                };
+                if let Err(error) = outcome {
+                    warn!(
+                        subscription = name.as_str(),
+                        %error,
+                        "a Redis Pub/Sub subscription reconnected but could not subscribe again; \
+                         it receives nothing until its connection drops and reconnects"
+                    );
+                }
+            }
+        });
+        Self {
+            client,
+            resubscribing,
+        }
+    }
+}
+
 /// The wire side of a Pub/Sub subscription: the dedicated client and the channel it feeds.
 pub(crate) struct PubSubWire {
     /// The channel or the glob it reads, for the warning a lost message raises.
     name: String,
-    client: Client,
+    client: Resubscribing,
     rx: Receiver<Message>,
     codec: Option<SharedEnvelope>,
     /// The broker's pool, handed to every delivery for `Ctx<keys::FredPool>`.
@@ -635,7 +697,7 @@ impl Debug for PubSubWire {
 impl PubSubWire {
     pub(crate) fn new(
         name: String,
-        client: Client,
+        client: Resubscribing,
         rx: Receiver<Message>,
         codec: Option<SharedEnvelope>,
         pool: Pool,
@@ -778,7 +840,8 @@ impl Drop for PubSubWire {
         }
         // The dedicated client owns a background connection task; close it on a detached task since
         // `drop` cannot await, on the broker's runtime, which is there wherever the drop happens.
-        let client = self.client.clone();
+        self.client.resubscribing.abort();
+        let client = self.client.client.clone();
         self.runtime.spawn(async move {
             let _ = client.quit().await;
         });

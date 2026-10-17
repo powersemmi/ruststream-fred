@@ -20,7 +20,7 @@ use fred::types::config::CredentialProvider;
     feature = "tls-native-tls"
 ))]
 use fred::types::config::TlsConfig;
-use fred::types::config::{Config, PerformanceConfig, ServerConfig};
+use fred::types::config::{Config, PerformanceConfig, ReconnectPolicy, ServerConfig};
 use fred::types::{ClusterHash, CustomCommand, Message, Value, Version};
 use fred::util::redis_keyslot;
 #[cfg(feature = "testing")]
@@ -49,7 +49,7 @@ use crate::{
     publisher::{RedisDefaultPublisher, RedisPublisher},
     pubsub::{
         PubSubMode, PubSubWire, RedisPubSub, RedisPubSubPattern, RedisPubSubPublish,
-        RedisPubSubPublisher, RedisPubSubSubscriber,
+        RedisPubSubPublisher, RedisPubSubSubscriber, Resubscribe, Resubscribing,
     },
     route::{Recorded, Route, Routes},
     stream::{ReadMode, RedisStream},
@@ -58,6 +58,16 @@ use crate::{
 
 /// Default `fred` connection-pool size when the caller does not set one.
 const DEFAULT_POOL_SIZE: usize = 4;
+
+/// How the connections this broker opens reconnect after the server drops them: a first attempt
+/// after 100 ms, each next one twice as late, at most 10 s apart, and no limit on the attempts.
+///
+/// A service outlives a restart or a failover of its server, however long it takes; the quick
+/// first attempt covers a dropped socket, the cap keeps a long outage from becoming a flood of
+/// dials. Commands issued while the connection is down wait for it in `fred`'s queue.
+fn reconnect_policy() -> ReconnectPolicy {
+    ReconnectPolicy::new_exponential(0, 100, 10_000, 2)
+}
 
 /// The first Redis release whose `XREADGROUP` takes a `CLAIM` option.
 const CLAIM_MIN_VERSION: Version = Version::new(8, 4, 0);
@@ -249,8 +259,8 @@ impl RedisBroker {
     /// Wraps an already-connected `fred` pool. Useful for advanced configuration (TLS, cluster,
     /// sentinel, custom performance and reconnection policies).
     ///
-    /// [`Broker::connect`] adopts the pool instead of dialing; the config it was built from is
-    /// reused for the dedicated clients Pub/Sub subscriptions need.
+    /// [`Broker::connect`] adopts the pool instead of dialing; the config and the reconnection
+    /// policy it was built from are reused for the dedicated connections subscriptions read on.
     pub fn from_pool(pool: Pool) -> Self {
         Self::with_topology(Topology::Preconnected(pool))
     }
@@ -647,15 +657,23 @@ impl Broker for RedisBroker {
         // Read off the resolved config rather than the recorded topology, so a caller-supplied
         // pool that is itself clustered is treated as the cluster it is.
         let clustered = config.server.is_clustered();
-        let pool = if let Topology::Preconnected(pool) = &self.topology {
-            pool.clone()
+        let (pool, reconnect) = if let Topology::Preconnected(pool) = &self.topology {
+            // The subscriptions' own connections reconnect the way the caller's pool does.
+            (pool.clone(), pool.next().client_reconnect_policy())
         } else {
-            let pool = Pool::new(config.clone(), None, None, None, self.pool_size)
-                .map_err(|err| RedisError::Connect(Box::new(err)))?;
+            let reconnect = reconnect_policy();
+            let pool = Pool::new(
+                config.clone(),
+                None,
+                None,
+                Some(reconnect.clone()),
+                self.pool_size,
+            )
+            .map_err(|err| RedisError::Connect(Box::new(err)))?;
             pool.init()
                 .await
                 .map_err(|err| RedisError::Connect(Box::new(err)))?;
-            pool
+            (pool, Some(reconnect))
         };
         Ok(ConnectedRedisBroker {
             core: Arc::new(RedisCore {
@@ -663,6 +681,7 @@ impl Broker for RedisBroker {
                 closing: Arc::default(),
                 runtime: Handle::current(),
                 config,
+                reconnect,
                 default_group: self.default_group,
                 clustered,
                 routes: Routes::default(),
@@ -698,6 +717,8 @@ impl InProcess for RedisBroker {
                 closing: Arc::default(),
                 runtime: Handle::current(),
                 config,
+                // The in-process server never drops a connection.
+                reconnect: None,
                 default_group: self.default_group,
                 clustered,
                 routes: Routes::default(),
@@ -784,6 +805,8 @@ pub(crate) struct RedisCore {
     /// The config the pool was built from; Pub/Sub subscriptions dial their dedicated client
     /// from it.
     config: Config,
+    /// How the dedicated clients of subscriptions reconnect: the pool's own policy.
+    reconnect: Option<ReconnectPolicy>,
     default_group: Option<String>,
     /// Whether the connection is to a cluster, which is where a command spanning two keys needs
     /// them on one hash slot: a `MULTI` block cannot span slots at all, and a reliable list's
@@ -1025,8 +1048,14 @@ impl ConnectedRedisBroker {
         // receiver sees only what is sent after it exists. The connection is dedicated to this one
         // subscription, so opening the stream early can pick up nothing else.
         let rx = client.message_rx();
+        let reconnects = client.reconnect_rx();
         let channel = def.channel().to_owned();
         let sharded = def.delivery_mode() == PubSubMode::Sharded;
+        let target = if sharded {
+            Resubscribe::ShardedChannel(channel.clone())
+        } else {
+            Resubscribe::Channel(channel.clone())
+        };
         match def.delivery_mode() {
             PubSubMode::Classic => {
                 client
@@ -1054,6 +1083,7 @@ impl ConnectedRedisBroker {
         );
         let pool = self.core.pool()?;
         recorded.keep();
+        let client = Resubscribing::new(client, reconnects, target, self.runtime());
         Ok(PubSubWire::new(
             def.channel().to_owned(),
             client,
@@ -1145,6 +1175,7 @@ impl ConnectedRedisBroker {
         let client = self.new_client(def.buffer_size()).await?;
         // Opened before the subscribe, for the reason `subscribe_pubsub` gives.
         let rx = client.message_rx();
+        let reconnects = client.reconnect_rx();
         client
             .psubscribe(def.pattern().to_owned())
             .await
@@ -1152,6 +1183,8 @@ impl ConnectedRedisBroker {
         confirm_subscribed(&client).await?;
         let (rx, tap) =
             self.pubsub_tap(rx, PubSubTarget::Pattern(def.pattern()), def.buffer_size());
+        let target = Resubscribe::Pattern(def.pattern().to_owned());
+        let client = Resubscribing::new(client, reconnects, target, self.runtime());
         Ok(PubSubWire::new(
             def.pattern().to_owned(),
             client,
@@ -1322,7 +1355,12 @@ impl ConnectedRedisBroker {
             broadcast_channel_capacity: buffer.get(),
             ..PerformanceConfig::default()
         });
-        let client = Client::new(self.core.config.clone(), performance, None, None);
+        let client = Client::new(
+            self.core.config.clone(),
+            performance,
+            None,
+            self.core.reconnect.clone(),
+        );
         // `init` spawns the task that drives the connection on the runtime it is polled on; it is
         // polled on the broker's own runtime, so the connection outlives a caller's runtime. The
         // price is one task spawned per subscription opened.
@@ -1659,7 +1697,7 @@ fn require_one_slot(key: &str, processing: &str) -> Result<(), RedisError> {
 }
 
 /// Creates the consumer group, treating an already-existing group as success.
-async fn ensure_group(
+pub(crate) async fn ensure_group(
     pool: &Pool,
     key: &str,
     group: &str,
