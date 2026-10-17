@@ -725,14 +725,14 @@ not representable on this path. Each form exports its policy under the same moun
 
 | Policy | Prelude name | Sends with | Settings the policy holds |
 | --- | --- | --- | --- |
-| [`RedisPublish`] | `stream::Publish`, `stream::TransactionalPublish` | `XADD` | none |
+| [`RedisPublish`] | `stream::Publish` | `XADD` | none |
+| [`RedisTransactionalPublish`] | `stream::TransactionalPublish` | `XADD`, or a `MULTI` / `EXEC` block | none |
 | [`RedisPubSubPublish`] | `pubsub::Publish` | `PUBLISH` / `SPUBLISH` | mode, framing codec |
 | [`RedisListPublish`] | `list::Publish` | `LPUSH` | framing codec, key TTL |
 
 A registration that replies without naming a policy gets [`RedisDefaultPublish`], which writes
-each name the way this service reads it and `XADD`s a name it does not read. The stream policy
-is its own transactional name: a stream publisher buffers on the handle as it is, so there is no
-second type to transition to.
+each name the way this service reads it and `XADD`s a name it does not read. The transactional
+policy pairs into the same stream publisher, and on a cluster it refuses to start the service.
 
 The policy covers the publish, with one setting left to the message itself. `XADD`, `LPUSH` and
 `PUBLISH` take the key or channel and the value, so a handler body usually writes
@@ -919,8 +919,8 @@ fn app() -> impl App {
 ```
 
 Two properties hold for both kinds, because both are `MULTI` / `EXEC`. A `MULTI` block cannot
-span hash slots, so opening a transaction on a cluster returns an error instead of committing a
-group that is not atomic. And there is no rollback: a command that fails at runtime inside `EXEC`
+span hash slots, so on a cluster `TransactionalPublish` fails startup and opening a transaction
+on a publisher returns an error, instead of committing a group that is not atomic. And there is no rollback: a command that fails at runtime inside `EXEC`
 leaves the commands before it committed, which for a group of `XADD`s happens when Redis runs
 out of memory or a key holds a non-stream type. A command the server refuses to queue discards
 the whole block instead. Pipelining is a throughput tool and not a transaction: the list

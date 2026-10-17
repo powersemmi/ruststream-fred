@@ -35,10 +35,10 @@ use crate::{error::RedisError, subscriber::RedisSubscriber};
 /// every form gives its own.
 pub use crate::publisher::RedisPublish as Publish;
 
-/// The same policy under the transactional mount-site name: a stream publisher buffers on the
-/// handle and owns transactions as it is, so the plain policy *is* the transactional one and
-/// there is no second type to transition to.
-pub use crate::publisher::RedisPublish as TransactionalPublish;
+/// This form's transactional publish policy,
+/// [`RedisTransactionalPublish`](crate::RedisTransactionalPublish), under the mount-site name: the
+/// same live publisher as [`Publish`], refused at startup on a cluster.
+pub use crate::publisher::RedisTransactionalPublish as TransactionalPublish;
 
 /// The core prelude plus everything a Redis Streams service writes.
 ///

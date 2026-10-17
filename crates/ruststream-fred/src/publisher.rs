@@ -123,6 +123,77 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisPublish {
     }
 }
 
+/// The stream publisher's policy for a mount that publishes in transactions: it pairs into the same
+/// [`RedisPublisher`] as [`RedisPublish`], and only where the topology can run one.
+///
+/// Redis Cluster cannot run a `MULTI` / `EXEC` block across hash slots, so on a cluster this
+/// policy refuses to pair and the service fails to start, naming the registration that asked for
+/// it. Without the refusal a `.transactional()` batch reply would fail to open its transaction on
+/// every batch and redeliver it without end.
+///
+/// # Examples
+///
+/// ```
+/// # mod demo {
+/// use ruststream_fred::stream::prelude::*;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Deserialize, Serialize, Outgoing)]
+/// #[outgoing(name = "orders.priced")]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[subscriber(RedisStream::new("orders").group("workers"), reply)]
+/// async fn price(orders: &[Order]) -> Result<Vec<Order>, HandlerOutcome> {
+///     Ok(orders.iter().map(|order| Order { id: order.id }).collect())
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             // `TransactionalPublish` is this policy under the stream prelude's name: one
+///             // batch's replies land together, as one MULTI / EXEC block.
+///             b.include(price.batch(nonzero!(32)))
+///                 .out_reply(TransactionalPublish)
+///                 .transactional();
+///         },
+///     )
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[must_use]
+pub struct RedisTransactionalPublish;
+
+impl PublishPolicy<ConnectedRedisBroker> for RedisTransactionalPublish {
+    type Live = RedisPublisher;
+
+    /// # Errors
+    ///
+    /// Returns a [`PairError`] carrying [`RedisError::InvalidOptions`] on a cluster topology.
+    fn pair(
+        self,
+        connected: &ConnectedRedisBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        let publisher = connected.publisher();
+        ready(
+            publisher
+                .check_transactions_supported()
+                .map(|()| publisher)
+                .map_err(PairError::new),
+        )
+    }
+
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self, channel: &str) -> Bindings {
+        RedisPublish.channel_bindings(channel)
+    }
+}
+
 /// The broker's default policy, what a registration publishes through when its mount site names
 /// none: a reply, a retry copy, a dead-letter move.
 ///
