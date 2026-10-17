@@ -239,9 +239,6 @@ test = true
 # --- examples: publishing ---
 
 [[example]]
-name = "fred_transaction"
-
-[[example]]
 name = "redis_publishing"
 required-features = ["testing"]
 test = true
@@ -293,6 +290,39 @@ test = true
 [[example]]
 name = "manual_redis_publishing_partition_key"
 path = "examples/manual/redis_publishing_partition_key.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_transactions"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_transactions"
+path = "examples/manual/redis_transactions.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_transactions_transaction"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_transactions_transaction"
+path = "examples/manual/redis_transactions_transaction.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_transactions_owned"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_transactions_owned"
+path = "examples/manual/redis_transactions_owned.rs"
 required-features = ["testing"]
 test = true
 
