@@ -118,8 +118,8 @@ A claiming subscription reads the [delivery count](../components/acknowledgement
 That count includes the deliveries of a worker that stopped, so a refund that crashed a worker counts against the cap too.
 Every other subscription reads the retry-count header on the copies the runtime publishes, and the delay set raises it on every round as well.
 
-A [seek](../components/positions/seek.md) that replays entries delivers them again.
-On a claiming subscription the replays add to the delivery count and count against the cap; the retry-count header does not move.
+A [seek](../components/positions/seek.md) that replays entries delivers them again, as new deliveries.
+Redis counts a replayed entry's deliveries from one again, so a claiming subscription caps it from the replay on; the retry-count header does not move.
 
 ## Reading the dead letters
 

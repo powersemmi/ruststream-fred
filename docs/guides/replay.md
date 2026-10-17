@@ -110,7 +110,7 @@ A seek moves the cursor and nothing else.
 
 - An entry delivered and not acknowledged stays in the group's pending entries list, and a [reclaim](../components/streams/reclaim.md) or [claiming](../components/streams/claiming.md) subscription still finds it.
 - A copy waiting in a [delay](../components/acknowledgement/delayed-retry.md) set is appended when it falls due, wherever the group reads.
-- A replayed entry is delivered again, so Redis's delivery count grows; a claiming subscription counts replays towards its cap, while the framework's own retry count does not move.
+- A replayed entry is read as a new delivery, and Redis counts its deliveries from one again. A claiming subscription caps its attempts from the replay on, and the framework's own retry count does not move.
 
 ## Retention
 

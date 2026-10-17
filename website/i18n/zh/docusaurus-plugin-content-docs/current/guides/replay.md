@@ -110,7 +110,7 @@ seek 只移动游标，不做别的。
 
 - 已投递但未确认的条目留在组的待处理条目列表中，[回收](../components/streams/reclaim.md)订阅或[认领](../components/streams/claiming.md)订阅仍然能找到它。
 - 在[延迟](../components/acknowledgement/delayed-retry.md)集合中等待的副本，到期时照常追加，不管组在哪里读取。
-- 重放的条目会再次投递，所以 Redis 的投递次数会增长；认领订阅把重放计入上限，而框架自己的重试次数不变。
+- 重放的条目会作为一次新的投递读取，Redis 从 1 开始重新计算它的投递次数。认领订阅从重放时起计算上限，框架自己的重试次数不变。
 
 ## 保留 {/* #retention */}
 
