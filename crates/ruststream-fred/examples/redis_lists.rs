@@ -59,7 +59,7 @@ async fn make_thumbnail(job: &Job) -> HandlerOutcome {
 
 // --8<-- [start:reliable]
 /// The entry waits on a processing list while the handler runs: an ack removes it, a retry puts
-/// it back on `renders` for the next pop.
+/// it back onto `renders`, behind the jobs waiting there.
 #[subscriber(RedisList::new("renders").reliable())]
 async fn render(job: &Job, State(farm): State<RenderFarm>) -> HandlerOutcome {
     match farm.render(job).await {

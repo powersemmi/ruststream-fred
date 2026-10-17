@@ -73,7 +73,7 @@ fn thumbnails() -> RedisList {
 
 // --8<-- [start:reliable]
 /// The entry waits on a processing list while the handler runs: an ack removes it, a retry puts
-/// it back on `renders` for the next pop.
+/// it back onto `renders`, behind the jobs waiting there.
 struct Render;
 
 impl Handle<Job, (), (), (), AppState> for Render {
