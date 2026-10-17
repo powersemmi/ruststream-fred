@@ -29,7 +29,7 @@ export function broadcast(words: Words): {boxes: Box[]; links: Link[]} {
     box('subA', 0, 164, 112, 44, {kind: 'core'}),
     box('subB', 124, 164, 112, 44, {kind: 'core'}),
     box('late', 248, 164, 112, 58, {kind: 'bad'}),
-    box('buffer', 0, 248, 112, 44, {kind: 'broker'}),
+    box('buffer', 0, 248, 112, 44, {kind: 'broker', href: '/components/pubsub/buffer/'}),
     box('handler', 0, 324, 112, 30, {kind: 'service'}),
     box('overflow', 124, 248, 236, 44, {kind: 'note'}),
   ];

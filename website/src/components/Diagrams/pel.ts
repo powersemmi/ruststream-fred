@@ -70,7 +70,7 @@ export function pel(words: Words): {boxes: Box[]; links: Link[]} {
     box('list', 184, 124, 164, 58),
     box('reader', 12, 250, 104, 44, {kind: 'service'}),
     box('acker', 128, 250, 104, 44, {kind: 'service'}),
-    box('claimer', 244, 250, 104, 44, {kind: 'service'}),
+    box('claimer', 244, 250, 104, 44, {kind: 'service', href: '/components/streams/claiming/'}),
     box('seek', 0, 312, 360, 30, {kind: 'note'}),
   ];
   const links: Link[] = [

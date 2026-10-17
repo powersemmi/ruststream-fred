@@ -10,9 +10,9 @@ export function path(words: Words): {boxes: Box[]; links: Link[]} {
     {key: 'entry', kind: 'broker'},
     {key: 'dispatch', kind: 'core'},
     {key: 'decode'},
-    {key: 'body', kind: 'service'},
+    {key: 'body', kind: 'service', href: '/components/subscriptions/'},
     {key: 'reply', kind: 'broker'},
     {key: 'settle', kind: 'core', href: '/architecture/settlement/'},
-    {key: 'ack', kind: 'broker'},
+    {key: 'ack', kind: 'broker', href: '/components/acknowledgement/'},
   ]);
 }

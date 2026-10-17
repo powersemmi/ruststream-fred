@@ -42,6 +42,7 @@ export function queue(words: Words): {boxes: Box[]; links: Link[]} {
       h: 44,
       kind: 'core',
       lines: lines(words, 'recovery'),
+      href: '/components/lists/recovery/',
     },
     main('handler', 260, {kind: 'service'}),
     outcome('ack', 0, 'good'),

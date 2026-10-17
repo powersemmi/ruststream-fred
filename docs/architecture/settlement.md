@@ -58,9 +58,9 @@ list and Pub/Sub.
 
 <Diagram name="settlement" words={table} />
 
-The runtime settles each delivery with the outcome its handler returned, and the crate maps the
-outcome onto the form's own acknowledgement. A stream acknowledges with `XACK` in the
-subscription's group. A reliable list removes the entry from its processing list with `LREM`. A
+The runtime settles each delivery with the [outcome](../components/acknowledgement/index.md) its
+handler returned, and the crate maps the outcome onto the form's own acknowledgement. A stream
+acknowledges with `XACK` in the subscription's group. A reliable list removes the entry from its processing list with `LREM`. A
 simple list and Pub/Sub have nothing to acknowledge, and settling there answers
 `AckError::Unsupported`. The settle commands go out on the pool, not on the subscription's read
 client.
@@ -84,10 +84,10 @@ stream when the delay is up. The copy's retry count is one higher. A crash befor
 loses it.
 
 [`delayed_retry`](api:ruststream_fred::stream::RedisStream::delayed_retry) with
-[`DelayedRetry::DurableZset`](api:ruststream_fred::DelayedRetry::DurableZset) keeps the copy in
-Redis. The copy is added to a sorted set, scored by its due time, and then the original is
-acknowledged. Each read first moves the copies that are due back onto the stream with `XADD`, at
-most 128 per read, so a delay is honoured to within one `block` interval. The scores are
+[`DelayedRetry::DurableZset`](api:ruststream_fred::DelayedRetry::DurableZset)
+[keeps the copy in Redis](../components/acknowledgement/delayed-retry.md). The copy is added to a
+sorted set, scored by its due time, and then the original is acknowledged. Each read first moves
+the copies that are due back onto the stream with `XADD`, at most 128 per read, so a delay is honoured to within one `block` interval. The scores are
 wall-clock milliseconds, so the clocks of the services that share a queue should agree.
 
 A claiming subscription leaves the entry pending, and its next read claims it back once

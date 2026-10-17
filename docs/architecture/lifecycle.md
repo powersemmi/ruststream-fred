@@ -49,8 +49,9 @@ When a subscription is dropped, its client sends `CLIENT UNBLOCK` on `fred`'s si
 which ends a read still blocked on the server, and then `QUIT`. A blocked pop left running would
 take the next entry for a subscription nobody reads.
 
-Shutdown marks the connection closed, waits until every read client has closed, and sends `QUIT`
-to the pool. [`ClosedRedisBroker`](api:ruststream_fred::ClosedRedisBroker) reports how many pool
-connections it closed. A publisher, a seeker or a delivery that outlives the connection checks the
+[Shutdown](../components/broker/shutdown.md) marks the connection closed, waits until every read
+client has closed, and sends `QUIT` to the pool.
+[`ClosedRedisBroker`](api:ruststream_fred::ClosedRedisBroker) reports how many pool connections
+it closed. A publisher, a seeker or a delivery that outlives the connection checks the
 mark before it sends, and answers
 [`RedisError::ShutDown`](api:ruststream_fred::RedisError::ShutDown) at once.

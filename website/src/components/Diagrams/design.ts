@@ -30,12 +30,16 @@ export function design(words: Words): {boxes: Box[]; links: Link[]} {
     box('crate', 0, 200, 360, 214, {kind: 'group'}),
     box('subscribers', left, 226, column, 58, {kind: 'broker'}),
     box('publishers', right, 226, column, 58, {kind: 'broker'}),
-    box('descriptors', left, 294, column, 58, {kind: 'broker', code: true}),
+    box('descriptors', left, 294, column, 58, {
+      kind: 'broker',
+      code: true,
+      href: '/components/subscriptions/',
+    }),
     box('window', right, 294, column, 58, {kind: 'broker', href: '/architecture/window/'}),
-    box('broker', left, 362, 304, 40, {kind: 'broker', code: true}),
+    box('broker', left, 362, 304, 40, {kind: 'broker', code: true, href: '/components/broker/'}),
     box('client', 0, 438, 360, 72, {kind: 'group'}),
     box('reader', left, 464, column, 36, {kind: 'broker', href: '/architecture/lifecycle/'}),
-    box('pool', right, 464, column, 36, {kind: 'broker'}),
+    box('pool', right, 464, column, 36, {kind: 'broker', href: '/components/broker/pool/'}),
     box('redis', 12, 534, 336, 36, {kind: 'broker'}),
   ];
   const links: Link[] = [

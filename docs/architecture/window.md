@@ -21,8 +21,8 @@ export const words = {
 
 # Window
 
-A pipelined subscription settles in a window: the deliveries of a read queue their side effects,
-and one flush sends them with the settles.
+A [pipelined](../components/pipelining/index.md) subscription settles in a window: the
+deliveries of a read queue their side effects, and one flush sends them with the settles.
 
 <Diagram name="window" words={words} />
 
