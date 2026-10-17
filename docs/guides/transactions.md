@@ -55,7 +55,8 @@ An `Err` publishes nothing and settles the whole batch with its outcome.
 
 `.out_reply(TransactionalPublish).transactional()` asks for the [borrowed kind](../components/transactions/index.md).
 The runtime opens a transaction on the reply publisher, publishes the batch's replies into it and commits.
-`TransactionalPublish` is another name of the stream publish policy, [`RedisPublish`](api:ruststream_fred::RedisPublish), which sends with `XADD`.
+`TransactionalPublish` is [`RedisTransactionalPublish`](api:ruststream_fred::RedisTransactionalPublish) under the stream prelude's name.
+It sends with `XADD`, like `Publish`, and runs only where transactions run.
 
 The size of the batch is the `COUNT` of the read that fetches it, so one transaction holds at most 32 confirmations here.
 
@@ -98,7 +99,7 @@ The handler returns `retry`, and the delivery comes again and builds a new trans
 ## Where transactions run
 
 Transactions run on a standalone server and on a sentinel deployment.
-A `MULTI` block cannot span hash slots, so on a [cluster](cluster.md) opening either kind returns an error.
+A `MULTI` block cannot span hash slots, so on a [cluster](cluster.md) a service that mounts `TransactionalPublish` does not start.
 The list and Pub/Sub publishers have no transactions.
 
 A transaction covers publishes.
@@ -108,3 +109,4 @@ On the consuming side, [`.pipeline().atomic()`](pipelining.md#atomic-segments) p
 
 The tests in the example files run in process, where the [in-process Redis](../components/testing/index.md) runs `MULTI` and `EXEC`.
 They check that a batch's confirmations and a parcel's shipments arrive together, and that a dropped batch and an aborted parcel publish nothing.
+One more test starts the same service with a cluster broker and checks that it does not start.

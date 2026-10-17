@@ -131,26 +131,27 @@ where
 // --8<-- [end:ship]
 
 // --8<-- [start:app]
+fn service(broker: RedisBroker) -> impl App {
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+        let confirm = subscriber(RedisStream::new("orders").group("confirmations"), Confirm);
+        b.include(confirm.batch(nonzero!(32)).reply().build())
+            .out_reply(TransactionalPublish)
+            .transactional();
+        let ship = subscriber(RedisStream::new("packed").group("shipping"), Ship);
+        b.include(ship.build())
+            .out(Shipments, TransactionalPublish)
+            .build();
+    })
+}
+// --8<-- [end:app]
+
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        RedisBroker::standalone("redis://localhost:6379"),
-        |b| {
-            let confirm = subscriber(RedisStream::new("orders").group("confirmations"), Confirm);
-            b.include(confirm.batch(nonzero!(32)).reply().build())
-                .out_reply(TransactionalPublish)
-                .transactional();
-            let ship = subscriber(RedisStream::new("packed").group("shipping"), Ship);
-            b.include(ship.build())
-                .out(Shipments, TransactionalPublish)
-                .build();
-        },
-    )
+    service(RedisBroker::standalone("redis://localhost:6379"))
 }
 
 fn main() -> ExitCode {
     run_main(app)
 }
-// --8<-- [end:app]
 
 #[cfg(test)]
 mod tests {
@@ -160,7 +161,7 @@ mod tests {
     use ruststream::testing::TestApp;
     use ruststream_fred::stream::prelude::*;
 
-    use super::{Confirmation, Order, Parcel, Shipment, app};
+    use super::{Confirmation, Order, Parcel, Shipment, app, service};
 
     fn items(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| (*item).to_owned()).collect()
@@ -263,5 +264,17 @@ mod tests {
             .assert_not_called();
         tb.shutdown().await?;
         Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cluster_refuses_the_service_at_startup() {
+        let cluster = RedisBroker::cluster(["redis://localhost:7000"]);
+        let Err(refused) = TestApp::start(service(cluster)).await else {
+            panic!("a cluster started a service that publishes in MULTI / EXEC blocks");
+        };
+        assert!(
+            format!("{refused}").contains("only supported on standalone and sentinel"),
+            "{refused}",
+        );
     }
 }

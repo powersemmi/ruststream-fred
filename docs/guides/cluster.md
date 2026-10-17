@@ -91,7 +91,7 @@ An [atomic window](pipelining.md#atomic-segments) puts the handler's commands an
 A command for a key on another slot makes Redis refuse the whole block: nothing is written and the entry stays pending.
 
 A [transaction](transactions.md) of the stream publisher is a `MULTI` block too, and its destinations are not tied to one slot.
-So a cluster refuses both kinds: opening one returns an error.
+So a service that mounts `TransactionalPublish` does not start on a cluster.
 
 ## Sharded Pub/Sub
 

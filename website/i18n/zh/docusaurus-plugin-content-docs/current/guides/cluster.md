@@ -91,7 +91,7 @@ import TabItem from '@theme/TabItem';
 如果一条命令针对的键位于另一个槽，Redis 会拒绝整个块：什么也不写入，条目保持待处理。
 
 流发布者的[事务](transactions.md)也是一个 `MULTI` 块，而它的去向并不限定在一个槽上。
-因此，集群拒绝这两种事务：打开任何一种都会返回错误。
+因此，挂载了 `TransactionalPublish` 的服务无法在集群上启动。
 
 ## 分片 Pub/Sub {/* #sharded-pubsub */}
 

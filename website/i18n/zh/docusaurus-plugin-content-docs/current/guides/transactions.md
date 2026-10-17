@@ -55,7 +55,8 @@ import TabItem from '@theme/TabItem';
 
 `.out_reply(TransactionalPublish).transactional()` 要求使用[借用形式](../components/transactions/index.md)。
 运行时在回复发布者上打开一个事务，把这批的回复发布进去，然后提交。
-`TransactionalPublish` 是流发布策略 [`RedisPublish`](api:ruststream_fred::RedisPublish) 的另一个名字，它用 `XADD` 发送。
+`TransactionalPublish` 是 [`RedisTransactionalPublish`](api:ruststream_fred::RedisTransactionalPublish) 在流 prelude 中的名字。
+它和 `Publish` 一样用 `XADD` 发送，但只在支持事务的部署上运行。
 
 一批的大小就是拉取它的那次读取的 `COUNT`，所以这里一个事务最多包含 32 条确认。
 
@@ -98,7 +99,7 @@ Redis 把一个块中的命令排队，然后一起执行；它不会撤销这�
 ## 事务在哪里运行 {/* #where-transactions-run */}
 
 事务在单机服务器和 Sentinel 部署上运行。
-`MULTI` 块不能跨越哈希槽，所以在[集群](cluster.md)上打开任何一种事务都会返回错误。
+`MULTI` 块不能跨越哈希槽，所以在[集群](cluster.md)上，挂载了 `TransactionalPublish` 的服务无法启动。
 列表和 Pub/Sub 的发布者没有事务。
 
 事务覆盖的是发布。
@@ -108,3 +109,4 @@ Redis 把一个块中的命令排队，然后一起执行；它不会撤销这�
 
 示例文件中的测试在进程内运行，[进程内 Redis](../components/testing/index.md) 会执行 `MULTI` 和 `EXEC`。
 它们检查一批的确认和一个包裹的各次发货是一起到达的，并检查被丢弃的一批和被中止的包裹不发布任何内容。
+另一个测试用集群 broker 启动同一个服务，并检查它无法启动。
