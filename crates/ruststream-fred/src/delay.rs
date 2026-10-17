@@ -71,7 +71,7 @@ const SWEEP_BATCH: i64 = 128;
 ///     if !order.paid {
 ///         return HandlerOutcome::retry_after(Duration::from_secs(60));
 ///     }
-///     println!("shipping order {}", order.id);
+///     tracing::info!(order.id, "shipping");
 ///     HandlerOutcome::ack()
 /// }
 ///

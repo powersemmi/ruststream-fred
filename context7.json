@@ -1,16 +1,32 @@
 {
+  "$schema": "https://context7.com/schema/context7.json",
+  "folders": [
+    "docs",
+    "crates/ruststream-fred/src",
+    "crates/ruststream-fred/examples",
+    "website/static"
+  ],
+  "excludeFolders": [
+    "docs/benchmarks",
+    "website/i18n",
+    "website/build",
+    "website/.docusaurus",
+    "website/node_modules",
+    "target"
+  ],
   "rules": [
-    "Import one form's prelude in a routes file (`ruststream_fred::stream::prelude::*`, `::list::prelude::*` or `::pubsub::prelude::*`), `ruststream_fred::prelude::*` only where a file mixes forms, and `ruststream::prelude::*` in a handler file.",
-    "Name the subscription descriptor inside `#[subscriber(..)]`: `RedisStream` for a consumer group, `RedisList` for a work queue, `RedisPubSub` for a channel and `RedisPubSubPattern` for a glob; the bare `#[subscriber(\"key\")]` form opens a stream group and needs `RedisBroker::default_group`.",
-    "Pick the stream read mode by constructor, `RedisStream::new` for the fresh tail, `RedisStream::claiming` on Redis 8.4 and later for pending entries and tail in one read, `RedisStream::reclaim` for recovery beside a tail reader, and set `min_idle` above the longest handler runtime.",
-    "Chain this crate's `.block(d)` after the framework's `.batch(n)` at the mount site; every other read setting belongs on the descriptor, and there is no publisher-side twin.",
-    "Name the publish policy at the mount site (`.out_reply(Publish)`, `.out(marker, Publish).build()`, `.out_retry(Publish)`) and let the runtime pair it with the connected broker; `RedisPublish` is a unit value while `RedisPubSubPublish` and `RedisListPublish` are built with `::new()` or `::default()`.",
-    "Set a partition key with the `.partition_key(k)` step on the publish builder, never by wrapping the publisher, and bound a handler that uses it as `Out<impl Publisher<Options = RedisPublishOptions>, Marker>`.",
-    "Cap redeliveries with `.max_attempts(n).dead_letter(name)` after `include`: Redis moves nothing itself, so the runtime applies both, and a `RedisPubSubPattern` registration must also say where a copy goes with `.out_retry(policy).to(name)` or it does not start.",
-    "Serve `HandlerOutcome::retry_after` with the runtime's own copy by default, with `RedisStream::delayed_retry(DelayedRetry::DurableZset { .. })` when the delay must survive a restart, or with the claiming mode when rounding the delay up to `min_idle` is acceptable.",
-    "Open a transaction only on a stream publisher on standalone or sentinel: `begin_transaction` claims the handle's buffer and `publisher.transaction()` hands back one that owns its own, while a cluster rejects both because `MULTI` cannot span hash slots.",
-    "Open a consumer window at the mount site with `b.include(handler.pipeline())` (add `.atomic()` for one `MULTI` / `EXEC` per delivery) while the attribute names the plain descriptor, on a stream, list, channel or pattern alike; queue a handler's Redis commands through `Ctx<keys::Pipeline>`, bind a slot with `pipeline.bind(out)`, put the reply in the round with `.out_reply(Publish).transform(InRound)`, and take `Ctx<keys::FredPool>` for a command whose answer the handler needs now.",
-    "Give a reliable list's queue and processing keys one hash slot on a cluster by writing the key under a hash tag, `RedisList::new(\"{jobs}\")`, which the default processing key follows: a claim moves the entry between the two in one command, and a subscription whose keys land on different slots does not start.",
-    "Test by handing `ruststream::testing::TestApp::start` the service's own app on `RedisBroker` and addressing it as `tb.broker::<RedisBroker>()`; run the same body against a server with `TestApp::start_live`, and keep scripts, failover and authentication in the live suites."
+    "Import one form's prelude at a mount site (`ruststream_fred::stream::prelude::*`, `list::prelude` or `pubsub::prelude`), `ruststream_fred::prelude::*` where a file mixes forms, and `ruststream::prelude::*` in a handler file.",
+    "Name the descriptor in `#[subscriber(..)]`: `RedisStream` for a consumer group, `RedisList` for a work queue, `RedisPubSub` for a channel, `RedisPubSubPattern` for a glob; a bare `#[subscriber(\"key\")]` needs `RedisBroker::default_group`.",
+    "Pick the stream read mode by constructor: `RedisStream::claiming` on Redis 8.4 and later, else `RedisStream::new` with a `RedisStream::reclaim` subscription beside it on the same group; set `min_idle` above the longest handler runtime.",
+    "Chain this crate's `.block(d)` after the framework's `.batch(n)` at the mount site; every other read setting belongs on the descriptor, and every publish setting on the policy.",
+    "Name the publish policy at the mount site (`.out_reply(Publish)`, `.out(marker, Publish).build()`, `.out_retry(Publish)`); `RedisPublish` is a unit value, `RedisPubSubPublish` and `RedisListPublish` are built with `::new()` or `::default()`.",
+    "Key a message with the `.partition_key(k)` step on the publish builder, bounding the slot `Out<impl Publisher<Options = RedisPublishOptions>, Marker>`; `workers(n, by_key)` keeps the order of a key on the consuming side.",
+    "Cap redeliveries with `.max_attempts(n).dead_letter(name)` after `include`; a `RedisPubSubPattern` registration also names where a retry copy goes with `.out_retry(policy).to(name)`, or it does not start.",
+    "Serve `retry_after` with the runtime's copy by default, with `RedisStream::delayed_retry(DelayedRetry::DurableZset { .. })` when the delay must survive a restart, or with `claiming` when rounding up to `min_idle` is acceptable.",
+    "Use transactions on a stream publisher on standalone or sentinel: `.out_reply(TransactionalPublish).transactional()` for a batch's replies, `publisher.transaction()` for a buffer of its own; a cluster refuses both at startup.",
+    "Open a consumer window with `b.include(handler.pipeline())`, `.atomic()` for one `MULTI` / `EXEC` per delivery; queue Redis commands through `Ctx<keys::Pipeline>`, and take `Ctx<keys::FredPool>` for an answer needed now.",
+    "Put a pipelined handler's publishes in its round: the reply with `.out_reply(Publish).transform(InRound)`, a slot bounded `Out<impl Bindable>` with `pipeline.bind(out)`.",
+    "On a cluster write a reliable list's key under a hash tag, `RedisList::new(\"{jobs}\")`, so the default processing list shares its slot; a subscription whose two keys land on different slots does not start.",
+    "Test by handing `ruststream::testing::TestApp::start` the service's own app and addressing `tb.broker::<RedisBroker>()`; run the same body against a server with `TestApp::start_live` for scripts, failover, authentication and TLS."
   ]
 }

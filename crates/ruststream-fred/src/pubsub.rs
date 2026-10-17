@@ -1,22 +1,20 @@
-//! Redis Pub/Sub transport: fire-and-forget fan-out with no acknowledgement.
+//! Redis Pub/Sub: delivery to the subscribers connected when a message is published.
 //!
-//! Unlike Streams, Pub/Sub has no durability, no consumer groups, and no ack: a message reaches
-//! whichever subscribers are connected at publish time, and `ack` / `nack` report
-//! [`AckError::Unsupported`]. Two delivery modes exist, explicit because they do not interoperate:
+//! - [PubSub][pubsub]: [`RedisPubSub`], one channel.
+//! - [RedisPubSubPattern][pattern]: [`RedisPubSubPattern`], every channel a glob matches.
+//! - [PubSubMode][mode]: [`PubSubMode`], classic or sharded delivery.
+//! - [buffer][buffer]: [`RedisPubSub::buffer`], what a busy subscription holds.
+//! - [Framing][framing]: [`RedisPubSub::codec`], the frame the headers travel in.
+//! - [RedisPubSubPublish][publish]: [`Publish`], `PUBLISH` or `SPUBLISH`.
+//! - [Prelude][prelude]: [`prelude`], everything a Pub/Sub service imports.
 //!
-//! * [`PubSubMode::Classic`] - `SUBSCRIBE` / `PUBLISH`, broadcast to every node; supports patterns
-//!   (`PSUBSCRIBE`). The only option on standalone and sentinel.
-//! * [`PubSubMode::Sharded`] - `SSUBSCRIBE` / `SPUBLISH` (Redis 7+), slot-local so it scales across
-//!   a cluster, but has no pattern support.
-//!
-//! A channel and a pattern are two descriptors, [`RedisPubSub`] and [`RedisPubSubPattern`],
-//! because they differ in more than a flag: a pattern reads many channels and names none, so
-//! sharded delivery has no meaning there and neither does a destination a retry copy could go to.
-//!
-//! Headers travel in a frame around the payload: a binary frame by default, or a readable
-//! codec-serialized envelope when a codec is set with [`RedisPubSub::codec`] /
-//! [`RedisPubSubPublish::codec`]. Both framings are lossless; the envelope writes a field whose
-//! bytes are valid UTF-8 as text and any other bytes as themselves.
+//! [pubsub]: https://powersemmi.github.io/ruststream-fred/latest/components/pubsub/
+//! [pattern]: https://powersemmi.github.io/ruststream-fred/latest/components/pubsub/pattern/
+//! [mode]: https://powersemmi.github.io/ruststream-fred/latest/components/pubsub/pubsub-mode/
+//! [buffer]: https://powersemmi.github.io/ruststream-fred/latest/components/pubsub/buffer/
+//! [framing]: https://powersemmi.github.io/ruststream-fred/latest/components/subscriptions/framing/
+//! [publish]: https://powersemmi.github.io/ruststream-fred/latest/components/publishing/pubsub-publish/
+//! [prelude]: https://powersemmi.github.io/ruststream-fred/latest/components/broker/prelude/
 
 use std::fmt::{Debug, Formatter};
 use std::future::{Future, ready};
@@ -26,12 +24,14 @@ use std::sync::Arc;
 use bytes::Bytes;
 use fred::clients::{Client, Pool};
 use fred::interfaces::{ClientLike, PubsubInterface};
+use fred::types::config::Server;
 use fred::types::{Message, MessageKind};
 use futures::Stream;
 use futures::stream::unfold;
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::Bindings;
 use ruststream::codec::Codec;
+use ruststream::runtime::IntoSource;
 use ruststream::{
     AckError, AddressedCopies, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage,
     Lend, NamedCopies, OutgoingMessage, PairError, Partitioned, PublishPolicy, Publisher,
@@ -40,6 +40,7 @@ use ruststream::{
 use tokio::runtime::Handle;
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
+use tokio::task::JoinHandle;
 use tracing::warn;
 
 use crate::broker::{ConnectedRedisBroker, RedisCore};
@@ -104,6 +105,10 @@ pub use crate::pubsub::RedisPubSubPublish as Publish;
 /// injected slot with the broker capability trait it needs (`Out<impl Publisher>`); a routes file
 /// globs this prelude and names the policy by its mount-site word, the same word on every form.
 ///
+/// The
+/// [Prelude](https://powersemmi.github.io/ruststream-fred/latest/components/broker/prelude/)
+/// page shows each form's prelude in a service.
+///
 /// A file that also globs another form's prelude sees an ambiguous `Publish`; use
 /// [`crate::prelude`] and write `pubsub::Publish` there.
 pub mod prelude {
@@ -164,14 +169,14 @@ impl PubSubMode {
 /// // Classic: `SUBSCRIBE`, broadcast to every node of a cluster.
 /// #[subscriber(RedisPubSub::new("events"))]
 /// async fn on_event(event: &Event) -> HandlerOutcome {
-///     println!("event: {}", event.kind);
+///     tracing::info!(event.kind, "event");
 ///     HandlerOutcome::ack()
 /// }
 ///
 /// // Sharded: `SSUBSCRIBE`, served by the node that owns the channel's slot.
 /// #[subscriber(RedisPubSub::new("metrics").mode(PubSubMode::Sharded))]
 /// async fn on_metric(event: &Event) -> HandlerOutcome {
-///     println!("metric: {}", event.kind);
+///     tracing::info!(event.kind, "metric");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -263,7 +268,7 @@ impl RedisPubSub {
     /// // A handler that falls behind a burst of up to ten thousand events loses none of them.
     /// #[subscriber(RedisPubSub::new("events").buffer(nonzero!(10_000)))]
     /// async fn on_event(event: &Event) -> HandlerOutcome {
-    ///     println!("event {}", event.kind);
+    ///     tracing::info!(event.kind, "event");
     ///     HandlerOutcome::ack()
     /// }
     /// #
@@ -358,7 +363,7 @@ impl RedisPubSub {
 ///
 /// #[subscriber(RedisPubSubPattern::new("events.*"))]
 /// async fn on_any_event(event: &Event, Ctx(channel): Ctx<keys::Channel>) -> HandlerOutcome {
-///     println!("{} on {channel}", event.kind);
+///     tracing::info!(event.kind, channel, "event");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -447,7 +452,7 @@ impl RedisPubSubPattern {
     /// // A handler that falls behind a burst of up to ten thousand events loses none of them.
     /// #[subscriber(RedisPubSubPattern::new("events.*").buffer(nonzero!(10_000)))]
     /// async fn on_event(event: &Event) -> HandlerOutcome {
-    ///     println!("event {}", event.kind);
+    ///     tracing::info!(event.kind, "event");
     ///     HandlerOutcome::ack()
     /// }
     /// #
@@ -491,6 +496,16 @@ impl RedisPubSubPattern {
     }
 }
 
+// The manual path binds a `Handle` body to its source with `subscriber(source, body)`, which
+// takes the descriptor as it is, the way the `#[subscriber(..)]` attribute does.
+impl IntoSource for RedisPubSub {
+    type Source = Self;
+
+    fn into_source(self) -> Self {
+        self
+    }
+}
+
 impl SubscriptionSource<ConnectedRedisBroker> for RedisPubSub {
     type Subscriber = RedisPubSubSubscriber;
     /// Pub/Sub cannot acknowledge, so every retry is a copy this process publishes, and the
@@ -529,6 +544,16 @@ impl RedeliveryAddressed<ConnectedRedisBroker> for RedisPubSub {
         _connected: &ConnectedRedisBroker,
     ) -> impl Future<Output = Result<RedeliveryAddress, RedisError>> {
         ready(Ok(self.redelivery_channel()))
+    }
+}
+
+// The manual path binds a `Handle` body to its source with `subscriber(source, body)`, which
+// takes the descriptor as it is, the way the `#[subscriber(..)]` attribute does.
+impl IntoSource for RedisPubSubPattern {
+    type Source = Self;
+
+    fn into_source(self) -> Self {
+        self
     }
 }
 
@@ -611,11 +636,71 @@ impl BatchSubscriber for RedisPubSubSubscriber {
     }
 }
 
+/// What a Pub/Sub subscription's client subscribes to, kept so it can subscribe again.
+pub(crate) enum Resubscribe {
+    Channel(String),
+    ShardedChannel(String),
+    Pattern(String),
+}
+
+/// The dedicated client of a Pub/Sub subscription, and the task that subscribes it again each
+/// time it reconnects.
+///
+/// The server forgets a connection's subscriptions when the connection drops (a restart, a
+/// failover, a killed client), and `fred` reconnects the socket but does not repeat the
+/// `SUBSCRIBE`. Messages published between the drop and the new subscribe reach nobody, which is
+/// what Pub/Sub promises; every later one arrives. The task costs one spawn per subscription and
+/// nothing per message.
+pub(crate) struct Resubscribing {
+    client: Client,
+    resubscribing: JoinHandle<()>,
+}
+
+impl Resubscribing {
+    /// Starts the task on `runtime`. `reconnects` is taken from `client` before its first
+    /// subscribe, so a reconnect that lands in between is not missed.
+    pub(crate) fn new(
+        client: Client,
+        mut reconnects: Receiver<Server>,
+        target: Resubscribe,
+        runtime: &Handle,
+    ) -> Self {
+        let resubscriber = client.clone();
+        let resubscribing = runtime.spawn(async move {
+            loop {
+                match reconnects.recv().await {
+                    Ok(_) | Err(RecvError::Lagged(_)) => {}
+                    Err(RecvError::Closed) => return,
+                }
+                let (name, outcome) = match &target {
+                    Resubscribe::Channel(name) => (name, resubscriber.subscribe(name).await),
+                    Resubscribe::ShardedChannel(name) => {
+                        (name, resubscriber.ssubscribe(name).await)
+                    }
+                    Resubscribe::Pattern(name) => (name, resubscriber.psubscribe(name).await),
+                };
+                if let Err(error) = outcome {
+                    warn!(
+                        subscription = name.as_str(),
+                        %error,
+                        "a Redis Pub/Sub subscription reconnected but could not subscribe again; \
+                         it receives nothing until its connection drops and reconnects"
+                    );
+                }
+            }
+        });
+        Self {
+            client,
+            resubscribing,
+        }
+    }
+}
+
 /// The wire side of a Pub/Sub subscription: the dedicated client and the channel it feeds.
 pub(crate) struct PubSubWire {
     /// The channel or the glob it reads, for the warning a lost message raises.
     name: String,
-    client: Client,
+    client: Resubscribing,
     rx: Receiver<Message>,
     codec: Option<SharedEnvelope>,
     /// The broker's pool, handed to every delivery for `Ctx<keys::FredPool>`.
@@ -635,7 +720,7 @@ impl Debug for PubSubWire {
 impl PubSubWire {
     pub(crate) fn new(
         name: String,
-        client: Client,
+        client: Resubscribing,
         rx: Receiver<Message>,
         codec: Option<SharedEnvelope>,
         pool: Pool,
@@ -778,7 +863,8 @@ impl Drop for PubSubWire {
         }
         // The dedicated client owns a background connection task; close it on a detached task since
         // `drop` cannot await, on the broker's runtime, which is there wherever the drop happens.
-        let client = self.client.clone();
+        self.client.resubscribing.abort();
+        let client = self.client.client.clone();
         self.runtime.spawn(async move {
             let _ = client.quit().await;
         });

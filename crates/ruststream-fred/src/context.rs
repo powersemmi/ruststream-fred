@@ -1,79 +1,30 @@
-//! Typed per-delivery context exposing native Redis metadata, one struct per transport, plus the
-//! subscription-scoped batch context the batch forms read.
+//! Per-delivery and per-batch context fields exposed to handlers.
 //!
-//! A handler reads native Redis metadata for the message it is processing by compile-time
-//! [`Field`] key, with no hashing, boxing, or downcasting. The runtime builds the context value
-//! once per delivery (via [`BuildContext`]) from the concrete broker message; the handler reads a
-//! field with `ctx.context(key)`, or binds one as a parameter with the core `Ctx<K>` extractor.
+//! A handler types its context parameter as `Context<'_, StreamContext>`, or binds one field as a
+//! parameter with the core's `Ctx<K>` extractor and a key from [`keys`].
 //!
-//! A batch handler gets one context per batch instead ([`BuildBatchContext`]), carrying only what
-//! the whole *subscription* shares. Per-delivery data has no place there, since a batch spans many
-//! deliveries: an entry id or a position rides the batch's own elements.
+//! - [StreamContext][context]: [`StreamContext`], a stream delivery's entry id, position,
+//!   consumer group and seek handle, under [`keys::EntryId`], [`keys::Position`],
+//!   [`keys::ConsumerGroup`] and [`keys::SeekHandle`].
+//! - [ConsumerGroup][group]: [`keys::ConsumerGroup`], the group a stream subscription reads
+//!   through.
+//! - [StreamBatchContext][batch]: [`StreamBatchContext`], a stream batch handler's context.
+//! - [PubSubContext][pubsub]: [`PubSubContext`], the channel a message arrived on, under
+//!   [`keys::Channel`] and [`keys::FromPattern`].
+//! - [FredPool][pool]: [`keys::FredPool`] and [`PoolContext`], the connection pool on every form.
+//! - [Commands][pipeline]: [`keys::Pipeline`] and [`PipelineContext`], the round of a
+//!   `.pipeline()` subscription.
+//! - [Counts][counts]: the delivery count and idle time of the claiming modes ride the
+//!   [`DELIVERY_COUNT_HEADER`](crate::DELIVERY_COUNT_HEADER) and
+//!   [`IDLE_MS_HEADER`](crate::IDLE_MS_HEADER) headers.
 //!
-//! This is purely additive. A handler that declares the default `()` context is unaffected: the
-//! blanket `impl BuildContext<M> for ()` still applies, so opting in costs nothing to those who do
-//! not.
-//!
-//! # What is exposed
-//!
-//! Only genuinely-native metadata that is not already reachable off the payload or
-//! [`HeaderMap`](ruststream::HeaderMap) is surfaced here:
-//!
-//! * [`StreamContext`] (Redis Streams) - the entry id this delivery was read at, the position that
-//!   redelivers it, the consumer group, and the group's reposition handle. The native reclaim
-//!   delivery-count and idle time stay header-surfaced
-//!   ([`DELIVERY_COUNT_HEADER`](crate::DELIVERY_COUNT_HEADER) /
-//!   [`IDLE_MS_HEADER`](crate::IDLE_MS_HEADER)) and are deliberately not duplicated.
-//! * [`StreamBatchContext`] (Redis Streams, batch forms) - the consumer group and its reposition
-//!   handle, both subscription-scoped.
-//! * [`PubSubContext`] (Redis Pub/Sub) - the concrete channel the message arrived on and whether it
-//!   matched through a `PSUBSCRIBE` pattern (for a pattern subscription the channel differs from the
-//!   registered glob).
-//!
-//! * [`PoolContext`] (every form) - the broker's connection pool alone, which
-//!   [`keys::FredPool`] reads. The key also reads [`StreamContext`], [`StreamBatchContext`] and
-//!   [`PubSubContext`], so a handler takes the pool beside a form's own keys; `Ctx<keys::FredPool>`
-//!   goes after the form's key there, because the first `Ctx` key names the handler's context.
-//!
-//! Lists carry nothing native beyond their payload and headers, so a list handler reads the pool
-//! off [`PoolContext`] or stays on the `()` default.
-//!
-//! # Examples
-//!
-//! ```
-//! # mod demo {
-//! use ruststream_fred::stream::prelude::*;
-//! use serde::Deserialize;
-//!
-//! #[derive(Deserialize)]
-//! struct Order {
-//!     id: u64,
-//! }
-//!
-//! #[subscriber(RedisStream::new("orders").group("workers"))]
-//! async fn handle(order: &Order, ctx: &mut Context<'_, StreamContext>) -> HandlerOutcome {
-//!     // The entry id reads like `1700000000000-0`.
-//!     println!(
-//!         "order {} read at {} through {}",
-//!         order.id,
-//!         ctx.context(keys::EntryId),
-//!         ctx.context(keys::ConsumerGroup)
-//!     );
-//!     HandlerOutcome::ack()
-//! }
-//!
-//! #[ruststream::app]
-//! fn app() -> impl App {
-//!     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-//!         RedisBroker::standalone("redis://localhost:6379"),
-//!         |b| {
-//!             b.include(handle);
-//!         },
-//!     )
-//! }
-//! # }
-//! # fn main() {}
-//! ```
+//! [context]: https://powersemmi.github.io/ruststream-fred/latest/components/context/
+//! [group]: https://powersemmi.github.io/ruststream-fred/latest/components/context/consumer-group/
+//! [batch]: https://powersemmi.github.io/ruststream-fred/latest/components/context/batch-context/
+//! [pubsub]: https://powersemmi.github.io/ruststream-fred/latest/components/context/pubsub-context/
+//! [pool]: https://powersemmi.github.io/ruststream-fred/latest/components/context/fred-pool/
+//! [pipeline]: https://powersemmi.github.io/ruststream-fred/latest/components/pipelining/commands/
+//! [counts]: https://powersemmi.github.io/ruststream-fred/latest/components/acknowledgement/counts/
 
 use std::convert::Infallible;
 
@@ -111,7 +62,7 @@ use crate::seek::{EntryId, RedisGroupPosition, RedisGroupSeeker};
 ///     if order.id != 0 {
 ///         return HandlerOutcome::ack();
 ///     }
-///     println!("poison marker at {}", ctx.context(keys::EntryId));
+///     tracing::warn!(entry = %ctx.context(keys::EntryId), "poison marker");
 ///     match ctx.context(keys::SeekHandle).seek(RedisGroupPosition::end()).await {
 ///         Ok(()) => HandlerOutcome::ack(),
 ///         Err(_) => HandlerOutcome::retry(),
@@ -663,6 +614,43 @@ pub mod keys {
     }
 
     /// Reads the consumer group off a stream context, per delivery or per batch.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # mod demo {
+    /// use ruststream_fred::stream::prelude::*;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Order {
+    ///     id: u64,
+    /// }
+    ///
+    /// #[subscriber(RedisStream::new("orders").group("workers"))]
+    /// async fn handle(order: &Order, ctx: &mut Context<'_, StreamContext>) -> HandlerOutcome {
+    ///     // The entry id reads like `1700000000000-0`.
+    ///     tracing::info!(
+    ///         order.id,
+    ///         entry = %ctx.context(keys::EntryId),
+    ///         group = %ctx.context(keys::ConsumerGroup),
+    ///         "read"
+    ///     );
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+    ///         RedisBroker::standalone("redis://localhost:6379"),
+    ///         |b| {
+    ///             b.include(handle);
+    ///         },
+    ///     )
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
     pub struct ConsumerGroup;
 

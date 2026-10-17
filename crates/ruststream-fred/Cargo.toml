@@ -6,6 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 authors.workspace = true
 readme = "../../README.md"
 keywords = ["redis", "streams", "messaging", "broker", "ruststream"]
@@ -75,46 +76,783 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
-# The fred_* examples are the docs-site snippet sources; keep them runnable and snippet-checked here.
-[[example]]
-name = "fred_streams"
+# The examples are the sources of the site's code blocks; each group of pages keeps its own block.
+
+# --- examples: broker ---
 
 [[example]]
-name = "fred_reclaim"
+name = "redis_broker"
+required-features = ["testing"]
+test = true
 
 [[example]]
-name = "fred_claiming"
+name = "manual_redis_broker"
+path = "examples/manual/redis_broker.rs"
+required-features = ["testing"]
+test = true
 
 [[example]]
-name = "fred_seek"
+name = "redis_broker_cluster"
+required-features = ["testing"]
+test = true
 
 [[example]]
-name = "fred_dead_letter"
+name = "manual_redis_broker_cluster"
+path = "examples/manual/redis_broker_cluster.rs"
+required-features = ["testing"]
+test = true
 
 [[example]]
-name = "fred_delayed_retry"
+name = "redis_broker_sentinel"
+required-features = ["testing"]
+test = true
 
 [[example]]
-name = "fred_pubsub"
+name = "manual_redis_broker_sentinel"
+path = "examples/manual/redis_broker_sentinel.rs"
+required-features = ["testing"]
+test = true
 
 [[example]]
-name = "fred_list"
+name = "redis_broker_from_pool"
+required-features = ["testing"]
+test = true
 
 [[example]]
-name = "fred_list_dead_letter"
+name = "manual_redis_broker_from_pool"
+path = "examples/manual/redis_broker_from_pool.rs"
+required-features = ["testing"]
+test = true
 
 [[example]]
-name = "fred_auth"
+name = "redis_broker_pool"
+required-features = ["testing"]
+test = true
 
 [[example]]
-name = "fred_tls"
-required-features = ["tls-rustls"]
+name = "manual_redis_broker_pool"
+path = "examples/manual/redis_broker_pool.rs"
+required-features = ["testing"]
+test = true
 
 [[example]]
-name = "fred_transaction"
+name = "redis_broker_default_group"
+required-features = ["testing"]
+test = true
 
 [[example]]
-name = "fred_pipeline"
+name = "manual_redis_broker_default_group"
+path = "examples/manual/redis_broker_default_group.rs"
+required-features = ["testing"]
+test = true
 
 [[example]]
-name = "fred_testing"
+name = "redis_broker_auth"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_broker_auth"
+path = "examples/manual/redis_broker_auth.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_broker_tls"
+required-features = ["testing", "tls-rustls"]
+test = true
+
+[[example]]
+name = "manual_redis_broker_tls"
+path = "examples/manual/redis_broker_tls.rs"
+required-features = ["testing", "tls-rustls"]
+test = true
+
+[[example]]
+name = "redis_broker_sentinel_auth"
+required-features = ["testing", "sentinel-auth"]
+test = true
+
+[[example]]
+name = "manual_redis_broker_sentinel_auth"
+path = "examples/manual/redis_broker_sentinel_auth.rs"
+required-features = ["testing", "sentinel-auth"]
+test = true
+
+[[example]]
+name = "redis_broker_credential_provider"
+required-features = ["testing", "credential-provider"]
+test = true
+
+[[example]]
+name = "manual_redis_broker_credential_provider"
+path = "examples/manual/redis_broker_credential_provider.rs"
+required-features = ["testing", "credential-provider"]
+test = true
+
+[[example]]
+name = "redis_broker_shutdown"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_broker_shutdown"
+path = "examples/manual/redis_broker_shutdown.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_broker_errors"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_broker_errors"
+path = "examples/manual/redis_broker_errors.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_broker_prelude"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_broker_prelude"
+path = "examples/manual/redis_broker_prelude.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_asyncapi"
+required-features = ["asyncapi"]
+test = true
+
+[[example]]
+name = "manual_redis_asyncapi"
+path = "examples/manual/redis_asyncapi.rs"
+required-features = ["asyncapi"]
+test = true
+
+[[example]]
+name = "redis_testing"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_testing"
+path = "examples/manual/redis_testing.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_testing_live"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_testing_live"
+path = "examples/manual/redis_testing_live.rs"
+required-features = ["testing"]
+test = true
+
+# --- examples: streams ---
+
+[[example]]
+name = "redis_subscriptions_name"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_subscriptions_name"
+path = "examples/manual/redis_subscriptions_name.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_subscriptions_block"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_subscriptions_block"
+path = "examples/manual/redis_subscriptions_block.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_subscriptions_batches"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_subscriptions_batches"
+path = "examples/manual/redis_subscriptions_batches.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_subscriptions_framing"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_subscriptions_framing"
+path = "examples/manual/redis_subscriptions_framing.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_streams_new"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_streams_new"
+path = "examples/manual/redis_streams_new.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_streams_reclaim"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_streams_reclaim"
+path = "examples/manual/redis_streams_reclaim.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_streams_claiming"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_streams_claiming"
+path = "examples/manual/redis_streams_claiming.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_streams_start"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_streams_start"
+path = "examples/manual/redis_streams_start.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_positions_position"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_positions_position"
+path = "examples/manual/redis_positions_position.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_positions_start_at"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_positions_start_at"
+path = "examples/manual/redis_positions_start_at.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_positions_seek"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_positions_seek"
+path = "examples/manual/redis_positions_seek.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_positions_entry_id"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_positions_entry_id"
+path = "examples/manual/redis_positions_entry_id.rs"
+required-features = ["testing"]
+test = true
+
+# --- examples: lists ---
+
+[[example]]
+name = "redis_lists"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_lists"
+path = "examples/manual/redis_lists.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_lists_processing"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_lists_processing"
+path = "examples/manual/redis_lists_processing.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_pubsub"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_pubsub"
+path = "examples/manual/redis_pubsub.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_pubsub_sharded"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_pubsub_sharded"
+path = "examples/manual/redis_pubsub_sharded.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_acknowledgement"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_acknowledgement"
+path = "examples/manual/redis_acknowledgement.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_acknowledgement_retries"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_acknowledgement_retries"
+path = "examples/manual/redis_acknowledgement_retries.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_acknowledgement_dead_letter"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_acknowledgement_dead_letter"
+path = "examples/manual/redis_acknowledgement_dead_letter.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_acknowledgement_counts"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_acknowledgement_counts"
+path = "examples/manual/redis_acknowledgement_counts.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_acknowledgement_out_retry"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_acknowledgement_out_retry"
+path = "examples/manual/redis_acknowledgement_out_retry.rs"
+required-features = ["testing"]
+test = true
+
+# --- examples: pipelining ---
+
+[[example]]
+name = "redis_context_stream"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_context_stream"
+path = "examples/manual/redis_context_stream.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_context_consumer_group"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_context_consumer_group"
+path = "examples/manual/redis_context_consumer_group.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_context_batch"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_context_batch"
+path = "examples/manual/redis_context_batch.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_context_fred_pool"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_context_fred_pool"
+path = "examples/manual/redis_context_fred_pool.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_context_pubsub"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_context_pubsub"
+path = "examples/manual/redis_context_pubsub.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_pipelining"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_pipelining"
+path = "examples/manual/redis_pipelining.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_pipelining_atomic"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_pipelining_atomic"
+path = "examples/manual/redis_pipelining_atomic.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_pipelining_commands"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_pipelining_commands"
+path = "examples/manual/redis_pipelining_commands.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_pipelining_round"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_pipelining_round"
+path = "examples/manual/redis_pipelining_round.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_pipelining_flush"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_pipelining_flush"
+path = "examples/manual/redis_pipelining_flush.rs"
+required-features = ["testing"]
+test = true
+
+# --- examples: publishing ---
+
+[[example]]
+name = "redis_publishing"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_publishing"
+path = "examples/manual/redis_publishing.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_publishing_default"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_publishing_default"
+path = "examples/manual/redis_publishing_default.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_publishing_pubsub"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_publishing_pubsub"
+path = "examples/manual/redis_publishing_pubsub.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_publishing_list"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_publishing_list"
+path = "examples/manual/redis_publishing_list.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_publishing_partition_key"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_publishing_partition_key"
+path = "examples/manual/redis_publishing_partition_key.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_transactions"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_transactions"
+path = "examples/manual/redis_transactions.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_transactions_transaction"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_transactions_transaction"
+path = "examples/manual/redis_transactions_transaction.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_transactions_owned"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_transactions_owned"
+path = "examples/manual/redis_transactions_owned.rs"
+required-features = ["testing"]
+test = true
+
+# --- examples: guides ---
+
+# --- examples: guides-1 ---
+
+[[example]]
+name = "guide_getting_started"
+path = "examples/guide/getting_started.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_getting_started"
+path = "examples/manual/guide/getting_started.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "guide_choosing_a_transport"
+path = "examples/guide/choosing_a_transport.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_choosing_a_transport"
+path = "examples/manual/guide/choosing_a_transport.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "guide_consumer_groups"
+path = "examples/guide/consumer_groups.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_consumer_groups"
+path = "examples/manual/guide/consumer_groups.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "guide_work_queues"
+path = "examples/guide/work_queues.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_work_queues"
+path = "examples/manual/guide/work_queues.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "guide_retries"
+path = "examples/guide/retries.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_retries"
+path = "examples/manual/guide/retries.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "guide_fan_out"
+path = "examples/guide/fan_out.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_fan_out"
+path = "examples/manual/guide/fan_out.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "guide_testing"
+path = "examples/guide/testing.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_testing"
+path = "examples/manual/guide/testing.rs"
+required-features = ["testing"]
+test = true
+
+# --- examples: guides-2 ---
+
+[[example]]
+name = "guide_pipelining"
+path = "examples/guide/pipelining.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_pipelining"
+path = "examples/manual/guide/pipelining.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "guide_transactions"
+path = "examples/guide/transactions.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_transactions"
+path = "examples/manual/guide/transactions.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "guide_replay"
+path = "examples/guide/replay.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_replay"
+path = "examples/manual/guide/replay.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "guide_cluster"
+path = "examples/guide/cluster.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_cluster"
+path = "examples/manual/guide/cluster.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "guide_production"
+path = "examples/guide/production.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_production"
+path = "examples/manual/guide/production.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "guide_interop"
+path = "examples/guide/interop.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_interop"
+path = "examples/manual/guide/interop.rs"
+required-features = ["testing"]
+test = true
+
+# --- examples: end ---

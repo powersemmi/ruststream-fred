@@ -109,9 +109,9 @@ zh = "编解码器"
 
 [[term]]
 en = "back-pressure"
-en_match = "back[- ]?pressure"
+en_match = "back[-\\s]?pressure"
 ru = "обратное давление"
-ru_match = "обратн\\w* давлени"
+ru_match = "обратн\\w*\\s+давлени"
 zh = "背压"
 
 [[term]]
@@ -126,14 +126,14 @@ zh = "至多一次"
 
 [[term]]
 en = "cancel safety"
-en_match = "cancel[- ]safe(ty)?"
+en_match = "cancel[-\\s]safe(ty)?"
 ru = "безопасность при отмене"
-ru_match = "безопасн\\w* при отмене"
+ru_match = "безопасн\\w*\\s+при\\s+отмене"
 zh = "取消安全"
 
 [[term]]
 en = "compile time"
-en_match = "compile[- ]time"
+en_match = "compile[-\\s]time"
 ru = "время компиляции"
 ru_match = "компиляци"
 zh = "编译期"
@@ -178,9 +178,9 @@ zh = "流"
 
 [[term]]
 en = "consumer group"
-en_match = "consumer[- ]groups?"
+en_match = "consumer[-\\s]groups?"
 ru = "группа потребителей"
-ru_match = "групп\\w* потребител"
+ru_match = "групп\\w*\\s+потребител"
 zh = "消费者组"
 
 [[term]]
@@ -199,9 +199,9 @@ zh = "条目"
 
 [[term]]
 en = "pending entries list"
-en_match = "pending (entries )?list"
+en_match = "pending\\s+(entries\\s+)?list"
 ru = "список неподтверждённых записей"
-ru_match = "спис\\w* неподтверждённых"
+ru_match = "спис\\w*\\s+неподтверждённых"
 zh = "待处理条目列表"
 zh_match = "待处理"
 
@@ -221,16 +221,16 @@ zh = "列表"
 
 [[term]]
 en = "processing list"
-en_match = "processing lists?"
+en_match = "processing\\s+lists?"
 ru = "список обработки"
-ru_match = "спис\\w* обработки"
+ru_match = "спис\\w*\\s+обработки"
 zh = "处理中列表"
 
 [[term]]
 en = "work queue"
-en_match = "work queues?"
+en_match = "work\\s+queues?"
 ru = "очередь заданий"
-ru_match = "очеред\\w* заданий"
+ru_match = "очеред\\w*\\s+заданий"
 zh = "工作队列"
 
 [[term]]
@@ -277,14 +277,14 @@ zh = "看门狗"
 en = "poison"
 # The state, not the setting: "poison cap" is the setting below, and the two are named
 # differently in both target languages.
-en_match = "poison(s|ed|ing)?(?! cap)"
+en_match = "poison(s|ed|ing)?(?!\\s+cap)"
 ru = "отравленный"
 ru_match = "отравл"
 zh = "毒"
 
 [[term]]
 en = "poison cap"
-en_match = "poison caps?"
+en_match = "poison\\s+caps?"
 ru = "предел доставок"
 ru_match = "предел"
 zh = "投递次数上限"
@@ -292,7 +292,7 @@ zh_match = "上限"
 
 [[term]]
 en = "dead-letter"
-en_match = "dead[- ]letter(s|ed|ing)?"
+en_match = "dead[-\\s]letter(s|ed|ing)?"
 ru = "dead-letter"
 zh = "死信"
 
@@ -300,14 +300,14 @@ zh = "死信"
 en = "requeue"
 en_match = "requeue(s|d)?"
 ru = "возврат в очередь"
-ru_match = "в очеред"
+ru_match = "в\\s+очеред"
 zh = "重新入队"
 
 [[term]]
 en = "redelivery"
 en_match = "redeliver(y|ies|ed|s)?"
 ru = "повторная доставка"
-ru_match = "повторн\\w* доставк"
+ru_match = "повторн\\w*\\s+доставк"
 zh = "重新投递"
 
 # The framework's terms this site meets next to the broker's own. Their rendering is the core's,
@@ -322,7 +322,7 @@ zh = "分区"
 
 [[term]]
 en = "partition key"
-en_match = "partition[- ]keys?"
+en_match = "partition[-\\s]keys?"
 ru = "ключ партиционирования"
 ru_match = "партиционировани"
 zh = "分区键"
@@ -336,9 +336,9 @@ zh = "描述符"
 
 [[term]]
 en = "mount site"
-en_match = "mount sites?"
+en_match = "mount\\s+sites?"
 ru = "точка монтирования"
-ru_match = "точк\\w* монтирования"
+ru_match = "точк\\w*\\s+монтирования"
 zh = "挂载点"
 
 [[term]]
@@ -350,7 +350,31 @@ zh = "测试套件"
 
 [[term]]
 en = "stand-in"
-en_match = "stand[- ]ins?"
+en_match = "stand[-\\s]ins?"
 ru = "тестовый брокер"
-ru_match = "тестов\\w* брокер"
+ru_match = "тестов\\w*\\s+брокер"
 zh = "替身"
+
+# Terms the Russian guides settle, with the renderings the pilot's glossary already uses for the
+# other language.
+
+[[term]]
+en = "commit"
+en_match = "commit(s|ted|ting)?"
+ru = "фиксация"
+ru_match = "фиксац|фиксир|зафиксир"
+zh = "提交"
+
+[[term]]
+en = "producer"
+en_match = "producers?"
+ru = "производитель"
+ru_match = "производител"
+zh = "生产者"
+
+[[term]]
+en = "settlement"
+en_match = "settl(e|es|ed|ing|ement|ements)"
+ru = "завершение"
+ru_match = "заверш"
+zh = "结算"
