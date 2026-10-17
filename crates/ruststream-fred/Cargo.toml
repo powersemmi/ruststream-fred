@@ -337,6 +337,18 @@ path = "examples/manual/guide/consumer_groups.rs"
 required-features = ["testing"]
 test = true
 
+[[example]]
+name = "guide_work_queues"
+path = "examples/guide/work_queues.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_work_queues"
+path = "examples/manual/guide/work_queues.rs"
+required-features = ["testing"]
+test = true
+
 # --- examples: guides-2 ---
 
 # --- examples: end ---
