@@ -399,4 +399,16 @@ path = "examples/manual/guide/pipelining.rs"
 required-features = ["testing"]
 test = true
 
+[[example]]
+name = "guide_transactions"
+path = "examples/guide/transactions.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_transactions"
+path = "examples/manual/guide/transactions.rs"
+required-features = ["testing"]
+test = true
+
 # --- examples: end ---
