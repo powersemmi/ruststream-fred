@@ -127,9 +127,6 @@ name = "fred_pubsub"
 # --- examples: pipelining ---
 
 [[example]]
-name = "fred_pipeline"
-
-[[example]]
 name = "redis_context_stream"
 required-features = ["testing"]
 test = true
@@ -181,6 +178,61 @@ test = true
 [[example]]
 name = "manual_redis_context_pubsub"
 path = "examples/manual/redis_context_pubsub.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_pipelining"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_pipelining"
+path = "examples/manual/redis_pipelining.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_pipelining_atomic"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_pipelining_atomic"
+path = "examples/manual/redis_pipelining_atomic.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_pipelining_commands"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_pipelining_commands"
+path = "examples/manual/redis_pipelining_commands.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_pipelining_round"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_pipelining_round"
+path = "examples/manual/redis_pipelining_round.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_pipelining_flush"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_pipelining_flush"
+path = "examples/manual/redis_pipelining_flush.rs"
 required-features = ["testing"]
 test = true
 
