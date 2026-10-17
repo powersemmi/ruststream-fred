@@ -354,3 +354,12 @@ en_match = "stand[-\\s]ins?"
 ru = "тестовый брокер"
 ru_match = "тестов\\w*\\s+брокер"
 zh = "替身"
+
+# Taken from the pilot crate's glossary for the Architecture pages.
+
+[[term]]
+en = "settlement"
+en_match = "settl(e|es|ed|ing|ement|ements)"
+ru = "завершение"
+ru_match = "заверш"
+zh = "结算"
