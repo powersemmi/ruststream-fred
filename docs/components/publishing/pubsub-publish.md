@@ -13,13 +13,13 @@ import TabItem from '@theme/TabItem';
 
 The message's name is the channel.
 [`mode`](api:ruststream_fred::pubsub::RedisPubSubPublish::mode) picks the command: [`PubSubMode::Classic`](api:ruststream_fred::pubsub::PubSubMode), the default, sends `PUBLISH`, and `PubSubMode::Sharded` sends `SPUBLISH` to the channel's slot.
-The mode matches the subscribers': a sharded message reaches only `SSUBSCRIBE` subscriptions.
-Headers travel beside the payload in a binary frame by default.
+The mode matches the subscribers': a sharded message reaches only [`SSUBSCRIBE` subscriptions](../pubsub/pubsub-mode.md).
+Headers travel beside the payload in a [binary frame](../subscriptions/framing.md) by default.
 [`codec`](api:ruststream_fred::pubsub::RedisPubSubPublish::codec) frames them with a codec instead, which makes the value readable when the data is text; the subscribers set the same codec.
 A payload that is not text is published byte for byte either way.
 
 The policy pairs into a [`RedisPubSubPublisher`](api:ruststream_fred::pubsub::RedisPubSubPublisher) at startup.
-A message reaches the subscriptions connected when it is sent; Redis keeps no copy for a subscriber that connects later.
+A message reaches the [subscriptions](../pubsub/index.md) connected when it is sent; Redis keeps no copy for a subscriber that connects later.
 A publish to a channel nobody hears succeeds.
 
 ## Example

@@ -12,8 +12,8 @@ import TabItem from '@theme/TabItem';
 [`RedisListPublish`](api:ruststream_fred::list::RedisListPublish), `Publish` in the list prelude, pushes with `LPUSH` and can re-arm a key expiry at every publish.
 
 The message's name is the list key.
-A list consumer pops from the other end, so the list is a first-in, first-out queue.
-Headers travel beside the payload in a binary frame by default; [`codec`](api:ruststream_fred::list::RedisListPublish::codec) frames them with a codec the consumer also sets.
+A [list consumer](../lists/index.md) pops from the other end, so the list is a first-in, first-out queue.
+Headers travel beside the payload in a [binary frame](../subscriptions/framing.md) by default; [`codec`](api:ruststream_fred::list::RedisListPublish::codec) frames them with a codec the consumer also sets.
 
 [`ttl`](api:ruststream_fred::list::RedisListPublish::ttl) sets a time to live on the list key and arms it again with `PEXPIRE` at every publish.
 A queue in use never expires; a queue nobody pushes to for the whole interval does, with whatever it still holds.

@@ -17,8 +17,8 @@ A fresh entry is no one's unfinished work, so a reclaim subscription never reads
 `min_idle` has no default.
 Set it above the longest time a handler takes, or an entry a healthy consumer is still working on is taken over and handled twice.
 The subscription scans the pending entries list, and between two scans that found nothing it waits its [`block`](../subscriptions/block.md).
-A reclaimed delivery carries the server's count of its deliveries, this one included, in the [`DELIVERY_COUNT_HEADER`](api:ruststream_fred::DELIVERY_COUNT_HEADER) header.
-A retry on a reclaim subscription appends a copy of the entry to the stream and acknowledges the original.
+A reclaimed delivery carries the server's [count of its deliveries](../acknowledgement/counts.md), this one included, in the [`DELIVERY_COUNT_HEADER`](api:ruststream_fred::DELIVERY_COUNT_HEADER) header.
+A [retry](../acknowledgement/index.md) on a reclaim subscription appends a copy of the entry to the stream and acknowledges the original.
 On Redis 8.4 and later one [`claiming`](./claiming.md) subscription covers both the fresh tail and the recovery.
 
 ## Example

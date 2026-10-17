@@ -10,7 +10,7 @@ import TabItem from '@theme/TabItem';
 
 [`RedisPublish`](api:ruststream_fred::RedisPublish), `Publish` in the stream prelude, appends each message to a stream with `XADD`.
 
-A mount site names it wherever a registration publishes: `.out_reply(Publish)` for a reply, `.out(Slot, Publish)` for a slot, `.out_retry(Publish)` for retry copies.
+A mount site names it wherever a registration publishes: `.out_reply(Publish)` for a reply, `.out(Slot, Publish)` for a slot, `.out_retry(Publish)` for [retry copies](../acknowledgement/out-retry.md).
 The policy holds no connection and no setting.
 The runtime pairs it with the connected broker at startup into a [`RedisPublisher`](api:ruststream_fred::RedisPublisher), so a handler never holds a publisher that is not connected.
 The message's name is the stream key, and the entry id is `*`, the one Redis assigns.

@@ -15,7 +15,7 @@ The handler takes the slot as `Out<impl Bindable>`, where [`Bindable`](api:rusts
 `bind` hands the slot back with its codec and transforms, and every publish through it from then on is queued into the round.
 A bound publish leaves with the delivery's settle, after the commands the handler queued before it.
 A slot publish the handler does not bind leaves at once, whatever the delivery's outcome.
-The slot's policy is one of this crate's: `stream::Publish`, `list::Publish` or `pubsub::Publish`; another broker's publisher does not compile there.
+The slot's policy is one of this crate's: [`stream::Publish`](../publishing/index.md), [`list::Publish`](../publishing/list-publish.md) or [`pubsub::Publish`](../publishing/pubsub-publish.md); another broker's publisher does not compile there.
 A reply joins the round through the [InRound](./in-round.md) transform.
 
 ## Example

@@ -15,10 +15,10 @@ The read takes the stale entries first, the longest idle first, and fills the re
 One subscription and one handler cover new work and recovery alike.
 `min_idle` has no default.
 Set it above the longest time a handler takes, or an entry a healthy consumer is still working on is taken over and handled twice.
-A retry leaves the entry in the pending entries list: nothing is appended, and the entry keeps its id.
+A [retry](../acknowledgement/index.md) leaves the entry in the pending entries list: nothing is appended, and the entry keeps its id.
 The same subscription reads it again once it has been idle `min_idle`.
-So a retry waits out `min_idle`, and a [`retry_after`](api:ruststream::runtime::HandlerOutcome::retry_after) shorter than that waits `min_idle` too.
-Each delivery reports the attempts before it in the [`DELIVERY_COUNT_HEADER`](api:ruststream_fred::DELIVERY_COUNT_HEADER) header, zero for an entry read off the tail, and its idle time in [`IDLE_MS_HEADER`](api:ruststream_fred::IDLE_MS_HEADER).
+So a retry waits out `min_idle`, and a [`retry_after`](../acknowledgement/retry-after.md) shorter than that waits `min_idle` too.
+Each delivery reports the [attempts](../acknowledgement/counts.md) before it in the [`DELIVERY_COUNT_HEADER`](api:ruststream_fred::DELIVERY_COUNT_HEADER) header, zero for an entry read off the tail, and its idle time in [`IDLE_MS_HEADER`](api:ruststream_fred::IDLE_MS_HEADER).
 A server older than 8.4 refuses the subscription, and the service does not start.
 The error, [`RedisError::ServerTooOld`](api:ruststream_fred::RedisError::ServerTooOld), names the subscription, the mode and both versions.
 On such a server the recovery is a [`reclaim`](./reclaim.md) subscription beside a `new` one.
