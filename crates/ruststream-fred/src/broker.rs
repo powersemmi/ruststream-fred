@@ -31,6 +31,7 @@ use ruststream::{OutgoingMessage, RawMessage};
 use tokio::runtime::Handle;
 use tokio::sync::broadcast::Receiver;
 
+use crate::address::{Address, redacted};
 use crate::connection::{Closing, Connection, ReadConnection};
 #[cfg(feature = "testing")]
 use crate::convert::{fields_for_publish, parts_from_fields};
@@ -67,12 +68,15 @@ const CLAIM_MIN_VERSION: Version = Version::new(8, 4, 0);
 #[derive(Debug, Clone)]
 enum Topology {
     /// A single server, addressed by URL (`redis://host:port`).
-    Standalone(String),
+    Standalone(Address),
     /// A Redis Cluster, addressed by one or more `host:port` seed nodes.
-    Cluster(Vec<String>),
+    Cluster(Vec<Address>),
     /// Sentinel-managed replication: the monitored primary's `service` name plus the `host:port`
     /// of each sentinel.
-    Sentinel { service: String, hosts: Vec<String> },
+    Sentinel {
+        service: String,
+        hosts: Vec<Address>,
+    },
     /// A pool supplied already-connected via [`RedisBroker::from_pool`]; `connect` adopts it
     /// instead of dialing.
     Preconnected(Pool),
@@ -89,6 +93,7 @@ fn parse_server(addr: &str, default_port: u16) -> Result<(String, u16), RedisErr
     let (host, port) = match trimmed.rsplit_once(':') {
         Some((host, port)) => {
             let port = port.parse::<u16>().map_err(|_| {
+                let addr = redacted(addr);
                 RedisError::Connect(format!("invalid port in redis address `{addr}`").into())
             })?;
             (host, port)
@@ -97,13 +102,13 @@ fn parse_server(addr: &str, default_port: u16) -> Result<(String, u16), RedisErr
     };
     if host.is_empty() {
         return Err(RedisError::Connect(
-            format!("missing host in redis address `{addr}`").into(),
+            format!("missing host in redis address `{}`", redacted(addr)).into(),
         ));
     }
     Ok((host.to_owned(), port))
 }
 
-fn parse_servers(addrs: &[String], default_port: u16) -> Result<Vec<(String, u16)>, RedisError> {
+fn parse_servers(addrs: &[Address], default_port: u16) -> Result<Vec<(String, u16)>, RedisError> {
     if addrs.is_empty() {
         return Err(RedisError::Connect("no redis addresses provided".into()));
     }
@@ -221,8 +226,12 @@ pub struct RedisBroker {
 
 impl RedisBroker {
     /// Creates a standalone-topology broker that connects to `url` when [`Broker::connect`] runs.
+    ///
+    /// The broker's `Debug` output shows the URL with its password, and any `sentinelPassword`
+    /// parameter, as `***`; the seed addresses of [`cluster`](Self::cluster) and
+    /// [`sentinel`](Self::sentinel) print the same way.
     pub fn standalone(url: impl Into<String>) -> Self {
-        Self::with_topology(Topology::Standalone(url.into()))
+        Self::with_topology(Topology::Standalone(Address::new(url.into())))
     }
 
     /// Creates a Redis Cluster broker from one or more `host:port` seed nodes.
@@ -230,7 +239,10 @@ impl RedisBroker {
     /// Only one reachable node is needed; `fred` discovers the rest of the cluster on connect.
     pub fn cluster(nodes: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self::with_topology(Topology::Cluster(
-            nodes.into_iter().map(Into::into).collect(),
+            nodes
+                .into_iter()
+                .map(|node| Address::new(node.into()))
+                .collect(),
         ))
     }
 
@@ -242,7 +254,10 @@ impl RedisBroker {
     ) -> Self {
         Self::with_topology(Topology::Sentinel {
             service: service.into(),
-            hosts: sentinels.into_iter().map(Into::into).collect(),
+            hosts: sentinels
+                .into_iter()
+                .map(|host| Address::new(host.into()))
+                .collect(),
         })
     }
 
@@ -1866,6 +1881,23 @@ mod tests {
             rendered.contains("alice"),
             "expected username in: {rendered}"
         );
+    }
+
+    /// A connect error is logged, so the address it names carries no password.
+    #[test]
+    fn an_address_error_names_no_password() {
+        for broker in [
+            RedisBroker::cluster(["redis://bob:seed-secret@node1:notaport"]),
+            RedisBroker::sentinel("mymaster", ["bob:seed-secret@sentinel1:notaport"]),
+        ] {
+            let error = broker.build_config().expect_err("the address is invalid");
+            let printed = error.to_string();
+            assert!(printed.contains("bob"), "the address is named: {printed}");
+            assert!(
+                !printed.contains("seed-secret"),
+                "the password leaks: {printed}"
+            );
+        }
     }
 
     #[cfg(feature = "sentinel-auth")]
