@@ -81,17 +81,180 @@ tracing.workspace = true
 # --- examples: broker ---
 
 [[example]]
-name = "fred_auth"
+name = "redis_broker"
+required-features = ["testing"]
+test = true
 
 [[example]]
-name = "fred_tls"
-required-features = ["tls-rustls"]
+name = "manual_redis_broker"
+path = "examples/manual/redis_broker.rs"
+required-features = ["testing"]
+test = true
 
 [[example]]
-name = "fred_testing"
+name = "redis_broker_cluster"
+required-features = ["testing"]
+test = true
 
 [[example]]
-name = "fred_topologies"
+name = "manual_redis_broker_cluster"
+path = "examples/manual/redis_broker_cluster.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_broker_sentinel"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_broker_sentinel"
+path = "examples/manual/redis_broker_sentinel.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_broker_from_pool"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_broker_from_pool"
+path = "examples/manual/redis_broker_from_pool.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_broker_pool"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_broker_pool"
+path = "examples/manual/redis_broker_pool.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_broker_default_group"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_broker_default_group"
+path = "examples/manual/redis_broker_default_group.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_broker_auth"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_broker_auth"
+path = "examples/manual/redis_broker_auth.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_broker_tls"
+required-features = ["testing", "tls-rustls"]
+test = true
+
+[[example]]
+name = "manual_redis_broker_tls"
+path = "examples/manual/redis_broker_tls.rs"
+required-features = ["testing", "tls-rustls"]
+test = true
+
+[[example]]
+name = "redis_broker_sentinel_auth"
+required-features = ["testing", "sentinel-auth"]
+test = true
+
+[[example]]
+name = "manual_redis_broker_sentinel_auth"
+path = "examples/manual/redis_broker_sentinel_auth.rs"
+required-features = ["testing", "sentinel-auth"]
+test = true
+
+[[example]]
+name = "redis_broker_credential_provider"
+required-features = ["testing", "credential-provider"]
+test = true
+
+[[example]]
+name = "manual_redis_broker_credential_provider"
+path = "examples/manual/redis_broker_credential_provider.rs"
+required-features = ["testing", "credential-provider"]
+test = true
+
+[[example]]
+name = "redis_broker_shutdown"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_broker_shutdown"
+path = "examples/manual/redis_broker_shutdown.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_broker_errors"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_broker_errors"
+path = "examples/manual/redis_broker_errors.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_broker_prelude"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_broker_prelude"
+path = "examples/manual/redis_broker_prelude.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_asyncapi"
+required-features = ["asyncapi"]
+test = true
+
+[[example]]
+name = "manual_redis_asyncapi"
+path = "examples/manual/redis_asyncapi.rs"
+required-features = ["asyncapi"]
+test = true
+
+[[example]]
+name = "redis_testing"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_testing"
+path = "examples/manual/redis_testing.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_testing_live"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_testing_live"
+path = "examples/manual/redis_testing_live.rs"
+required-features = ["testing"]
+test = true
 
 # --- examples: streams ---
 
