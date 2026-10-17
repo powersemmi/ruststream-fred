@@ -699,4 +699,76 @@ test = true
 
 # --- examples: guides-2 ---
 
+[[example]]
+name = "guide_pipelining"
+path = "examples/guide/pipelining.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_pipelining"
+path = "examples/manual/guide/pipelining.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "guide_transactions"
+path = "examples/guide/transactions.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_transactions"
+path = "examples/manual/guide/transactions.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "guide_replay"
+path = "examples/guide/replay.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_replay"
+path = "examples/manual/guide/replay.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "guide_cluster"
+path = "examples/guide/cluster.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_cluster"
+path = "examples/manual/guide/cluster.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "guide_production"
+path = "examples/guide/production.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_production"
+path = "examples/manual/guide/production.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "guide_interop"
+path = "examples/guide/interop.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_interop"
+path = "examples/manual/guide/interop.rs"
+required-features = ["testing"]
+test = true
+
 # --- examples: end ---
