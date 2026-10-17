@@ -423,4 +423,16 @@ path = "examples/manual/guide/replay.rs"
 required-features = ["testing"]
 test = true
 
+[[example]]
+name = "guide_cluster"
+path = "examples/guide/cluster.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_cluster"
+path = "examples/manual/guide/cluster.rs"
+required-features = ["testing"]
+test = true
+
 # --- examples: end ---
