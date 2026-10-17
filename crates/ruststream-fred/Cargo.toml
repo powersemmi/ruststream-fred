@@ -153,6 +153,61 @@ path = "examples/manual/redis_pubsub_sharded.rs"
 required-features = ["testing"]
 test = true
 
+[[example]]
+name = "redis_acknowledgement"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_acknowledgement"
+path = "examples/manual/redis_acknowledgement.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_acknowledgement_retries"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_acknowledgement_retries"
+path = "examples/manual/redis_acknowledgement_retries.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_acknowledgement_dead_letter"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_acknowledgement_dead_letter"
+path = "examples/manual/redis_acknowledgement_dead_letter.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_acknowledgement_counts"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_acknowledgement_counts"
+path = "examples/manual/redis_acknowledgement_counts.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_acknowledgement_out_retry"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_acknowledgement_out_retry"
+path = "examples/manual/redis_acknowledgement_out_retry.rs"
+required-features = ["testing"]
+test = true
+
 # --- examples: pipelining ---
 
 [[example]]
