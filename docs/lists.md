@@ -4,15 +4,13 @@ A list is a competing-consumers queue: a producer `LPUSH`es, consumers pop from 
 entry goes to exactly one consumer (no fan-out, no replay). Simple mode is at-most-once (`BRPOP`, no
 ack):
 
-```rust
---8<-- "crates/ruststream-fred/examples/fred_list.rs:simple"
+```rust reference="examples/fred_list.rs#simple"
 ```
 
 Reliable mode moves each entry to a processing list and removes it on ack (at-least-once), so a
 crashed handler does not silently lose its job:
 
-```rust
---8<-- "crates/ruststream-fred/examples/fred_list.rs:reliable"
+```rust reference="examples/fred_list.rs#reliable"
 ```
 
 Publish with `broker.list_publisher()` (`LPUSH`). Headers travel in the same frame as Pub/Sub: a
@@ -24,8 +22,7 @@ ends (`.codec(JsonCodec)`).
 A dead consumer can strand a reliable entry on its processing list, since Redis lists have no native
 pending tracking. Opt into a recovery watchdog by naming a ZSET key (off by default):
 
-```rust
---8<-- "crates/ruststream-fred/examples/fred_list.rs:recovery"
+```rust reference="examples/fred_list.rs#recovery"
 ```
 
 Each claim is recorded in the ZSET (score = claim time); a sweeper folded into the subscription's

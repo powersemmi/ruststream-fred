@@ -4,14 +4,12 @@ A `#[subscriber("key")]` handler binds to a Redis stream key. Because Redis Stre
 through a consumer group, the bare-string form needs a broker-wide default group
 (`.default_group`):
 
-```rust
---8<-- "crates/ruststream-fred/examples/fred_streams.rs:handler"
+```rust reference="examples/fred_streams.rs#handler"
 ```
 
 Wire it onto the broker; the `with_broker` / `include` part is identical to every other broker.
 
-```rust
---8<-- "crates/ruststream-fred/examples/fred_streams.rs:app"
+```rust reference="examples/fred_streams.rs#app"
 ```
 
 Payload and headers travel as stream entry fields: the body under a reserved field and each header
@@ -33,14 +31,12 @@ a healthy consumer's in-flight message gets reclaimed and processed twice.
 
 A descriptor can sit directly in the `#[subscriber(...)]` decorator. The fresh-tail worker:
 
-```rust
---8<-- "crates/ruststream-fred/examples/fred_reclaim.rs:worker"
+```rust reference="examples/fred_reclaim.rs#worker"
 ```
 
 The recovery handler on the same group, reclaiming entries idle for over 30 seconds:
 
-```rust
---8<-- "crates/ruststream-fred/examples/fred_reclaim.rs:reclaim"
+```rust reference="examples/fred_reclaim.rs#reclaim"
 ```
 
 ## Acknowledgement
@@ -63,8 +59,7 @@ that window, since a crash before the timer fires loses the deferred copy.
 For a crash-safe alternative, opt a subscription into a durable ZSET delay queue. It is off by
 default and you name the ZSET key explicitly (the key has no sane default):
 
-```rust
---8<-- "crates/ruststream-fred/examples/fred_delayed_retry.rs:handler"
+```rust reference="examples/fred_delayed_retry.rs#handler"
 ```
 
 A delayed delivery is `ZADD`ed to the named ZSET with a `fire_at` score, then the original is

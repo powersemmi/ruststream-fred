@@ -1,5 +1,8 @@
 # Testing
 
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
 The `testing` feature ships `RedisTestBroker` / `RedisTestClient`, a handler-stub dispatcher that
 routes by exact stream key with no server. It reproduces routing, ack/nack, and headers, and passes
 the framework's conformance suite. It does not simulate consumer-group cursors, `XAUTOCLAIM`
@@ -22,64 +25,59 @@ The service runs until the test signals shutdown.
 A real handler validates input, persists valid messages through a repository connector, and drops
 invalid ones. The handler has no knowledge of the test harness.
 
-```rust
---8<-- "crates/ruststream-fred/examples/fred_testing.rs:repository"
+```rust reference="examples/fred_testing.rs#repository"
 ```
 
-```rust
---8<-- "crates/ruststream-fred/examples/fred_testing.rs:business-handler"
+```rust reference="examples/fred_testing.rs#business-handler"
 ```
 
 The test publishes a valid payment and an invalid payment, then asserts that only the valid one
 was saved:
 
-```rust
---8<-- "crates/ruststream-fred/examples/fred_testing.rs:business-test"
+```rust reference="examples/fred_testing.rs#business-test"
 ```
 
 In your own crate you usually copy the test body into a `#[tokio::test]` inside a `#[cfg(test)]`
 module:
 
-```rust
---8<-- "crates/ruststream-fred/examples/fred_testing.rs:unit-test"
+```rust reference="examples/fred_testing.rs#unit-test"
 ```
 
 ### Transport-specific examples
 
-=== "Redis Stream"
+<Tabs>
+<TabItem value="redis-stream" label="Redis Stream">
 
-    ```rust
-    --8<-- "crates/ruststream-fred/examples/fred_testing.rs:stream-handler"
-    ```
+```rust reference="examples/fred_testing.rs#stream-handler"
+```
 
-    ```rust
-    --8<-- "crates/ruststream-fred/examples/fred_testing.rs:stream-test"
-    ```
+```rust reference="examples/fred_testing.rs#stream-test"
+```
 
-=== "Redis List"
+</TabItem>
+<TabItem value="redis-list" label="Redis List">
 
-    ```rust
-    --8<-- "crates/ruststream-fred/examples/fred_testing.rs:list-handler"
-    ```
+```rust reference="examples/fred_testing.rs#list-handler"
+```
 
-    ```rust
-    --8<-- "crates/ruststream-fred/examples/fred_testing.rs:list-test"
-    ```
+```rust reference="examples/fred_testing.rs#list-test"
+```
 
-=== "Pub/Sub"
+</TabItem>
+<TabItem value="pub-sub" label="Pub/Sub">
 
-    ```rust
-    --8<-- "crates/ruststream-fred/examples/fred_testing.rs:pubsub-handler"
-    ```
+```rust reference="examples/fred_testing.rs#pubsub-handler"
+```
 
-    ```rust
-    --8<-- "crates/ruststream-fred/examples/fred_testing.rs:pubsub-test"
-    ```
+```rust reference="examples/fred_testing.rs#pubsub-test"
+```
+
+</TabItem>
+</Tabs>
 
 ## Conformance suite
 
 Run the framework's full conformance suite against the stub broker:
 
-```rust
---8<-- "crates/ruststream-fred/examples/fred_testing.rs:conformance"
+```rust reference="examples/fred_testing.rs#conformance"
 ```

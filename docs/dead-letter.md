@@ -1,5 +1,8 @@
 # Dead-letter and poison cap
 
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
 By default a failing message is redelivered forever and a `nack(requeue = false)` discards it. Two
 opt-in settings bound that: `dead_letter(key)` copies dropped and poison messages to the named key
 (same transport family, stream to stream or list to list) instead of discarding them, and
@@ -8,17 +11,20 @@ opt-in settings bound that: `dead_letter(key)` copies dropped and poison message
 The copy is tagged with the `x-dead-letter-reason` header (`dropped` or `max-deliveries`) and written
 before the original is acked, so a crash leaves a duplicate rather than a loss.
 
-=== "Redis Stream"
+<Tabs>
+<TabItem value="redis-stream" label="Redis Stream">
 
-    ```rust
-    --8<-- "crates/ruststream-fred/examples/fred_dead_letter.rs:handler"
-    ```
+```rust reference="examples/fred_dead_letter.rs#handler"
+```
 
-=== "Redis List"
+</TabItem>
+<TabItem value="redis-list" label="Redis List">
 
-    ```rust
-    --8<-- "crates/ruststream-fred/examples/fred_list_dead_letter.rs:handler"
-    ```
+```rust reference="examples/fred_list_dead_letter.rs#handler"
+```
+
+</TabItem>
+</Tabs>
 
 `max_deliveries(n)` caps the delivery count. It is checked against both the framework retry-count
 header (the `nack`/republish loop) and, on the Streams reclaim path, the native Redis Streams delivery
