@@ -301,6 +301,18 @@ name = "fred_transaction"
 
 # --- examples: guides-1 ---
 
+[[example]]
+name = "guide_getting_started"
+path = "examples/guide/getting_started.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_getting_started"
+path = "examples/manual/guide/getting_started.rs"
+required-features = ["testing"]
+test = true
+
 # --- examples: guides-2 ---
 
 # --- examples: end ---
