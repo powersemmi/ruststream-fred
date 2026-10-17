@@ -90,8 +90,8 @@ import TabItem from '@theme/TabItem';
 服务运行期间，处理器通过 [seek 句柄](../components/positions/seek.md)移动自己的组。
 `Ctx<keys::SeekHandle>` 提供这个句柄；它的 `group()` 指出它移动的是哪个组。
 
-某个生产者误向 `alerts` 流灌入大量提醒，运维人员在这批提醒之后追加一个停止标记。
-`notify` 读到标记后，把组移到末尾，所以排在标记后面的提醒永远不会发出。
+某个生产者误向 `alerts` 流灌入大量提醒，运维人员趁提醒仍在涌入时向流中追加一个停止标记。
+`notify` 读到标记后，把组移到末尾，所以流中位于标记之后的提醒永远不会发出。
 seek 一返回就生效。
 旧游标已经选中的条目会被丢弃而不投递，阻塞在 `XREADGROUP` 中的订阅会在一个 `block` 间隔内按新游标读取。
 

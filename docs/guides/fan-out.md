@@ -102,7 +102,8 @@ The handler reads the channel a message came on from the [Pub/Sub context](../co
 </Tabs>
 
 The reply leaves through [`pubsub::Publish`](../components/publishing/pubsub-publish.md), which sends `PUBLISH`.
-The broker's default publisher writes a name this service does not read as a stream entry, so a reply to a channel names the Pub/Sub policy.
+The broker's default publisher treats a name that no subscription of this service reads as a stream key and sends `XADD` to it.
+The pattern subscription does not read `orders.events.shipped` by name, so the registration names the Pub/Sub policy.
 The pattern subscription in the same service receives the announcement.
 
 A pattern names no channel a copy could be published to.

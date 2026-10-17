@@ -90,8 +90,8 @@ In the manual form it is a step of the mount, after `build()`.
 A handler moves its group while the service runs through the [seek handle](../components/positions/seek.md).
 `Ctx<keys::SeekHandle>` gives it; its `group()` names the group it moves.
 
-A producer floods the `alerts` stream by mistake, and an operator appends a halt marker behind the flood.
-`notify` reads the marker and moves the group to the tail, so the alerts queued behind it are never sent.
+A producer floods the `alerts` stream by mistake, and an operator appends a halt marker while the flood goes on.
+`notify` reads the marker and moves the group to the tail, so the alerts that follow the marker in the stream are never sent.
 The seek takes effect as soon as it returns.
 Entries the old cursor had already selected are discarded, not delivered, and a subscription blocked in `XREADGROUP` reads under the new cursor within one `block` interval.
 

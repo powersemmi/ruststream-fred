@@ -102,7 +102,8 @@ Redis 不保存副本。
 </Tabs>
 
 回复经由 [`pubsub::Publish`](../components/publishing/pubsub-publish.md) 发出，它发送 `PUBLISH`。
-对于本服务不读取的名字，Broker 的默认发布者会写入一个流条目，所以发往频道的回复要指定 Pub/Sub 策略。
+对于本服务没有任何订阅读取的名字，Broker 的默认发布者会把它当作流的键，并向它发送 `XADD`。
+模式订阅并不按名字读取 `orders.events.shipped`，所以注册要指定 Pub/Sub 策略。
 同一个服务中的模式订阅会收到这条通知。
 
 模式没有指定可以发布副本的频道。
