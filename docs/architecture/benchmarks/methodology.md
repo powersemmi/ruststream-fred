@@ -46,9 +46,9 @@ the socket shows.
 
 ## The code count
 
-Each scenario of the cost chart on [Benchmarks](/architecture/benchmarks/) is the service a user
-writes, built without the `testing` feature. Messages are appended from another thread before the measured
-region opens, so producing them is not counted.
+Each scenario of the [cost chart](index.md#cost-of-the-code) is the service a user writes, built
+without the `testing` feature. Messages are appended from another thread before the measured region
+opens, so producing them is not counted.
 
 Instructions come from callgrind and allocations from DHAT. A scenario runs over one delivery,
 then 1000, then 2000. The difference between the last two is the steady cost of a message, and the

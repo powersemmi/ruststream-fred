@@ -29,7 +29,7 @@ description: "ruststream-fred 如何测量自己：三个循环、在真实 Redi
 
 ## 代码计数 {/* #the-code-count */}
 
-[基准测试](/architecture/benchmarks/)一页开销图中的每个场景，都是用户写的服务，构建时不带 `testing` 特性。消息在测量区间打开之前由另一个线程追加，因此生产消息不计入。
+[开销图](index.md#cost-of-the-code)中的每个场景，都是用户写的服务，构建时不带 `testing` 特性。消息在测量区间打开之前由另一个线程追加，因此生产消息不计入。
 
 指令数来自 callgrind，内存分配来自 DHAT。一个场景依次在一次投递、1000 次、2000 次上运行。后两次之差是一条消息的稳态开销，单次投递就是冷启动。
 
