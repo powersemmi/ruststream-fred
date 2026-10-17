@@ -32,6 +32,7 @@ use futures::stream::unfold;
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::Bindings;
 use ruststream::codec::Codec;
+use ruststream::runtime::IntoSource;
 use ruststream::{
     AckError, AddressedCopies, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage,
     Lend, NamedCopies, OutgoingMessage, PairError, Partitioned, PublishPolicy, Publisher,
@@ -491,6 +492,16 @@ impl RedisPubSubPattern {
     }
 }
 
+// The manual path binds a `Handle` body to its source with `subscriber(source, body)`, which
+// takes the descriptor as it is, the way the `#[subscriber(..)]` attribute does.
+impl IntoSource for RedisPubSub {
+    type Source = Self;
+
+    fn into_source(self) -> Self {
+        self
+    }
+}
+
 impl SubscriptionSource<ConnectedRedisBroker> for RedisPubSub {
     type Subscriber = RedisPubSubSubscriber;
     /// Pub/Sub cannot acknowledge, so every retry is a copy this process publishes, and the
@@ -529,6 +540,16 @@ impl RedeliveryAddressed<ConnectedRedisBroker> for RedisPubSub {
         _connected: &ConnectedRedisBroker,
     ) -> impl Future<Output = Result<RedeliveryAddress, RedisError>> {
         ready(Ok(self.redelivery_channel()))
+    }
+}
+
+// The manual path binds a `Handle` body to its source with `subscriber(source, body)`, which
+// takes the descriptor as it is, the way the `#[subscriber(..)]` attribute does.
+impl IntoSource for RedisPubSubPattern {
+    type Source = Self;
+
+    fn into_source(self) -> Self {
+        self
     }
 }
 

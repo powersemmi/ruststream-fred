@@ -21,6 +21,7 @@ use std::time::Duration;
 
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::Bindings;
+use ruststream::runtime::IntoSource;
 use ruststream::{
     AddressedCopies, RedeliveryAddress, RedeliveryAddressed, RetryDeclaration, SubscriptionSource,
 };
@@ -472,6 +473,16 @@ impl RedisStream {
             mode,
             min_idle.map(|idle| u64::try_from(idle.as_millis()).unwrap_or(u64::MAX)),
         ))
+    }
+}
+
+// The manual path binds a `Handle` body to its source with `subscriber(source, body)`, which
+// takes the descriptor as it is, the way the `#[subscriber(..)]` attribute does.
+impl IntoSource for RedisStream {
+    type Source = Self;
+
+    fn into_source(self) -> Self {
+        self
     }
 }
 

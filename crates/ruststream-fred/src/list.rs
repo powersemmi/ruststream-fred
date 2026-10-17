@@ -38,6 +38,7 @@ use futures::stream::unfold;
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::Bindings;
 use ruststream::codec::Codec;
+use ruststream::runtime::IntoSource;
 use ruststream::{
     AckError, AddressedCopies, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage,
     Lend, PairError, Partitioned, PublishPolicy, RedeliveryAddress, RedeliveryAddressed,
@@ -382,6 +383,16 @@ impl RedisList {
             ttl: self.recovery_ttl,
             loopback: Loopback::default(),
         }))
+    }
+}
+
+// The manual path binds a `Handle` body to its source with `subscriber(source, body)`, which
+// takes the descriptor as it is, the way the `#[subscriber(..)]` attribute does.
+impl IntoSource for RedisList {
+    type Source = Self;
+
+    fn into_source(self) -> Self {
+        self
     }
 }
 
