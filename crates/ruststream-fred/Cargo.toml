@@ -374,12 +374,204 @@ test = true
 # --- examples: pipelining ---
 
 [[example]]
-name = "fred_pipeline"
+name = "redis_context_stream"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_context_stream"
+path = "examples/manual/redis_context_stream.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_context_consumer_group"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_context_consumer_group"
+path = "examples/manual/redis_context_consumer_group.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_context_batch"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_context_batch"
+path = "examples/manual/redis_context_batch.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_context_fred_pool"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_context_fred_pool"
+path = "examples/manual/redis_context_fred_pool.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_context_pubsub"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_context_pubsub"
+path = "examples/manual/redis_context_pubsub.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_pipelining"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_pipelining"
+path = "examples/manual/redis_pipelining.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_pipelining_atomic"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_pipelining_atomic"
+path = "examples/manual/redis_pipelining_atomic.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_pipelining_commands"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_pipelining_commands"
+path = "examples/manual/redis_pipelining_commands.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_pipelining_round"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_pipelining_round"
+path = "examples/manual/redis_pipelining_round.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_pipelining_flush"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_pipelining_flush"
+path = "examples/manual/redis_pipelining_flush.rs"
+required-features = ["testing"]
+test = true
 
 # --- examples: publishing ---
 
 [[example]]
-name = "fred_transaction"
+name = "redis_publishing"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_publishing"
+path = "examples/manual/redis_publishing.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_publishing_default"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_publishing_default"
+path = "examples/manual/redis_publishing_default.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_publishing_pubsub"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_publishing_pubsub"
+path = "examples/manual/redis_publishing_pubsub.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_publishing_list"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_publishing_list"
+path = "examples/manual/redis_publishing_list.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_publishing_partition_key"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_publishing_partition_key"
+path = "examples/manual/redis_publishing_partition_key.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_transactions"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_transactions"
+path = "examples/manual/redis_transactions.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_transactions_transaction"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_transactions_transaction"
+path = "examples/manual/redis_transactions_transaction.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_transactions_owned"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_transactions_owned"
+path = "examples/manual/redis_transactions_owned.rs"
+required-features = ["testing"]
+test = true
 
 # --- examples: guides ---
 
