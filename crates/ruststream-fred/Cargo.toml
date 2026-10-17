@@ -96,16 +96,136 @@ name = "fred_topologies"
 # --- examples: streams ---
 
 [[example]]
-name = "fred_streams"
+name = "redis_subscriptions_name"
+required-features = ["testing"]
+test = true
 
 [[example]]
-name = "fred_reclaim"
+name = "manual_redis_subscriptions_name"
+path = "examples/manual/redis_subscriptions_name.rs"
+required-features = ["testing"]
+test = true
 
 [[example]]
-name = "fred_claiming"
+name = "redis_subscriptions_block"
+required-features = ["testing"]
+test = true
 
 [[example]]
-name = "fred_seek"
+name = "manual_redis_subscriptions_block"
+path = "examples/manual/redis_subscriptions_block.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_subscriptions_batches"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_subscriptions_batches"
+path = "examples/manual/redis_subscriptions_batches.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_subscriptions_framing"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_subscriptions_framing"
+path = "examples/manual/redis_subscriptions_framing.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_streams_new"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_streams_new"
+path = "examples/manual/redis_streams_new.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_streams_reclaim"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_streams_reclaim"
+path = "examples/manual/redis_streams_reclaim.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_streams_claiming"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_streams_claiming"
+path = "examples/manual/redis_streams_claiming.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_streams_start"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_streams_start"
+path = "examples/manual/redis_streams_start.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_positions_position"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_positions_position"
+path = "examples/manual/redis_positions_position.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_positions_start_at"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_positions_start_at"
+path = "examples/manual/redis_positions_start_at.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_positions_seek"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_positions_seek"
+path = "examples/manual/redis_positions_seek.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "redis_positions_entry_id"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_redis_positions_entry_id"
+path = "examples/manual/redis_positions_entry_id.rs"
+required-features = ["testing"]
+test = true
 
 # --- examples: lists ---
 
