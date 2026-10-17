@@ -264,10 +264,10 @@ impl RedisGroupPosition {
 ///   [`DelayedRetry::DurableZset`](crate::DelayedRetry::DurableZset) queue are keyed by their due
 ///   time, not by the cursor, so they are appended to the stream when they fall due regardless of
 ///   where the group is reading.
-/// * It does not reset delivery counts. A replayed entry is delivered again, so its **native**
-///   delivery count (the one the reclaim path reads and a `max_attempts` declaration at the mount
-///   site caps) grows with each replay; the framework retry-count header only moves on an actual
-///   retry.
+/// * It does not carry the native delivery count over. A replayed entry is read as a new
+///   delivery, and Redis counts it from one again, so a `max_attempts` declaration at the mount
+///   site that reads this count caps from the replay on; the framework retry-count header only
+///   moves on an actual retry.
 ///
 /// # Timing
 ///
