@@ -361,6 +361,18 @@ path = "examples/manual/guide/retries.rs"
 required-features = ["testing"]
 test = true
 
+[[example]]
+name = "guide_fan_out"
+path = "examples/guide/fan_out.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_fan_out"
+path = "examples/manual/guide/fan_out.rs"
+required-features = ["testing"]
+test = true
+
 # --- examples: guides-2 ---
 
 # --- examples: end ---
