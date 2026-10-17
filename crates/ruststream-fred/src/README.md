@@ -1145,9 +1145,17 @@ and a reliable list needs its two keys under one hash tag there for the same rea
 A reliable list without a recovery key has no orphan recovery. Pub/Sub loses anything published
 while a subscriber is disconnected, and the oldest messages once a subscription's buffer
 overflows. A simple list loses anything a crashed handler was holding. A claiming subscription
-needs Redis 8.4 or later. For a setting these builders do not reach, such as a reconnection
-policy or performance tuning, build a `fred` `Pool` yourself and wrap it with
-[`RedisBroker::from_pool`]; the broker then reports no host to the generated document.
+needs Redis 8.4 or later.
+
+Every connection the broker opens reconnects after the server drops it, as on a restart or a
+failover. The first attempt follows after 100 ms, each next one twice as late, at most 10 s apart,
+with no limit on the attempts. A command issued meanwhile waits for the connection. A Pub/Sub
+subscription subscribes again once it is back. A stream subscription whose consumer group the
+server lost, as on a restart that kept no data, creates the group again and reads the stream from
+its start. For a setting these builders do not reach, such as another reconnection policy or
+performance tuning, build a `fred` `Pool` yourself and wrap it with [`RedisBroker::from_pool`].
+The subscriptions' own connections then reconnect by the pool's policy, and the broker reports no
+host to the generated document.
 
 # Cargo features
 

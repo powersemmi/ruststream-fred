@@ -9,13 +9,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use fred::clients::Client;
+use fred::error::Error as FredError;
 use fred::interfaces::{ClientLike, StreamsInterface};
 use fred::types::streams::XReadValue;
 use fred::types::{CustomCommand, Value};
 use futures::Stream;
 use futures::stream::unfold;
 use ruststream::{BatchSubscriber, Seekable, Subscriber};
+use tracing::warn;
 
+use crate::broker::ensure_group;
 use crate::claim::{self, ClaimedEntry};
 use crate::connection::{Connection, ReadConnection};
 use crate::convert::{HEADER_PREFIX, parts_from_fields};
@@ -57,6 +60,17 @@ const XREADGROUP: &str = "XREADGROUP";
 /// prefetches and drains the buffer between reads. Batches take their own `COUNT` from the size the
 /// mount site asked for instead.
 pub(crate) const PREFETCH: u64 = 64;
+
+/// Where a group the server lost starts again: the first entry of the stream.
+const RECREATED_GROUP_START: &str = "0";
+
+/// Whether the server refused a read because the group (or its stream) no longer exists.
+fn lost_group(err: &RedisError) -> bool {
+    matches!(err, RedisError::Stream(source)
+        if source
+            .downcast_ref::<FredError>()
+            .is_some_and(|err| err.details().starts_with("NOGROUP")))
+}
 
 fn duration_to_millis(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
@@ -264,10 +278,15 @@ impl RedisSubscriber {
         // cursor as it stood when the read started, so a seek that lands mid-read invalidates
         // whatever comes back.
         let selected_at = self.generation.load(Ordering::Acquire);
-        let entries = match self.mode.clone() {
-            ReadMode::Fresh => self.fetch_fresh(count).await?,
-            ReadMode::Reclaim { min_idle } => self.fetch_reclaim(min_idle, count).await?,
-            ReadMode::Claiming { min_idle } => self.fetch_claiming(min_idle, count).await?,
+        let read = match self.mode.clone() {
+            ReadMode::Fresh => self.fetch_fresh(count).await,
+            ReadMode::Reclaim { min_idle } => self.fetch_reclaim(min_idle, count).await,
+            ReadMode::Claiming { min_idle } => self.fetch_claiming(min_idle, count).await,
+        };
+        let entries = match read {
+            Ok(entries) => entries,
+            Err(err) if lost_group(&err) => return self.recreate_group().await,
+            Err(err) => return Err(err),
         };
         if selected_at != self.generation.load(Ordering::Acquire) {
             // A seek overtook this read; drop its entries and let the caller read again.
@@ -277,6 +296,32 @@ impl RedisSubscriber {
         }
         self.buffer_generation = selected_at;
         self.buffer.extend(entries);
+        Ok(())
+    }
+
+    /// Creates the group again after the server lost it, and reads it from the start of the
+    /// stream.
+    ///
+    /// A server that keeps no data comes back from a restart without the stream and its groups,
+    /// and every read after that is refused. Everything the stream holds by now was added after
+    /// the loss, so reading from the start delivers it all and nothing published in between is
+    /// skipped. The reclaim cursor starts over with the group.
+    #[cold]
+    async fn recreate_group(&mut self) -> Result<(), RedisError> {
+        warn!(
+            subscription = self.key.as_str(),
+            group = self.group.as_str(),
+            "the Redis server lost this stream's consumer group, as after a restart that kept no \
+             data; creating it again and reading the stream from its start"
+        );
+        ensure_group(
+            self.connection.pool(),
+            &self.key,
+            &self.group,
+            RECREATED_GROUP_START,
+        )
+        .await?;
+        RECLAIM_START.clone_into(&mut self.cursor);
         Ok(())
     }
 
