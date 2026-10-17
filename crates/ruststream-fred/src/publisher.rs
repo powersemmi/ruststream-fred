@@ -162,7 +162,7 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisPublish {
 ///
 /// #[subscriber(RedisList::new("jobs").reliable())]
 /// async fn work(job: &Job) -> HandlerOutcome {
-///     println!("job for order {}", job.order);
+///     tracing::info!(job.order, "job");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -363,6 +363,49 @@ async fn append(
 /// inside `EXEC` does not undo the commands before it. For a block of `XADD`s against stream keys
 /// that is practically limited to out-of-memory and wrong-type keys; a command the server refuses
 /// to *queue* discards the whole block.
+///
+/// # Examples
+///
+/// ```
+/// # mod demo {
+/// use ruststream::OutgoingMessage;
+/// use ruststream_fred::stream::prelude::*;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Deserialize, Serialize, Outgoing)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[subscriber("orders", reply("processed"))]
+/// async fn process(orders: &[Order]) -> Result<Vec<Order>, HandlerOutcome> {
+///     Ok(orders.iter().map(|order| Order { id: order.id }).collect())
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     let broker = RedisBroker::standalone("redis://localhost:6379").default_group("workers");
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+///         // The borrowed kind: one batch's replies, buffered and committed as one MULTI / EXEC.
+///         b.include(process.batch(nonzero!(32)))
+///             .out_reply(TransactionalPublish)
+///             .transactional();
+///
+///         // The owned kind, in the hook where a service makes its first publishes.
+///         b.after_startup(TransactionalPublish, async move |publisher| {
+///             let mut seed = publisher.transaction().await?;
+///             seed.publish(
+///                 OutgoingMessage::new("processed", br#"{"id":0}"#.as_slice()),
+///                 None,
+///             )
+///             .await?;
+///             seed.commit().await
+///         });
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
 #[derive(Clone)]
 pub struct RedisPublisher {
     core: Arc<RedisCore>,
@@ -570,7 +613,7 @@ impl OwnedTransactions for RedisPublisher {
 /// #
 /// # #[subscriber(RedisStream::new("orders").group("workers"))]
 /// # async fn handle(order: &Order) -> HandlerOutcome {
-/// #     println!("order {}", order.id);
+/// #     tracing::info!(order.id, "order");
 /// #     HandlerOutcome::ack()
 /// # }
 ///

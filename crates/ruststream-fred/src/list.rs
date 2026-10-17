@@ -1,24 +1,21 @@
-//! Redis list transport: a competing-consumers work queue.
+//! Redis lists: a work queue whose every entry goes to one consumer.
 //!
-//! A producer `LPUSH`es onto the list; consumers pop from the right (`BRPOP`), so delivery is FIFO
-//! and each entry goes to exactly one consumer (no fan-out, no replay, no groups). Two modes:
+//! - [Lists][lists]: [`RedisList`], the simple form, at-most-once.
+//! - [reliable][reliable]: [`RedisList::reliable`], at-least-once through a processing list.
+//! - [Recovery][recovery]: [`RedisList::recovery_zset`], the watchdog that returns a dead
+//!   consumer's entries.
+//! - [processing][processing]: [`RedisList::processing`], and the hash tag a cluster needs.
+//! - [Framing][framing]: [`RedisList::codec`], the frame the headers travel in.
+//! - [RedisListPublish][publish]: [`Publish`], `LPUSH` with an optional key expiry.
+//! - [Prelude][prelude]: [`prelude`], everything a list service imports.
 //!
-//! * Simple (default) - `BRPOP`, at-most-once. `ack` / `nack` report [`AckError::Unsupported`]: once
-//!   popped, the entry is gone, so a crash mid-handler loses it.
-//! * Reliable ([`RedisList::reliable`]) - `LMOVE` the entry to a per-consumer processing list, then
-//!   `LREM` it on `ack` (at-least-once). `nack(requeue = true)` returns it to the main list;
-//!   `nack(requeue = false)` removes it.
-//!
-//! Reliable mode has no native idle/pending tracking, so a consumer that dies after `LMOVE` but
-//! before settling leaves its entry stranded on the processing list. Opting into a recovery ZSET
-//! with [`RedisList::recovery_zset`] (and [`RedisList::min_idle`]) starts a watchdog that returns
-//! such orphans to the main list; without it (the default) reliable lists have no orphan recovery,
-//! and Redis Streams ([`crate::RedisStream`]) remain the recommended durable path.
-//!
-//! Headers travel in a frame around the payload: a binary frame by default, or a readable
-//! codec-serialized envelope when a codec is set with [`RedisList::codec`] /
-//! [`RedisListPublish::codec`]. Both framings are lossless; the envelope writes a field whose
-//! bytes are valid UTF-8 as text and any other bytes as themselves.
+//! [lists]: https://powersemmi.github.io/ruststream-fred/latest/components/lists/
+//! [reliable]: https://powersemmi.github.io/ruststream-fred/latest/components/lists/reliable/
+//! [recovery]: https://powersemmi.github.io/ruststream-fred/latest/components/lists/recovery/
+//! [processing]: https://powersemmi.github.io/ruststream-fred/latest/components/lists/processing/
+//! [framing]: https://powersemmi.github.io/ruststream-fred/latest/components/subscriptions/framing/
+//! [publish]: https://powersemmi.github.io/ruststream-fred/latest/components/publishing/list-publish/
+//! [prelude]: https://powersemmi.github.io/ruststream-fred/latest/components/broker/prelude/
 
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
@@ -104,6 +101,10 @@ pub use crate::list::RedisListPublish as Publish;
 /// injected slot with the broker capability trait it needs (`Out<impl Publisher>`); a routes file
 /// globs this prelude and names the policy by its mount-site word, the same word on every form.
 ///
+/// The
+/// [Prelude](https://powersemmi.github.io/ruststream-fred/latest/components/broker/prelude/)
+/// page shows each form's prelude in a service.
+///
 /// A file that also globs another form's prelude sees an ambiguous `Publish`; use
 /// [`crate::prelude`] and write `list::Publish` there.
 pub mod prelude {
@@ -128,7 +129,7 @@ pub mod prelude {
 }
 
 const DEFAULT_BLOCK: Duration = Duration::from_secs(5);
-/// Suffix appended to the list key to form the default per-consumer processing list (reliable mode).
+/// Suffix appended to the list key to form the default processing list (reliable mode).
 const PROCESSING_SUFFIX: &str = ".processing";
 
 fn block_secs(block: Duration) -> f64 {
@@ -167,14 +168,14 @@ fn empty_on_timeout<T>(
 /// // Reliable: the entry waits on a processing list until the handler acknowledges it.
 /// #[subscriber(RedisList::new("jobs").reliable().block(Duration::from_secs(2)))]
 /// async fn run_job(job: &Job) -> HandlerOutcome {
-///     println!("running job {}", job.id);
+///     tracing::info!(job.id, "running");
 ///     HandlerOutcome::ack()
 /// }
 ///
 /// // Simple: popped and gone, so a crash mid-handler loses the entry.
 /// #[subscriber(RedisList::new("metrics"))]
 /// async fn record(job: &Job) -> HandlerOutcome {
-///     println!("recorded {}", job.id);
+///     tracing::info!(job.id, "recorded");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -281,8 +282,49 @@ impl RedisList {
     ///
     /// Off by default (a dead consumer's entry stays stranded on the processing list). The key has
     /// no sane default, so it is named explicitly here; pair it with [`min_idle`](Self::min_idle),
-    /// which is required when recovery is on. Reliable mode is implied. See
-    /// [orphan recovery](https://powersemmi.github.io/ruststream-fred/latest/lists/#orphan-recovery).
+    /// which is required when recovery is on. Reliable mode is implied. The
+    /// [Recovery](https://powersemmi.github.io/ruststream-fred/latest/components/lists/recovery/)
+    /// page shows the watchdog in a service.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # mod demo {
+    /// use std::time::Duration;
+    ///
+    /// use ruststream_fred::list::prelude::*;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Job {
+    ///     id: u64,
+    /// }
+    ///
+    /// // At-least-once, with the watchdog that returns a dead consumer's entry to the queue. Set
+    /// // `min_idle` above the longest handler runtime, or a running job is recovered and repeated.
+    /// #[subscriber(
+    ///     RedisList::new("jobs")
+    ///         .reliable()
+    ///         .min_idle(Duration::from_secs(30))
+    ///         .recovery_zset("jobs.inflight")
+    /// )]
+    /// async fn run_job(job: &Job) -> HandlerOutcome {
+    ///     tracing::info!(job.id, "running");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
+    ///         RedisBroker::standalone("redis://localhost:6379"),
+    ///         |b| {
+    ///             b.include(run_job);
+    ///         },
+    ///     )
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
     pub fn recovery_zset(mut self, key: impl Into<String>) -> Self {
         self.recovery_zset = Some(key.into());
         self.reliable = true;

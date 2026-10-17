@@ -46,10 +46,10 @@ use crate::error::RedisError;
 ///     let added = UNIX_EPOCH + Duration::from_millis(id.milliseconds());
 ///     let age = SystemTime::now().duration_since(added).unwrap_or_default();
 ///     if age > Duration::from_secs(5) {
-///         println!("stale quote {id}, {}ms old", age.as_millis());
+///         tracing::warn!(%id, age_ms = age.as_millis(), "stale quote");
 ///         return HandlerOutcome::drop();
 ///     }
-///     println!("quote {}", quote.price);
+///     tracing::info!(quote.price, "quote");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -166,7 +166,7 @@ impl FromStr for EntryId {
 ///     start_at(RedisGroupPosition::beginning())
 /// )]
 /// async fn audit(order: &Order) -> HandlerOutcome {
-///     println!("audited order {}", order.id);
+///     tracing::info!(order.id, "audited");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -293,7 +293,7 @@ impl RedisGroupPosition {
 /// #[subscriber(RedisStream::new("events").group("projection"))]
 /// async fn project(event: &Event, Ctx(seeker): Ctx<keys::SeekHandle>) -> HandlerOutcome {
 ///     if event.kind != "rebuild" {
-///         println!("projecting {}", event.kind);
+///         tracing::info!(event.kind, "projecting");
 ///         return HandlerOutcome::ack();
 ///     }
 ///     match seeker.seek(RedisGroupPosition::beginning()).await {

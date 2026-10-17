@@ -1,22 +1,20 @@
-//! Redis Pub/Sub transport: fire-and-forget fan-out with no acknowledgement.
+//! Redis Pub/Sub: delivery to the subscribers connected when a message is published.
 //!
-//! Unlike Streams, Pub/Sub has no durability, no consumer groups, and no ack: a message reaches
-//! whichever subscribers are connected at publish time, and `ack` / `nack` report
-//! [`AckError::Unsupported`]. Two delivery modes exist, explicit because they do not interoperate:
+//! - [PubSub][pubsub]: [`RedisPubSub`], one channel.
+//! - [RedisPubSubPattern][pattern]: [`RedisPubSubPattern`], every channel a glob matches.
+//! - [PubSubMode][mode]: [`PubSubMode`], classic or sharded delivery.
+//! - [buffer][buffer]: [`RedisPubSub::buffer`], what a busy subscription holds.
+//! - [Framing][framing]: [`RedisPubSub::codec`], the frame the headers travel in.
+//! - [RedisPubSubPublish][publish]: [`Publish`], `PUBLISH` or `SPUBLISH`.
+//! - [Prelude][prelude]: [`prelude`], everything a Pub/Sub service imports.
 //!
-//! * [`PubSubMode::Classic`] - `SUBSCRIBE` / `PUBLISH`, broadcast to every node; supports patterns
-//!   (`PSUBSCRIBE`). The only option on standalone and sentinel.
-//! * [`PubSubMode::Sharded`] - `SSUBSCRIBE` / `SPUBLISH` (Redis 7+), slot-local so it scales across
-//!   a cluster, but has no pattern support.
-//!
-//! A channel and a pattern are two descriptors, [`RedisPubSub`] and [`RedisPubSubPattern`],
-//! because they differ in more than a flag: a pattern reads many channels and names none, so
-//! sharded delivery has no meaning there and neither does a destination a retry copy could go to.
-//!
-//! Headers travel in a frame around the payload: a binary frame by default, or a readable
-//! codec-serialized envelope when a codec is set with [`RedisPubSub::codec`] /
-//! [`RedisPubSubPublish::codec`]. Both framings are lossless; the envelope writes a field whose
-//! bytes are valid UTF-8 as text and any other bytes as themselves.
+//! [pubsub]: https://powersemmi.github.io/ruststream-fred/latest/components/pubsub/
+//! [pattern]: https://powersemmi.github.io/ruststream-fred/latest/components/pubsub/pattern/
+//! [mode]: https://powersemmi.github.io/ruststream-fred/latest/components/pubsub/pubsub-mode/
+//! [buffer]: https://powersemmi.github.io/ruststream-fred/latest/components/pubsub/buffer/
+//! [framing]: https://powersemmi.github.io/ruststream-fred/latest/components/subscriptions/framing/
+//! [publish]: https://powersemmi.github.io/ruststream-fred/latest/components/publishing/pubsub-publish/
+//! [prelude]: https://powersemmi.github.io/ruststream-fred/latest/components/broker/prelude/
 
 use std::fmt::{Debug, Formatter};
 use std::future::{Future, ready};
@@ -107,6 +105,10 @@ pub use crate::pubsub::RedisPubSubPublish as Publish;
 /// injected slot with the broker capability trait it needs (`Out<impl Publisher>`); a routes file
 /// globs this prelude and names the policy by its mount-site word, the same word on every form.
 ///
+/// The
+/// [Prelude](https://powersemmi.github.io/ruststream-fred/latest/components/broker/prelude/)
+/// page shows each form's prelude in a service.
+///
 /// A file that also globs another form's prelude sees an ambiguous `Publish`; use
 /// [`crate::prelude`] and write `pubsub::Publish` there.
 pub mod prelude {
@@ -167,14 +169,14 @@ impl PubSubMode {
 /// // Classic: `SUBSCRIBE`, broadcast to every node of a cluster.
 /// #[subscriber(RedisPubSub::new("events"))]
 /// async fn on_event(event: &Event) -> HandlerOutcome {
-///     println!("event: {}", event.kind);
+///     tracing::info!(event.kind, "event");
 ///     HandlerOutcome::ack()
 /// }
 ///
 /// // Sharded: `SSUBSCRIBE`, served by the node that owns the channel's slot.
 /// #[subscriber(RedisPubSub::new("metrics").mode(PubSubMode::Sharded))]
 /// async fn on_metric(event: &Event) -> HandlerOutcome {
-///     println!("metric: {}", event.kind);
+///     tracing::info!(event.kind, "metric");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -266,7 +268,7 @@ impl RedisPubSub {
     /// // A handler that falls behind a burst of up to ten thousand events loses none of them.
     /// #[subscriber(RedisPubSub::new("events").buffer(nonzero!(10_000)))]
     /// async fn on_event(event: &Event) -> HandlerOutcome {
-    ///     println!("event {}", event.kind);
+    ///     tracing::info!(event.kind, "event");
     ///     HandlerOutcome::ack()
     /// }
     /// #
@@ -361,7 +363,7 @@ impl RedisPubSub {
 ///
 /// #[subscriber(RedisPubSubPattern::new("events.*"))]
 /// async fn on_any_event(event: &Event, Ctx(channel): Ctx<keys::Channel>) -> HandlerOutcome {
-///     println!("{} on {channel}", event.kind);
+///     tracing::info!(event.kind, channel, "event");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -450,7 +452,7 @@ impl RedisPubSubPattern {
     /// // A handler that falls behind a burst of up to ten thousand events loses none of them.
     /// #[subscriber(RedisPubSubPattern::new("events.*").buffer(nonzero!(10_000)))]
     /// async fn on_event(event: &Event) -> HandlerOutcome {
-    ///     println!("event {}", event.kind);
+    ///     tracing::info!(event.kind, "event");
     ///     HandlerOutcome::ack()
     /// }
     /// #

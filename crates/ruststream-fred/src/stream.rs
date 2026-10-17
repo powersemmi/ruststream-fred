@@ -1,19 +1,22 @@
-//! Builder describing one Redis Streams subscription.
+//! Redis Streams: a stream read through a consumer group, the durable form.
 //!
-//! A subscription always reads through a consumer group. Three read modes are selected by
-//! constructor, never by a runtime flag, because they return disjoint message sets:
+//! - [RedisStream][streams]: [`RedisStream`], fresh entries off the tail with
+//!   [`RedisStream::new`].
+//! - [reclaim][reclaim]: [`RedisStream::reclaim`], the entries another consumer fetched and never
+//!   acked.
+//! - [claiming][claiming]: [`RedisStream::claiming`], pending and fresh entries in one read
+//!   (Redis 8.4 and later).
+//! - [StreamStart][stream-start]: [`StreamStart`], where a group starts when it is created.
+//! - [RedisPublish][publish]: [`Publish`], `XADD` to a stream, also named
+//!   [`TransactionalPublish`].
+//! - [Prelude][prelude]: [`prelude`], everything a Redis Streams service imports.
 //!
-//! * [`RedisStream::new`] reads fresh entries off the tail (`XREADGROUP > ...`).
-//! * [`RedisStream::reclaim`] reads stale pending entries another consumer never acked
-//!   (`XAUTOCLAIM`, idle at least `min_idle`) - the crash-recovery path.
-//! * [`RedisStream::claiming`] reads both in one call (`XREADGROUP ... CLAIM`, Redis 8.4 and
-//!   later): stale pending entries first, then fresh ones, each with its idle time and delivery
-//!   count.
-//!
-//! Inferring the mode from a numeric parameter would be a footgun (a stray idle timeout could
-//! silently stop fresh delivery), so the mode is part of the constructor name. On a server older
-//! than 8.4, recovery is a separate `reclaim` subscriber beside the `new` one on the same group:
-//! "two handlers per group".
+//! [streams]: https://powersemmi.github.io/ruststream-fred/latest/components/streams/
+//! [reclaim]: https://powersemmi.github.io/ruststream-fred/latest/components/streams/reclaim/
+//! [claiming]: https://powersemmi.github.io/ruststream-fred/latest/components/streams/claiming/
+//! [stream-start]: https://powersemmi.github.io/ruststream-fred/latest/components/streams/stream-start/
+//! [publish]: https://powersemmi.github.io/ruststream-fred/latest/components/publishing/
+//! [prelude]: https://powersemmi.github.io/ruststream-fred/latest/components/broker/prelude/
 
 use std::future::{Future, ready};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -85,6 +88,10 @@ pub use crate::publisher::RedisPublish as TransactionalPublish;
 /// injected slot with the broker capability trait it needs (`Out<impl Publisher>`, `Out<impl
 /// TransactionalPublisher>`); a routes file globs this prelude and names the policy by its
 /// mount-site word, the same word on every form.
+///
+/// The
+/// [Prelude](https://powersemmi.github.io/ruststream-fred/latest/components/broker/prelude/)
+/// page shows each form's prelude in a service.
 ///
 /// A file that also globs another form's prelude sees an ambiguous `Publish`; use
 /// [`crate::prelude`] and write `stream::Publish` there.
@@ -202,14 +209,14 @@ pub(crate) enum RequeueMode {
 /// // Fresh tail: the normal worker, reading new entries.
 /// #[subscriber(RedisStream::new("orders").group("workers"))]
 /// async fn handle(order: &Order) -> HandlerOutcome {
-///     println!("order {}", order.id);
+///     tracing::info!(order.id, "order");
 ///     HandlerOutcome::ack()
 /// }
 ///
 /// // Recovery on the same group: entries a crashed worker left pending for over 30s.
 /// #[subscriber(RedisStream::reclaim("orders", Duration::from_secs(30)).group("workers"))]
 /// async fn recover(order: &Order) -> HandlerOutcome {
-///     println!("recovered order {}", order.id);
+///     tracing::info!(order.id, "recovered");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -245,6 +252,47 @@ impl RedisStream {
     /// A fresh-tail subscription on `key`: reads new entries via `XREADGROUP >`.
     ///
     /// A consumer group is required; set it with [`group`](Self::group).
+    ///
+    /// # Examples
+    ///
+    /// A plain stream has no delivery count of its own, so a retry cap reads the framework's
+    /// retry-count header on the copies the runtime publishes:
+    ///
+    /// ```
+    /// # mod demo {
+    /// use ruststream_fred::stream::prelude::*;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Order {
+    ///     id: u64,
+    /// }
+    ///
+    /// // The handler counts nothing itself.
+    /// #[subscriber(RedisStream::new("orders").group("workers"))]
+    /// async fn handle(order: &Order) -> HandlerOutcome {
+    ///     if order.id == 0 {
+    ///         return HandlerOutcome::retry();
+    ///     }
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+    ///         RedisBroker::standalone("redis://localhost:6379"),
+    ///         |b| {
+    ///             // Five deliveries per message, counting the first. The fifth failure sends it to
+    ///             // "orders.dlq" instead of back to "orders".
+    ///             b.include(handle)
+    ///                 .max_attempts(nonzero!(5u32))
+    ///                 .dead_letter("orders.dlq");
+    ///         },
+    ///     )
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
     pub fn new(key: impl Into<String>) -> Self {
         Self {
             key: key.into(),
@@ -264,6 +312,48 @@ impl RedisStream {
     ///
     /// `min_idle` has no default and must exceed the longest legitimate handler runtime: set it too
     /// low and a healthy consumer's in-flight message gets reclaimed and processed twice.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # mod demo {
+    /// use std::time::Duration;
+    ///
+    /// use ruststream_fred::stream::prelude::*;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Order {
+    ///     id: u64,
+    /// }
+    ///
+    /// #[subscriber(RedisStream::new("orders").group("workers"))]
+    /// async fn handle(order: &Order) -> HandlerOutcome {
+    ///     tracing::info!(order.id, "processing");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// // Recovery on a server older than 8.4: a reclaim subscription beside the fresh-tail one, on the
+    /// // same group, takes the orders a dead worker fetched and never finished.
+    /// #[subscriber(RedisStream::reclaim("orders", Duration::from_secs(30)).group("workers"))]
+    /// async fn recover(order: &Order) -> HandlerOutcome {
+    ///     tracing::info!(order.id, "recovered");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+    ///         RedisBroker::standalone("redis://localhost:6379"),
+    ///         |b| {
+    ///             b.include(handle);
+    ///             b.include(recover);
+    ///         },
+    ///     )
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
     pub fn reclaim(key: impl Into<String>, min_idle: Duration) -> Self {
         Self {
             key: key.into(),
@@ -326,7 +416,7 @@ impl RedisStream {
     ///     if !order.in_stock {
     ///         return HandlerOutcome::retry();
     ///     }
-    ///     println!("order {}", order.id);
+    ///     tracing::info!(order.id, "order");
     ///     HandlerOutcome::ack()
     /// }
     ///

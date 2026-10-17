@@ -45,7 +45,7 @@ use crate::stream::RedisStream;
 /// #[subscriber(RedisStream::new("orders").group("workers"))]
 /// async fn bill(orders: &[Order]) -> HandlerOutcome {
 ///     let total: u64 = orders.iter().map(|order| order.amount).sum();
-///     println!("billed {} orders, {total} in all", orders.len());
+///     tracing::info!(orders = orders.len(), total, "billed");
 ///     HandlerOutcome::ack()
 /// }
 ///

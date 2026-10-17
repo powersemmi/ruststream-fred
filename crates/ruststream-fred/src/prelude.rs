@@ -2,7 +2,10 @@
 //!
 //! The broker, every descriptor and publish policy, the seek types, the per-delivery and
 //! batch contexts with their [`keys`], and the [`crate::stream`], [`crate::list`] and
-//! [`crate::pubsub`] modules.
+//! [`crate::pubsub`] modules. The policies keep their prefixed names, so a mixed file writes
+//! `stream::Publish` beside `pubsub::Publish`. The
+//! [Prelude](https://powersemmi.github.io/ruststream-fred/latest/components/broker/prelude/)
+//! page shows the form preludes and this one in a service.
 //!
 //! # Examples
 //!
@@ -29,7 +32,7 @@
 //!
 //! #[subscriber(RedisList::new("invoices").reliable())]
 //! async fn invoice(order: &Order) -> HandlerOutcome {
-//!     println!("invoicing order {}", order.id);
+//!     tracing::info!(order.id, "invoicing");
 //!     HandlerOutcome::ack()
 //! }
 //!

@@ -202,7 +202,7 @@ impl std::fmt::Debug for AuthConfig {
 ///
 /// #[subscriber(RedisStream::new("orders").group("workers"))]
 /// async fn handle(order: &Order) -> HandlerOutcome {
-///     println!("order {}", order.id);
+///     tracing::info!(order.id, "order");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -218,6 +218,71 @@ impl std::fmt::Debug for AuthConfig {
 ///     )
 /// }
 /// # }
+/// # fn main() {}
+/// ```
+///
+/// # Testing
+///
+/// A test hands [`TestApp`](https://docs.rs/ruststream/latest/ruststream/testing/struct.TestApp.html) the app `main` runs and addresses the
+/// broker by this type; the crate's `testing` feature in `[dev-dependencies]` connects it to a
+/// Redis modelled in process.
+///
+/// ```
+/// # use std::error::Error;
+/// # #[cfg(feature = "testing")]
+/// # mod demo {
+/// use std::error::Error;
+///
+/// use ruststream::testing::TestApp;
+/// use ruststream_fred::stream::prelude::*;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Debug, Deserialize, Outgoing, PartialEq, Serialize)]
+/// struct Payment {
+///     id: u64,
+///     amount: u64,
+/// }
+///
+/// #[subscriber(RedisStream::new("payments").group("workers"))]
+/// async fn process(payment: &Payment) -> HandlerOutcome {
+///     if payment.amount == 0 {
+///         return HandlerOutcome::drop();
+///     }
+///     HandlerOutcome::ack()
+/// }
+///
+/// /// The app `main` runs, and the one the tests hand the harness.
+/// pub fn app() -> impl App<State = ()> {
+///     RustStream::new(AppInfo::new("payments", "0.1.0"))
+///         .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
+///             b.include(process);
+///         })
+/// }
+///
+/// pub async fn a_paid_payment_is_acknowledged() -> Result<(), Box<dyn Error>> {
+///     // The broker connects in process: nothing dials the address, and a publish is driven to
+///     // quiescence, so the assertion after it needs no waiting.
+///     let tb = TestApp::start(app()).await?;
+///     let payment = Payment { id: 1, amount: 100 };
+///     tb.broker::<RedisBroker>()
+///         .message(&payment)
+///         .to("payments")
+///         .publish()
+///         .await?;
+///
+///     tb.broker::<RedisBroker>()
+///         .subscriber("payments")
+///         .assert_called_once()
+///         .with(&payment)
+///         .settled(HandlerOutcome::ack());
+///     Ok(())
+/// }
+/// # }
+/// # #[cfg(feature = "testing")]
+/// # fn main() -> Result<(), Box<dyn Error>> {
+/// #     tokio::runtime::Runtime::new()?.block_on(demo::a_paid_payment_is_acknowledged())
+/// # }
+/// # #[cfg(not(feature = "testing"))]
 /// # fn main() {}
 /// ```
 #[derive(Debug, Clone)]
@@ -364,7 +429,7 @@ impl RedisBroker {
     /// #
     /// # #[subscriber(RedisStream::new("orders").group("workers"))]
     /// # async fn handle(order: &Order) -> HandlerOutcome {
-    /// #     println!("order {}", order.id);
+    /// #     tracing::info!(order.id, "order");
     /// #     HandlerOutcome::ack()
     /// # }
     ///
@@ -402,7 +467,7 @@ impl RedisBroker {
     /// #
     /// # #[subscriber(RedisStream::new("orders").group("workers"))]
     /// # async fn handle(order: &Order) -> HandlerOutcome {
-    /// #     println!("order {}", order.id);
+    /// #     tracing::info!(order.id, "order");
     /// #     HandlerOutcome::ack()
     /// # }
     ///
@@ -447,15 +512,18 @@ impl RedisBroker {
     /// #
     /// # #[subscriber(RedisStream::new("orders").group("workers"))]
     /// # async fn handle(order: &Order) -> HandlerOutcome {
-    /// #     println!("order {}", order.id);
+    /// #     tracing::info!(order.id, "order");
     /// #     HandlerOutcome::ack()
     /// # }
     ///
     /// pub async fn serve() -> Result<(), Box<dyn Error>> {
-    ///     // System trust roots, no client certificate.
+    ///     // System trust roots, no client certificate. The same connector works on every topology.
     ///     let tls = TlsConnector::default_rustls()?;
+    ///     let broker = RedisBroker::cluster(["10.0.0.1:6379"])
+    ///         .credentials("worker", "s3cr3t")
+    ///         .tls(tls);
     ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
-    ///         .with_broker(RedisBroker::cluster(["10.0.0.1:6379"]).tls(tls), |b| {
+    ///         .with_broker(broker, |b| {
     ///             b.include(handle);
     ///         })
     ///         .run()
@@ -493,7 +561,7 @@ impl RedisBroker {
     /// #
     /// # #[subscriber(RedisStream::new("orders").group("workers"))]
     /// # async fn handle(order: &Order) -> HandlerOutcome {
-    /// #     println!("order {}", order.id);
+    /// #     tracing::info!(order.id, "order");
     /// #     HandlerOutcome::ack()
     /// # }
     ///
@@ -542,7 +610,7 @@ impl RedisBroker {
     /// #
     /// # #[subscriber(RedisStream::new("orders").group("workers"))]
     /// # async fn handle(order: &Order) -> HandlerOutcome {
-    /// #     println!("order {}", order.id);
+    /// #     tracing::info!(order.id, "order");
     /// #     HandlerOutcome::ack()
     /// # }
     ///
@@ -602,7 +670,7 @@ impl RedisBroker {
     /// #
     /// # #[subscriber(RedisStream::new("orders").group("workers"))]
     /// # async fn handle(order: &Order) -> HandlerOutcome {
-    /// #     println!("order {}", order.id);
+    /// #     tracing::info!(order.id, "order");
     /// #     HandlerOutcome::ack()
     /// # }
     ///
