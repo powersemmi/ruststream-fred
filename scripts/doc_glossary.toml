@@ -354,3 +354,10 @@ en_match = "stand[-\\s]ins?"
 ru = "тестовый брокер"
 ru_match = "тестов\\w*\\s+брокер"
 zh = "替身"
+
+[[term]]
+en = "settlement"
+en_match = "settl(e|es|ed|ing|ement|ements)"
+ru = "завершение"
+ru_match = "заверш"
+zh = "结算"
