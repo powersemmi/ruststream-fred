@@ -21,7 +21,7 @@ use fred::types::config::CredentialProvider;
 ))]
 use fred::types::config::TlsConfig;
 use fred::types::config::{Config, PerformanceConfig, ServerConfig};
-use fred::types::{ClusterHash, CustomCommand, Message, Value, Version};
+use fred::types::{ClientState, ClusterHash, CustomCommand, Message, Value, Version};
 use fred::util::redis_keyslot;
 #[cfg(feature = "testing")]
 use ruststream::testing::{Coordinator, InProcess, TestableBroker};
@@ -73,8 +73,8 @@ enum Topology {
     /// Sentinel-managed replication: the monitored primary's `service` name plus the `host:port`
     /// of each sentinel.
     Sentinel { service: String, hosts: Vec<String> },
-    /// A pool supplied already-connected via [`RedisBroker::from_pool`]; `connect` adopts it
-    /// instead of dialing.
+    /// A pool the service built itself, supplied via [`RedisBroker::from_pool`]; `connect`
+    /// adopts it, dialing it first when the service has not.
     Preconnected(Pool),
 }
 
@@ -246,11 +246,61 @@ impl RedisBroker {
         })
     }
 
-    /// Wraps an already-connected `fred` pool. Useful for advanced configuration (TLS, cluster,
-    /// sentinel, custom performance and reconnection policies).
+    /// Wraps a `fred` pool the service built itself, for a setting the other constructors do not
+    /// reach (a reconnection policy, performance tuning, a custom connection config).
     ///
-    /// [`Broker::connect`] adopts the pool instead of dialing; the config it was built from is
-    /// reused for the dedicated clients Pub/Sub subscriptions need.
+    /// The pool is built in the synchronous app builder and not connected there:
+    /// [`Broker::connect`] dials it at startup, and an unreachable server fails startup as it does
+    /// for an address. A pool the service has already connected is adopted as it is. The config the
+    /// pool was built from is reused for the dedicated clients Pub/Sub subscriptions need.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # mod demo {
+    /// use std::time::Duration;
+    ///
+    /// use fred::clients::Pool;
+    /// use fred::types::config::{Config, ConnectionConfig, ReconnectPolicy, ServerConfig};
+    /// use ruststream_fred::stream::prelude::*;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Order {
+    ///     id: u64,
+    /// }
+    ///
+    /// #[subscriber(RedisStream::new("orders").group("workers"))]
+    /// async fn handle(order: &Order) -> HandlerOutcome {
+    ///     tracing::info!(order = order.id, "order received");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     let config = Config {
+    ///         server: ServerConfig::new_centralized("localhost", 6379),
+    ///         ..Config::default()
+    ///     };
+    ///     let connection = ConnectionConfig {
+    ///         connection_timeout: Duration::from_secs(2),
+    ///         ..ConnectionConfig::default()
+    ///     };
+    ///     // Reconnect forever, backing off from 100 ms up to 10 s between attempts.
+    ///     let policy = ReconnectPolicy::new_exponential(0, 100, 10_000, 2);
+    ///     let pool = Pool::new(config, None, Some(connection), Some(policy), 8)
+    ///         .expect("a pool of eight connections");
+    ///
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+    ///         RedisBroker::from_pool(pool),
+    ///         |b| {
+    ///             b.include(handle);
+    ///         },
+    ///     )
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
     pub fn from_pool(pool: Pool) -> Self {
         Self::with_topology(Topology::Preconnected(pool))
     }
@@ -648,6 +698,20 @@ impl Broker for RedisBroker {
         // pool that is itself clustered is treated as the cluster it is.
         let clustered = config.server.is_clustered();
         let pool = if let Topology::Preconnected(pool) = &self.topology {
+            // A pool built in the synchronous app builder has not dialed yet, and this is the
+            // first async step it reaches. fred reports a client that was never started and one
+            // waiting between reconnection attempts with the same `Disconnected` state, so a pool
+            // with no client up is dialed here either way: its server is unreachable now, and
+            // startup fails as it does for a pool built from an address.
+            let started = pool
+                .clients()
+                .iter()
+                .any(|client| client.state() != ClientState::Disconnected);
+            if !started {
+                pool.init()
+                    .await
+                    .map_err(|err| RedisError::Connect(Box::new(err)))?;
+            }
             pool.clone()
         } else {
             let pool = Pool::new(config.clone(), None, None, None, self.pool_size)
