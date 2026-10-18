@@ -1,15 +1,20 @@
 //! Consumer-side pipelining: a subscription settles in a window, and a handler queues its own
 //! Redis commands into the delivery's segment of that window.
 //!
-//! `.pipeline()` where the handler is mounted opens the window (see [`RedisPipelineSteps`]): the
-//! settles of the deliveries in flight, and the commands their handlers queued through
-//! [`keys::Pipeline`](crate::context::keys::Pipeline), leave together, in one pipeline on a
-//! connection of the pool, once the read's `COUNT` has settled, once nothing is outstanding, or
-//! when the subscription stops. `.atomic()` after it makes each delivery's segment one `MULTI` /
-//! `EXEC`.
+//! - [pipeline][pipeline]: [`RedisPipelineSteps`], the `.pipeline()` step that opens the window.
+//! - [atomic][atomic]: `.atomic()`, one `MULTI` / `EXEC` per delivery.
+//! - [Commands][commands]: [`RedisPipeline`], the commands a handler queues through
+//!   [`keys::Pipeline`](crate::context::keys::Pipeline).
+//! - [bind][bind]: [`Bindable`], a slot's publishes in the delivery's round.
+//! - [InRound][in-round]: [`InRound`], the reply in the delivery's round.
+//! - [Flush][flush]: when a window leaves, and what each outcome does to what a handler queued.
 //!
-//! What a handler queued follows the delivery's outcome: `ack` commits it with the settle, and
-//! every other outcome discards it.
+//! [pipeline]: https://powersemmi.github.io/ruststream-fred/latest/components/pipelining/
+//! [atomic]: https://powersemmi.github.io/ruststream-fred/latest/components/pipelining/atomic/
+//! [commands]: https://powersemmi.github.io/ruststream-fred/latest/components/pipelining/commands/
+//! [bind]: https://powersemmi.github.io/ruststream-fred/latest/components/pipelining/bind/
+//! [in-round]: https://powersemmi.github.io/ruststream-fred/latest/components/pipelining/in-round/
+//! [flush]: https://powersemmi.github.io/ruststream-fred/latest/components/pipelining/flush/
 
 mod commands;
 mod descriptors;
@@ -410,6 +415,50 @@ pub trait RedisPipelineSteps: Declared {
     /// pipelined list reads in batches, and a reliable list's `LREM` settles ride the window.
     /// Pub/Sub, on a channel or a pattern, settles nothing, so its window carries the handlers'
     /// commands alone, and leaves once nothing is in flight.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # mod demo {
+    /// use ruststream_fred::stream::prelude::*;
+    /// use serde::{Deserialize, Serialize};
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Order {
+    ///     id: u64,
+    /// }
+    ///
+    /// #[derive(Serialize, Outgoing)]
+    /// #[outgoing(name = "receipts")]
+    /// struct Receipt {
+    ///     id: u64,
+    /// }
+    ///
+    /// #[subscriber(RedisStream::new("orders").group("workers"), reply)]
+    /// async fn record(
+    ///     order: &Order,
+    ///     Ctx(pipeline): Ctx<keys::Pipeline>,
+    /// ) -> Result<Receipt, HandlerOutcome> {
+    ///     // Queued: it runs after the handler returns, with the delivery's `XACK`.
+    ///     if pipeline.hincrby("orders:count", "seen", 1).await.is_err() {
+    ///         return Err(HandlerOutcome::retry());
+    ///     }
+    ///     Ok(Receipt { id: order.id })
+    /// }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+    ///         RedisBroker::standalone("redis://localhost:6379"),
+    ///         |b| {
+    ///             // The reply joins the delivery's round and leaves after what the handler queued.
+    ///             b.include(record.pipeline()).out_reply(Publish).transform(InRound);
+    ///         },
+    ///     )
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
     fn pipeline(self) -> <Self::Settings as PipelineStep>::Out
     where
         Self::Settings: PipelineStep,
@@ -435,7 +484,7 @@ mod bindable {
     }
 }
 
-/// A publisher of this crate, which `pipeline.bind(&out)` can bind to a delivery's round.
+/// A publisher of this crate, which `pipeline.bind(out)` can bind to a delivery's round.
 ///
 /// Implemented by every publisher this crate's policies pair into, and by nothing else: a
 /// publisher of another broker publishes through its own connection, which no round of this one

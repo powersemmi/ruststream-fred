@@ -123,6 +123,77 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisPublish {
     }
 }
 
+/// The stream publisher's policy for a mount that publishes in transactions: it pairs into the same
+/// [`RedisPublisher`] as [`RedisPublish`], and only where the topology can run one.
+///
+/// Redis Cluster cannot run a `MULTI` / `EXEC` block across hash slots, so on a cluster this
+/// policy refuses to pair and the service fails to start, naming the registration that asked for
+/// it. Without the refusal a `.transactional()` batch reply would fail to open its transaction on
+/// every batch and redeliver it without end.
+///
+/// # Examples
+///
+/// ```
+/// # mod demo {
+/// use ruststream_fred::stream::prelude::*;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Deserialize, Serialize, Outgoing)]
+/// #[outgoing(name = "orders.priced")]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[subscriber(RedisStream::new("orders").group("workers"), reply)]
+/// async fn price(orders: &[Order]) -> Result<Vec<Order>, HandlerOutcome> {
+///     Ok(orders.iter().map(|order| Order { id: order.id }).collect())
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+///         RedisBroker::standalone("redis://localhost:6379"),
+///         |b| {
+///             // `TransactionalPublish` is this policy under the stream prelude's name: one
+///             // batch's replies land together, as one MULTI / EXEC block.
+///             b.include(price.batch(nonzero!(32)))
+///                 .out_reply(TransactionalPublish)
+///                 .transactional();
+///         },
+///     )
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[must_use]
+pub struct RedisTransactionalPublish;
+
+impl PublishPolicy<ConnectedRedisBroker> for RedisTransactionalPublish {
+    type Live = RedisPublisher;
+
+    /// # Errors
+    ///
+    /// Returns a [`PairError`] carrying [`RedisError::InvalidOptions`] on a cluster topology.
+    fn pair(
+        self,
+        connected: &ConnectedRedisBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        let publisher = connected.publisher();
+        ready(
+            publisher
+                .check_transactions_supported()
+                .map(|()| publisher)
+                .map_err(PairError::new),
+        )
+    }
+
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self, channel: &str) -> Bindings {
+        RedisPublish.channel_bindings(channel)
+    }
+}
+
 /// The broker's default policy, what a registration publishes through when its mount site names
 /// none: a reply, a retry copy, a dead-letter move.
 ///
@@ -162,7 +233,7 @@ impl PublishPolicy<ConnectedRedisBroker> for RedisPublish {
 ///
 /// #[subscriber(RedisList::new("jobs").reliable())]
 /// async fn work(job: &Job) -> HandlerOutcome {
-///     println!("job for order {}", job.order);
+///     tracing::info!(job.order, "job");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -363,6 +434,49 @@ async fn append(
 /// inside `EXEC` does not undo the commands before it. For a block of `XADD`s against stream keys
 /// that is practically limited to out-of-memory and wrong-type keys; a command the server refuses
 /// to *queue* discards the whole block.
+///
+/// # Examples
+///
+/// ```
+/// # mod demo {
+/// use ruststream::OutgoingMessage;
+/// use ruststream_fred::stream::prelude::*;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Deserialize, Serialize, Outgoing)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[subscriber("orders", reply("processed"))]
+/// async fn process(orders: &[Order]) -> Result<Vec<Order>, HandlerOutcome> {
+///     Ok(orders.iter().map(|order| Order { id: order.id }).collect())
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     let broker = RedisBroker::standalone("redis://localhost:6379").default_group("workers");
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+///         // The borrowed kind: one batch's replies, buffered and committed as one MULTI / EXEC.
+///         b.include(process.batch(nonzero!(32)))
+///             .out_reply(TransactionalPublish)
+///             .transactional();
+///
+///         // The owned kind, in the hook where a service makes its first publishes.
+///         b.after_startup(TransactionalPublish, async move |publisher| {
+///             let mut seed = publisher.transaction().await?;
+///             seed.publish(
+///                 OutgoingMessage::new("processed", br#"{"id":0}"#.as_slice()),
+///                 None,
+///             )
+///             .await?;
+///             seed.commit().await
+///         });
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
 #[derive(Clone)]
 pub struct RedisPublisher {
     core: Arc<RedisCore>,
@@ -570,7 +684,7 @@ impl OwnedTransactions for RedisPublisher {
 /// #
 /// # #[subscriber(RedisStream::new("orders").group("workers"))]
 /// # async fn handle(order: &Order) -> HandlerOutcome {
-/// #     println!("order {}", order.id);
+/// #     tracing::info!(order.id, "order");
 /// #     HandlerOutcome::ack()
 /// # }
 ///

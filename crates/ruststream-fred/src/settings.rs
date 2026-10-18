@@ -16,14 +16,16 @@ use std::time::Duration;
 
 use ruststream::runtime::{Declared, SubscriberBuilder, SubscriberSettings};
 
+#[cfg(doc)]
 use crate::list::RedisList;
-use crate::pipeline::Pipelined;
+#[cfg(doc)]
 use crate::stream::RedisStream;
 
 /// The Redis subscription options a mount site names, chained after the core's settings steps.
 ///
 /// Import it (or glob a form's prelude) to reach [`block`](Self::block) on a builder over a
-/// [`RedisStream`] or a [`RedisList`], with or without the window `.pipeline()` opens. The trait
+/// [`RedisStream`] or a [`RedisList`], before or after the window `.pipeline()` opens and the
+/// position `start_at(..)` names. The trait
 /// is bound to those sources, so the method does not appear on a builder for another broker or
 /// for a form that has no blocking read.
 ///
@@ -43,7 +45,7 @@ use crate::stream::RedisStream;
 /// #[subscriber(RedisStream::new("orders").group("workers"))]
 /// async fn bill(orders: &[Order]) -> HandlerOutcome {
 ///     let total: u64 = orders.iter().map(|order| order.amount).sum();
-///     println!("billed {} orders, {total} in all", orders.len());
+///     tracing::info!(orders = orders.len(), total, "billed");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -69,44 +71,56 @@ pub trait RedisSubscribeExt {
     fn block(self, block: Duration) -> Self;
 }
 
-impl<Def, State, DefCodec> RedisSubscribeExt
-    for SubscriberBuilder<Def, RedisStream, State, DefCodec>
+impl<Def, Source, State, DefCodec> RedisSubscribeExt
+    for SubscriberBuilder<Def, Source, State, DefCodec>
 where
     Def: Declared,
+    Source: blocking::Blocks,
 {
     fn block(self, block: Duration) -> Self {
         self.map_source(|source| source.block(block))
     }
 }
 
-impl<Def, State, DefCodec> RedisSubscribeExt for SubscriberBuilder<Def, RedisList, State, DefCodec>
-where
-    Def: Declared,
-{
-    fn block(self, block: Duration) -> Self {
-        self.map_source(|source| source.block(block))
-    }
-}
+mod blocking {
+    use std::time::Duration;
 
-/// The same option on a stream whose window `.pipeline()` has opened, so the base settings read
-/// in either order around it.
-impl<Def, Mode, State, DefCodec> RedisSubscribeExt
-    for SubscriberBuilder<Def, Pipelined<RedisStream, Mode>, State, DefCodec>
-where
-    Def: Declared,
-{
-    fn block(self, block: Duration) -> Self {
-        self.map_source(|source| source.map(|stream| stream.block(block)))
-    }
-}
+    use ruststream::StartAt;
 
-/// The same option on a list whose window `.pipeline()` has opened.
-impl<Def, Mode, State, DefCodec> RedisSubscribeExt
-    for SubscriberBuilder<Def, Pipelined<RedisList, Mode>, State, DefCodec>
-where
-    Def: Declared,
-{
-    fn block(self, block: Duration) -> Self {
-        self.map_source(|source| source.map(|list| list.block(block)))
+    use crate::list::RedisList;
+    use crate::pipeline::Pipelined;
+    use crate::stream::RedisStream;
+
+    /// A source with a blocking read, which is what [`block`](super::RedisSubscribeExt::block)
+    /// reaches into wherever the mount chain has wrapped it.
+    pub trait Blocks {
+        fn block(self, block: Duration) -> Self;
+    }
+
+    impl Blocks for RedisStream {
+        fn block(self, block: Duration) -> Self {
+            Self::block(self, block)
+        }
+    }
+
+    impl Blocks for RedisList {
+        fn block(self, block: Duration) -> Self {
+            Self::block(self, block)
+        }
+    }
+
+    /// The same option on a source whose window `.pipeline()` has opened, so the base settings
+    /// read in either order around it.
+    impl<Descriptor: Blocks, Mode> Blocks for Pipelined<Descriptor, Mode> {
+        fn block(self, block: Duration) -> Self {
+            self.map(|descriptor| descriptor.block(block))
+        }
+    }
+
+    /// The same option after the core's `start_at(..)`, which wraps the source it positions.
+    impl<Source: Blocks, Position> Blocks for StartAt<Source, Position> {
+        fn block(self, block: Duration) -> Self {
+            self.map_inner(|source| source.block(block))
+        }
     }
 }

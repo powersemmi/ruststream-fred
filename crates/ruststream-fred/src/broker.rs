@@ -20,8 +20,8 @@ use fred::types::config::CredentialProvider;
     feature = "tls-native-tls"
 ))]
 use fred::types::config::TlsConfig;
-use fred::types::config::{Config, PerformanceConfig, ServerConfig};
-use fred::types::{ClusterHash, CustomCommand, Message, Value, Version};
+use fred::types::config::{Config, PerformanceConfig, ReconnectPolicy, ServerConfig};
+use fred::types::{ClientState, ClusterHash, CustomCommand, Message, Value, Version};
 use fred::util::redis_keyslot;
 #[cfg(feature = "testing")]
 use ruststream::testing::{Coordinator, InProcess, TestableBroker};
@@ -50,7 +50,7 @@ use crate::{
     publisher::{RedisDefaultPublisher, RedisPublisher},
     pubsub::{
         PubSubMode, PubSubWire, RedisPubSub, RedisPubSubPattern, RedisPubSubPublish,
-        RedisPubSubPublisher, RedisPubSubSubscriber,
+        RedisPubSubPublisher, RedisPubSubSubscriber, Resubscribe, Resubscribing,
     },
     route::{Recorded, Route, Routes},
     stream::{ReadMode, RedisStream},
@@ -59,6 +59,16 @@ use crate::{
 
 /// Default `fred` connection-pool size when the caller does not set one.
 const DEFAULT_POOL_SIZE: usize = 4;
+
+/// How the connections this broker opens reconnect after the server drops them: a first attempt
+/// after 100 ms, each next one twice as late, at most 10 s apart, and no limit on the attempts.
+///
+/// A service outlives a restart or a failover of its server, however long it takes; the quick
+/// first attempt covers a dropped socket, the cap keeps a long outage from becoming a flood of
+/// dials. Commands issued while the connection is down wait for it in `fred`'s queue.
+fn reconnect_policy() -> ReconnectPolicy {
+    ReconnectPolicy::new_exponential(0, 100, 10_000, 2)
+}
 
 /// The first Redis release whose `XREADGROUP` takes a `CLAIM` option.
 const CLAIM_MIN_VERSION: Version = Version::new(8, 4, 0);
@@ -77,8 +87,8 @@ enum Topology {
         service: String,
         hosts: Vec<Address>,
     },
-    /// A pool supplied already-connected via [`RedisBroker::from_pool`]; `connect` adopts it
-    /// instead of dialing.
+    /// A pool the service built itself, supplied via [`RedisBroker::from_pool`]; `connect`
+    /// adopts it, dialing it first when the service has not.
     Preconnected(Pool),
 }
 
@@ -197,7 +207,7 @@ impl std::fmt::Debug for AuthConfig {
 ///
 /// #[subscriber(RedisStream::new("orders").group("workers"))]
 /// async fn handle(order: &Order) -> HandlerOutcome {
-///     println!("order {}", order.id);
+///     tracing::info!(order.id, "order");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -213,6 +223,71 @@ impl std::fmt::Debug for AuthConfig {
 ///     )
 /// }
 /// # }
+/// # fn main() {}
+/// ```
+///
+/// # Testing
+///
+/// A test hands [`TestApp`](https://docs.rs/ruststream/latest/ruststream/testing/struct.TestApp.html) the app `main` runs and addresses the
+/// broker by this type; the crate's `testing` feature in `[dev-dependencies]` connects it to a
+/// Redis modelled in process.
+///
+/// ```
+/// # use std::error::Error;
+/// # #[cfg(feature = "testing")]
+/// # mod demo {
+/// use std::error::Error;
+///
+/// use ruststream::testing::TestApp;
+/// use ruststream_fred::stream::prelude::*;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Debug, Deserialize, Outgoing, PartialEq, Serialize)]
+/// struct Payment {
+///     id: u64,
+///     amount: u64,
+/// }
+///
+/// #[subscriber(RedisStream::new("payments").group("workers"))]
+/// async fn process(payment: &Payment) -> HandlerOutcome {
+///     if payment.amount == 0 {
+///         return HandlerOutcome::drop();
+///     }
+///     HandlerOutcome::ack()
+/// }
+///
+/// /// The app `main` runs, and the one the tests hand the harness.
+/// pub fn app() -> impl App<State = ()> {
+///     RustStream::new(AppInfo::new("payments", "0.1.0"))
+///         .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
+///             b.include(process);
+///         })
+/// }
+///
+/// pub async fn a_paid_payment_is_acknowledged() -> Result<(), Box<dyn Error>> {
+///     // The broker connects in process: nothing dials the address, and a publish is driven to
+///     // quiescence, so the assertion after it needs no waiting.
+///     let tb = TestApp::start(app()).await?;
+///     let payment = Payment { id: 1, amount: 100 };
+///     tb.broker::<RedisBroker>()
+///         .message(&payment)
+///         .to("payments")
+///         .publish()
+///         .await?;
+///
+///     tb.broker::<RedisBroker>()
+///         .subscriber("payments")
+///         .assert_called_once()
+///         .with(&payment)
+///         .settled(HandlerOutcome::ack());
+///     Ok(())
+/// }
+/// # }
+/// # #[cfg(feature = "testing")]
+/// # fn main() -> Result<(), Box<dyn Error>> {
+/// #     tokio::runtime::Runtime::new()?.block_on(demo::a_paid_payment_is_acknowledged())
+/// # }
+/// # #[cfg(not(feature = "testing"))]
 /// # fn main() {}
 /// ```
 #[derive(Debug, Clone)]
@@ -261,11 +336,62 @@ impl RedisBroker {
         })
     }
 
-    /// Wraps an already-connected `fred` pool. Useful for advanced configuration (TLS, cluster,
-    /// sentinel, custom performance and reconnection policies).
+    /// Wraps a `fred` pool the service built itself, for a setting the other constructors do not
+    /// reach (a reconnection policy, performance tuning, a custom connection config).
     ///
-    /// [`Broker::connect`] adopts the pool instead of dialing; the config it was built from is
-    /// reused for the dedicated clients Pub/Sub subscriptions need.
+    /// The pool is built in the synchronous app builder and not connected there:
+    /// [`Broker::connect`] dials it at startup, and an unreachable server fails startup as it does
+    /// for an address. A pool the service has already connected is adopted as it is. The config and the
+    /// reconnection policy the pool was built from are reused for the dedicated connections
+    /// subscriptions read on.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # mod demo {
+    /// use std::time::Duration;
+    ///
+    /// use fred::clients::Pool;
+    /// use fred::types::config::{Config, ConnectionConfig, ReconnectPolicy, ServerConfig};
+    /// use ruststream_fred::stream::prelude::*;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Order {
+    ///     id: u64,
+    /// }
+    ///
+    /// #[subscriber(RedisStream::new("orders").group("workers"))]
+    /// async fn handle(order: &Order) -> HandlerOutcome {
+    ///     tracing::info!(order = order.id, "order received");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     let config = Config {
+    ///         server: ServerConfig::new_centralized("localhost", 6379),
+    ///         ..Config::default()
+    ///     };
+    ///     let connection = ConnectionConfig {
+    ///         connection_timeout: Duration::from_secs(2),
+    ///         ..ConnectionConfig::default()
+    ///     };
+    ///     // Reconnect forever, backing off from 100 ms up to 10 s between attempts.
+    ///     let policy = ReconnectPolicy::new_exponential(0, 100, 10_000, 2);
+    ///     let pool = Pool::new(config, None, Some(connection), Some(policy), 8)
+    ///         .expect("a pool of eight connections");
+    ///
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+    ///         RedisBroker::from_pool(pool),
+    ///         |b| {
+    ///             b.include(handle);
+    ///         },
+    ///     )
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
     pub fn from_pool(pool: Pool) -> Self {
         Self::with_topology(Topology::Preconnected(pool))
     }
@@ -318,7 +444,7 @@ impl RedisBroker {
     /// #
     /// # #[subscriber(RedisStream::new("orders").group("workers"))]
     /// # async fn handle(order: &Order) -> HandlerOutcome {
-    /// #     println!("order {}", order.id);
+    /// #     tracing::info!(order.id, "order");
     /// #     HandlerOutcome::ack()
     /// # }
     ///
@@ -356,7 +482,7 @@ impl RedisBroker {
     /// #
     /// # #[subscriber(RedisStream::new("orders").group("workers"))]
     /// # async fn handle(order: &Order) -> HandlerOutcome {
-    /// #     println!("order {}", order.id);
+    /// #     tracing::info!(order.id, "order");
     /// #     HandlerOutcome::ack()
     /// # }
     ///
@@ -401,15 +527,18 @@ impl RedisBroker {
     /// #
     /// # #[subscriber(RedisStream::new("orders").group("workers"))]
     /// # async fn handle(order: &Order) -> HandlerOutcome {
-    /// #     println!("order {}", order.id);
+    /// #     tracing::info!(order.id, "order");
     /// #     HandlerOutcome::ack()
     /// # }
     ///
     /// pub async fn serve() -> Result<(), Box<dyn Error>> {
-    ///     // System trust roots, no client certificate.
+    ///     // System trust roots, no client certificate. The same connector works on every topology.
     ///     let tls = TlsConnector::default_rustls()?;
+    ///     let broker = RedisBroker::cluster(["10.0.0.1:6379"])
+    ///         .credentials("worker", "s3cr3t")
+    ///         .tls(tls);
     ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
-    ///         .with_broker(RedisBroker::cluster(["10.0.0.1:6379"]).tls(tls), |b| {
+    ///         .with_broker(broker, |b| {
     ///             b.include(handle);
     ///         })
     ///         .run()
@@ -447,7 +576,7 @@ impl RedisBroker {
     /// #
     /// # #[subscriber(RedisStream::new("orders").group("workers"))]
     /// # async fn handle(order: &Order) -> HandlerOutcome {
-    /// #     println!("order {}", order.id);
+    /// #     tracing::info!(order.id, "order");
     /// #     HandlerOutcome::ack()
     /// # }
     ///
@@ -496,7 +625,7 @@ impl RedisBroker {
     /// #
     /// # #[subscriber(RedisStream::new("orders").group("workers"))]
     /// # async fn handle(order: &Order) -> HandlerOutcome {
-    /// #     println!("order {}", order.id);
+    /// #     tracing::info!(order.id, "order");
     /// #     HandlerOutcome::ack()
     /// # }
     ///
@@ -556,7 +685,7 @@ impl RedisBroker {
     /// #
     /// # #[subscriber(RedisStream::new("orders").group("workers"))]
     /// # async fn handle(order: &Order) -> HandlerOutcome {
-    /// #     println!("order {}", order.id);
+    /// #     tracing::info!(order.id, "order");
     /// #     HandlerOutcome::ack()
     /// # }
     ///
@@ -662,15 +791,37 @@ impl Broker for RedisBroker {
         // Read off the resolved config rather than the recorded topology, so a caller-supplied
         // pool that is itself clustered is treated as the cluster it is.
         let clustered = config.server.is_clustered();
-        let pool = if let Topology::Preconnected(pool) = &self.topology {
-            pool.clone()
+        let (pool, reconnect) = if let Topology::Preconnected(pool) = &self.topology {
+            // A pool built in the synchronous app builder has not dialed yet, and this is the
+            // first async step it reaches. fred reports a client that was never started and one
+            // waiting between reconnection attempts with the same `Disconnected` state, so a pool
+            // with no client up is dialed here either way: its server is unreachable now, and
+            // startup fails as it does for a pool built from an address.
+            let started = pool
+                .clients()
+                .iter()
+                .any(|client| client.state() != ClientState::Disconnected);
+            if !started {
+                pool.init()
+                    .await
+                    .map_err(|err| RedisError::Connect(Box::new(err)))?;
+            }
+            // The subscriptions' own connections reconnect the way the caller's pool does.
+            (pool.clone(), pool.next().client_reconnect_policy())
         } else {
-            let pool = Pool::new(config.clone(), None, None, None, self.pool_size)
-                .map_err(|err| RedisError::Connect(Box::new(err)))?;
+            let reconnect = reconnect_policy();
+            let pool = Pool::new(
+                config.clone(),
+                None,
+                None,
+                Some(reconnect.clone()),
+                self.pool_size,
+            )
+            .map_err(|err| RedisError::Connect(Box::new(err)))?;
             pool.init()
                 .await
                 .map_err(|err| RedisError::Connect(Box::new(err)))?;
-            pool
+            (pool, Some(reconnect))
         };
         Ok(ConnectedRedisBroker {
             core: Arc::new(RedisCore {
@@ -678,6 +829,7 @@ impl Broker for RedisBroker {
                 closing: Arc::default(),
                 runtime: Handle::current(),
                 config,
+                reconnect,
                 default_group: self.default_group,
                 clustered,
                 routes: Routes::default(),
@@ -713,6 +865,8 @@ impl InProcess for RedisBroker {
                 closing: Arc::default(),
                 runtime: Handle::current(),
                 config,
+                // The in-process server never drops a connection.
+                reconnect: None,
                 default_group: self.default_group,
                 clustered,
                 routes: Routes::default(),
@@ -799,6 +953,8 @@ pub(crate) struct RedisCore {
     /// The config the pool was built from; Pub/Sub subscriptions dial their dedicated client
     /// from it.
     config: Config,
+    /// How the dedicated clients of subscriptions reconnect: the pool's own policy.
+    reconnect: Option<ReconnectPolicy>,
     default_group: Option<String>,
     /// Whether the connection is to a cluster, which is where a command spanning two keys needs
     /// them on one hash slot: a `MULTI` block cannot span slots at all, and a reliable list's
@@ -1040,8 +1196,14 @@ impl ConnectedRedisBroker {
         // receiver sees only what is sent after it exists. The connection is dedicated to this one
         // subscription, so opening the stream early can pick up nothing else.
         let rx = client.message_rx();
+        let reconnects = client.reconnect_rx();
         let channel = def.channel().to_owned();
         let sharded = def.delivery_mode() == PubSubMode::Sharded;
+        let target = if sharded {
+            Resubscribe::ShardedChannel(channel.clone())
+        } else {
+            Resubscribe::Channel(channel.clone())
+        };
         match def.delivery_mode() {
             PubSubMode::Classic => {
                 client
@@ -1069,6 +1231,7 @@ impl ConnectedRedisBroker {
         );
         let pool = self.core.pool()?;
         recorded.keep();
+        let client = Resubscribing::new(client, reconnects, target, self.runtime());
         Ok(PubSubWire::new(
             def.channel().to_owned(),
             client,
@@ -1160,6 +1323,7 @@ impl ConnectedRedisBroker {
         let client = self.new_client(def.buffer_size()).await?;
         // Opened before the subscribe, for the reason `subscribe_pubsub` gives.
         let rx = client.message_rx();
+        let reconnects = client.reconnect_rx();
         client
             .psubscribe(def.pattern().to_owned())
             .await
@@ -1167,6 +1331,8 @@ impl ConnectedRedisBroker {
         confirm_subscribed(&client).await?;
         let (rx, tap) =
             self.pubsub_tap(rx, PubSubTarget::Pattern(def.pattern()), def.buffer_size());
+        let target = Resubscribe::Pattern(def.pattern().to_owned());
+        let client = Resubscribing::new(client, reconnects, target, self.runtime());
         Ok(PubSubWire::new(
             def.pattern().to_owned(),
             client,
@@ -1337,7 +1503,12 @@ impl ConnectedRedisBroker {
             broadcast_channel_capacity: buffer.get(),
             ..PerformanceConfig::default()
         });
-        let client = Client::new(self.core.config.clone(), performance, None, None);
+        let client = Client::new(
+            self.core.config.clone(),
+            performance,
+            None,
+            self.core.reconnect.clone(),
+        );
         // `init` spawns the task that drives the connection on the runtime it is polled on; it is
         // polled on the broker's own runtime, so the connection outlives a caller's runtime. The
         // price is one task spawned per subscription opened.
@@ -1674,7 +1845,7 @@ fn require_one_slot(key: &str, processing: &str) -> Result<(), RedisError> {
 }
 
 /// Creates the consumer group, treating an already-existing group as success.
-async fn ensure_group(
+pub(crate) async fn ensure_group(
     pool: &Pool,
     key: &str,
     group: &str,
