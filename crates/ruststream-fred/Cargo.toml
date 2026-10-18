@@ -75,6 +75,9 @@ serde = { version = "1", features = ["derive"] }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+# Already in the graph through fred, which parses its URLs with it; here it reads a configured
+# address to print it without its password.
+url = "2.4"
 
 # The examples are the sources of the site's code blocks; each group of pages keeps its own block.
 
