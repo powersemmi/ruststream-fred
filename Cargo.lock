@@ -250,7 +250,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1105,7 +1105,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1159,9 +1159,9 @@ dependencies = [
 
 [[package]]
 name = "ruststream"
-version = "0.7.1"
+version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0d8fb3aa559104a40a160ea43291047bc19c65451361fd1042e90e3e34c03ed"
+checksum = "d9ffd683ac3a21e9396260df1390909295c296db2a4f8738de205bb2c496ad46"
 dependencies = [
  "bytes",
  "bytes-utils",
@@ -1183,7 +1183,7 @@ dependencies = [
 
 [[package]]
 name = "ruststream-fred"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1200,7 +1200,7 @@ dependencies = [
 
 [[package]]
 name = "ruststream-fred-bench"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "fred",
  "futures",
@@ -1214,9 +1214,9 @@ dependencies = [
 
 [[package]]
 name = "ruststream-macros"
-version = "0.7.1"
+version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "877999d127f0c83b180377ec0b7c214636cb58541c872ca118f9708003edabfc"
+checksum = "57cad28d048e6680053ef6e4361af0688c0902b18ed90c927f08e769cd786c19"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1474,7 +1474,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
