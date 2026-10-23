@@ -16,6 +16,11 @@ on:
 permissions:
   contents: read
 
+# No debug info: no step reads it, and it is most of the size of every linked test binary. A
+# failing test still reports the file and line of its panic.
+env:
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -138,6 +143,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: ruststream-fred
+          # Saved from main only: a pull request reuses main's cache and never replaces it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-hack
         if: "!cancelled() && env.RUST_CHANGED == 'true'"
@@ -250,17 +257,21 @@ jobs:
           cargo update -p openssl-sys --precise 0.9.72
 
       # Minimum dependencies on the minimum compiler: the worst case a user can assemble.
-      # Resolution above needs nightly, so only this step drops to the floor.
+      # Resolution above needs nightly, so only this step drops to the floor. It builds into a
+      # target directory of its own, deleted afterwards, so its artifacts stay out of the cache.
       - name: Build and test against minimal versions
         id: minimal-test
         if: "!cancelled() && steps.minimal-pin.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: "1.95"
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-minimal
         run: |
-          cargo check --locked --workspace --exclude ruststream-fred-bench --all-targets \
-            --all-features
           cargo check --locked -p ruststream-fred-bench --all-targets
           cargo test --locked --workspace --all-features --no-fail-fast
+
+      - name: Delete the minimal versions build
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/target-minimal"
 
   rust:
     name: Build and test
@@ -270,7 +281,9 @@ jobs:
     # once stable passed as a whole: a break stable already reports is not worth two more
     # builds. Releases between the floor and stable add nothing: what fails on a later one fails
     # on the floor too. Stable is the default through `rust-toolchain.toml`; the later steps
-    # name theirs through RUSTUP_TOOLCHAIN, which outranks the file.
+    # name theirs through RUSTUP_TOOLCHAIN, which outranks the file. Each of the two builds into a
+    # target directory of its own, deleted when its leg ends: it never stacks on the stable build,
+    # and the cache holds the stable build alone.
     runs-on: ubuntu-latest
     # The repository is checked out one level down: the scaffold check patches the rendered
     # projects at a sibling checkout of the core, and the two sit side by side in the workspace.
@@ -295,6 +308,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: ruststream-fred
+          # Saved from main only: a pull request reuses main's cache and never replaces it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # The crate-root missing_docs deny covers item docs; this gate catches what rustc
       # cannot: broken intra-doc links and redundant targets only rustdoc resolves.
@@ -306,14 +321,11 @@ jobs:
       - name: cargo check (no default features)
         run: cargo check --workspace --no-default-features
 
-      # The benchmark package is left out of every all-features check on purpose: it is built
-      # with the feature set a service ships, and the framework's harness feature is a compile
-      # error in it. Its own check follows, so it stays compiled.
-      - name: cargo check (all features)
-        run: |
-          cargo check --workspace --exclude ruststream-fred-bench --all-targets \
-            --all-features
-          cargo check -p ruststream-fred-bench --all-targets
+      # The benchmark package is built with the feature set a service ships, and the framework's
+      # harness feature is a compile error in it, so it gets a check of its own. The test step
+      # below builds every other target with all features.
+      - name: cargo check (benchmarks)
+        run: cargo check -p ruststream-fred-bench --all-targets
 
       # The handler-stub suite: the live tests skip themselves without the Redis addresses, and
       # the broker-integration job runs them against every Redis topology.
@@ -334,6 +346,7 @@ jobs:
         continue-on-error: true
         env:
           RUSTUP_TOOLCHAIN: beta
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-beta
         run: |
           cargo clippy --workspace --exclude ruststream-fred-bench --all-targets \
             --all-features -- -D warnings
@@ -343,43 +356,51 @@ jobs:
         if: "!cancelled() && steps.stable.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: beta
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-beta
         run: cargo check --workspace --no-default-features
 
-      - name: cargo check (all features, beta)
+      - name: cargo check (benchmarks, beta)
         if: "!cancelled() && steps.stable.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: beta
-        run: |
-          cargo check --workspace --exclude ruststream-fred-bench --all-targets \
-            --all-features
-          cargo check -p ruststream-fred-bench --all-targets
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-beta
+        run: cargo check -p ruststream-fred-bench --all-targets
 
       - name: cargo test (beta)
         if: "!cancelled() && steps.stable.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: beta
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-beta
         run: cargo test --workspace --all-features --no-fail-fast
+
+      - name: Delete the beta build
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/target-beta"
 
       - name: cargo check (no default features, 1.95)
         if: "!cancelled() && steps.stable.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: "1.95"
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-floor
         run: cargo check --workspace --no-default-features
 
-      - name: cargo check (all features, 1.95)
+      - name: cargo check (benchmarks, 1.95)
         if: "!cancelled() && steps.stable.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: "1.95"
-        run: |
-          cargo check --workspace --exclude ruststream-fred-bench --all-targets \
-            --all-features
-          cargo check -p ruststream-fred-bench --all-targets
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-floor
+        run: cargo check -p ruststream-fred-bench --all-targets
 
       - name: cargo test (1.95)
         if: "!cancelled() && steps.stable.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: "1.95"
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-floor
         run: cargo test --workspace --all-features --no-fail-fast
+
+      - name: Delete the 1.95 build
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/target-floor"
 
   broker-integration:
     name: "Broker integration (Redis: standalone, 8.4, cluster, sentinel)"
@@ -399,6 +420,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: ruststream-fred
+          # Saved from main only: a pull request reuses main's cache and never replaces it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # The compose file brings up every topology (standalone on 7.x and on 8.4, a 6-node cluster,
       # and a sentinel set) on host networking, so every node announces and reaches its peers on
@@ -412,7 +435,7 @@ jobs:
       # test that skips is a defect rather than a convenience. Without it a gated test returns
       # before its first assertion and reports ok, which reads exactly like a run that did the
       # work - and this job gates on four addresses, so it has four ways to go quietly green.
-      # The claiming suite is a second binary because it runs against a second server: the 8.4
+      # The claiming suite is a run of its own because it reaches a second server: the 8.4
       # standalone for the mode itself, and the 7.x one for the startup refusal.
       - name: Run Redis integration tests (standalone + 8.4 + cluster + sentinel)
         working-directory: ruststream-fred
@@ -424,16 +447,17 @@ jobs:
           REDIS_SENTINEL_TEST_URL: 127.0.0.1:26379
           RUSTSTREAM_REQUIRE_LIVE: "1"
         run: |
-          cargo test -p ruststream-fred --test integration_fred -- --test-threads=1
-          cargo test -p ruststream-fred --test integration_claiming -- --test-threads=1
-          cargo test -p ruststream-fred --test integration_pubsub -- --test-threads=1
+          cargo test -p ruststream-fred --test suite integration_fred:: -- --test-threads=1
+          cargo test -p ruststream-fred --test suite integration_claiming:: -- --test-threads=1
+          cargo test -p ruststream-fred --test suite integration_pubsub:: -- --test-threads=1
 
       - name: Run Redis conformance suite
         working-directory: ruststream-fred
         env:
           REDIS_TEST_URL: redis://127.0.0.1:6379
           RUSTSTREAM_REQUIRE_LIVE: "1"
-        run: cargo test -p ruststream-fred --features testing --test conformance_fred -- --test-threads=1
+        run: |
+          cargo test -p ruststream-fred --features testing --test suite conformance_fred:: -- --test-threads=1
 
       # The suites fed with this crate's own descriptors and publishers. The settlement suite reads
       # the claiming mode, so it needs the 8.4 standalone beside the 7.x one.
@@ -443,7 +467,8 @@ jobs:
           REDIS_TEST_URL: redis://127.0.0.1:6379
           REDIS_84_TEST_URL: redis://127.0.0.1:6386
           RUSTSTREAM_REQUIRE_LIVE: "1"
-        run: cargo test -p ruststream-fred --features testing --test conformance_suites -- --test-threads=1
+        run: |
+          cargo test -p ruststream-fred --features testing --test suite conformance_suites:: -- --test-threads=1
 
       - name: Stop Redis topologies
         if: always()
@@ -485,6 +510,8 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # The API links on the pages resolve against this rustdoc, the one docs.rs renders for the
       # same code; an item it lacks fails the build below.
