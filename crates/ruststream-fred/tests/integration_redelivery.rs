@@ -6,7 +6,7 @@
 //! ```bash
 //! just brokers-up
 //! REDIS_TEST_URL=redis://127.0.0.1:6379 \
-//!     cargo test -p ruststream-fred --all-features --test integration_redelivery
+//!     cargo test -p ruststream-fred --all-features --test suite integration_redelivery::
 //! ```
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,7 +22,7 @@ use ruststream_fred::prelude::*;
 use ruststream_fred::{ConnectedRedisBroker, RedisListPublish, RedisPubSubPublish};
 use serde::{Deserialize, Serialize};
 
-mod live;
+use crate::live;
 
 /// How long a copy waits before it is published back.
 const DELAY: Duration = Duration::from_millis(200);

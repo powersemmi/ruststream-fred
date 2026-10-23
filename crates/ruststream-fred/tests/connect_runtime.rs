@@ -32,7 +32,7 @@ use tokio::runtime::Builder;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
-mod live;
+use crate::live;
 
 /// The address the service's broker is built with; the in-process mode dials nothing.
 const URL: &str = "redis://localhost:6379";

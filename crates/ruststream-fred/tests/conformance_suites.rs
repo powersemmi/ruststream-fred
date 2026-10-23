@@ -23,7 +23,7 @@ use ruststream_fred::{
     RedisPublishOptions, RedisStream,
 };
 
-mod live;
+use crate::live;
 
 /// The address the service's broker is built with; the in-process mode dials nothing.
 const URL: &str = "redis://localhost:6379";

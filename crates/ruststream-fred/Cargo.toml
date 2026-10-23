@@ -11,6 +11,8 @@ authors.workspace = true
 readme = "../../README.md"
 keywords = ["redis", "streams", "messaging", "broker", "ruststream"]
 categories = ["asynchronous", "network-programming"]
+# Every file under `tests/` is a module of one test binary: one link instead of one per file.
+autotests = false
 
 [lints]
 workspace = true
@@ -78,6 +80,10 @@ tracing.workspace = true
 # Already in the graph through fred, which parses its URLs with it; here it reads a configured
 # address to print it without its password.
 url = "2.4"
+
+[[test]]
+name = "suite"
+path = "tests/main.rs"
 
 # The examples are the sources of the site's code blocks; each group of pages keeps its own block.
 

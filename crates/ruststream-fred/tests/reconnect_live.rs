@@ -24,7 +24,7 @@ use ruststream::testing::TestApp;
 use ruststream_fred::prelude::*;
 use serde::{Deserialize, Serialize};
 
-mod live;
+use crate::live;
 
 const EVENTS: &str = "reconnect.events";
 
