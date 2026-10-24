@@ -267,7 +267,8 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/target-minimal
         run: |
           cargo check --locked -p ruststream-fred-bench --all-targets
-          cargo test --locked --workspace --all-features --no-fail-fast
+          cargo test --locked --workspace --all-features --no-fail-fast --tests
+          cargo test --locked --workspace --all-features --no-fail-fast --doc
 
       - name: Delete the minimal versions build
         if: always()
@@ -332,7 +333,11 @@ jobs:
       # --no-fail-fast: a failing target must not hide failures in the targets behind it;
       # the log then lists every red test, not just the first binary's.
       - name: cargo test (handler-stub only, no live broker)
-        run: cargo test --workspace --all-features --no-fail-fast
+        # `--tests` and not every target: the examples' tests are modules of one test binary, so
+        # an example needs no binary of its own, and clippy has already compiled each one.
+        run: |
+          cargo test --workspace --all-features --no-fail-fast --tests
+          cargo test --workspace --all-features --no-fail-fast --doc
 
       # The gate the later toolchains wait on: it succeeds only when every stable step did.
       - name: Stable passed
@@ -371,7 +376,11 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: beta
           CARGO_TARGET_DIR: ${{ runner.temp }}/target-beta
-        run: cargo test --workspace --all-features --no-fail-fast
+        # `--tests` and not every target: the examples' tests are modules of one test binary, so
+        # an example needs no binary of its own, and clippy has already compiled each one.
+        run: |
+          cargo test --workspace --all-features --no-fail-fast --tests
+          cargo test --workspace --all-features --no-fail-fast --doc
 
       - name: Delete the beta build
         if: always()
@@ -396,7 +405,11 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: "1.95"
           CARGO_TARGET_DIR: ${{ runner.temp }}/target-floor
-        run: cargo test --workspace --all-features --no-fail-fast
+        # `--tests` and not every target: the examples' tests are modules of one test binary, so
+        # an example needs no binary of its own, and clippy has already compiled each one.
+        run: |
+          cargo test --workspace --all-features --no-fail-fast --tests
+          cargo test --workspace --all-features --no-fail-fast --doc
 
       - name: Delete the 1.95 build
         if: always()
