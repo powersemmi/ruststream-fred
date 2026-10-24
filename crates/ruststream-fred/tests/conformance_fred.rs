@@ -11,7 +11,7 @@
 //!
 //! ```bash
 //! just brokers-up
-//! REDIS_TEST_URL=redis://127.0.0.1:6379 cargo test -p ruststream-fred --features testing --test conformance_fred
+//! REDIS_TEST_URL=redis://127.0.0.1:6379 cargo test -p ruststream-fred --features testing --test suite conformance_fred::
 //! ```
 
 #![cfg(feature = "testing")]
@@ -26,7 +26,7 @@ use ruststream_fred::{
     RedisPubSubPublish, RedisStream,
 };
 
-mod live;
+use crate::live;
 
 /// The address the service's broker is built with; the in-process mode dials nothing.
 const URL: &str = "redis://localhost:6379";

@@ -26,7 +26,7 @@ use ruststream_fred::{
     RedisPubSubPublish,
 };
 
-mod live;
+use crate::live;
 
 const WAIT: Duration = Duration::from_secs(5);
 

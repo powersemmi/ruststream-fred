@@ -4,7 +4,7 @@
 //! ```bash
 //! just brokers-up
 //! REDIS_TEST_URL=redis://127.0.0.1:6379 \
-//!     cargo test -p ruststream-fred --all-features --test integration_pipeline
+//!     cargo test -p ruststream-fred --all-features --test suite integration_pipeline::
 //! ```
 
 use std::collections::HashMap;
@@ -22,7 +22,7 @@ use ruststream_fred::prelude::*;
 use ruststream_fred::{ConnectedRedisBroker, DelayedRetry, RedisListPublish, RedisPubSubPublish};
 use serde::{Deserialize, Serialize};
 
-mod live;
+use crate::live;
 
 const WAIT: Duration = Duration::from_secs(10);
 

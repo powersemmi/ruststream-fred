@@ -16,7 +16,7 @@ use ruststream::testing::TestApp;
 use ruststream_fred::prelude::*;
 use serde::{Deserialize, Serialize};
 
-mod live;
+use crate::live;
 
 /// The address the in-process run builds the broker with; nothing dials it.
 const IN_PROCESS_URL: &str = "redis://localhost:6379";

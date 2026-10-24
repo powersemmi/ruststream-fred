@@ -151,7 +151,10 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    // One thread: every publish of the flood lands in the stream before the service reads it.
+    // On a worker pool the service may handle the marker first, and the alerts that land after
+    // the seek are rightly delivered.
+    #[tokio::test]
     async fn a_halt_marker_skips_the_alerts_behind_it() -> Result<(), Box<dyn Error>> {
         let tb = TestApp::start(app()).await?;
         let broker = tb.broker::<RedisBroker>();
