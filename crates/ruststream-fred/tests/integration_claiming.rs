@@ -27,7 +27,7 @@ use ruststream_fred::{
     RedisStream,
 };
 
-mod live;
+use crate::live;
 
 const WAIT: Duration = Duration::from_secs(5);
 

@@ -7,7 +7,7 @@
 //! REDIS_AUTH_TEST_URL=redis://127.0.0.1:6385 \
 //! REDIS_CLUSTER_TEST_URL=127.0.0.1:7000 \
 //! REDIS_SENTINEL_TEST_URL=127.0.0.1:26379 \
-//!     cargo test -p ruststream-fred --test integration_fred -- --test-threads=1
+//!     cargo test -p ruststream-fred --test suite integration_fred:: -- --test-threads=1
 //! ```
 //!
 //! These cover what the handler-stub broker cannot: real consumer groups, `XACK`, the
@@ -40,7 +40,7 @@ use ruststream_fred::{
     RedisPublishSteps, RedisStream, StreamStart,
 };
 
-mod live;
+use crate::live;
 
 const WAIT: Duration = Duration::from_secs(5);
 

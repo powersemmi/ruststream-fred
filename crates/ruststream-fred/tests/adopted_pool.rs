@@ -8,7 +8,7 @@
 //!
 //! ```bash
 //! REDIS_TEST_URL=redis://127.0.0.1:6379 cargo test -p ruststream-fred --all-features \
-//!     --test adopted_pool
+//!     --test suite adopted_pool::
 //! ```
 
 #![cfg(feature = "testing")]
@@ -23,7 +23,7 @@ use ruststream_fred::prelude::*;
 use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
 
-mod live;
+use crate::live;
 
 /// An address nothing listens on: the port is reserved and closed.
 const UNREACHABLE: &str = "redis://127.0.0.1:1";

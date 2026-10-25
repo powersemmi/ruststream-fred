@@ -9,7 +9,7 @@ use ruststream::testing::TestApp;
 use ruststream_fred::stream::prelude::*;
 use serde::{Deserialize, Serialize};
 
-mod live;
+use crate::live;
 
 /// The addresses the service's broker is built with; the in-process mode dials nothing.
 const STANDALONE: &str = "redis://localhost:6379";
