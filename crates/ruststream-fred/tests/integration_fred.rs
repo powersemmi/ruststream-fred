@@ -696,6 +696,51 @@ async fn list_codec_envelope_round_trips_headers() {
     broker.shutdown().await.expect("shutdown");
 }
 
+/// A list is shared with whatever else pushes to it: a value another client pushed arrives whole,
+/// even when it begins with the four zero bytes a frame without headers began with in a release
+/// before the frame marker, and a message with headers still reads back with them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_foreign_list_value_that_begins_with_zeros_arrives_whole() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("list_foreign");
+    let foreign: &[u8] = &[0, 0, 0, 0, 0xab, 0xcd];
+
+    let _: i64 = broker
+        .pool_handle()
+        .expect("live pool")
+        .lpush(key.as_str(), foreign)
+        .await
+        .expect("lpush");
+    let mut headers = HeaderMap::new();
+    headers.insert("trace-id", "4bf92f35");
+    broker
+        .list_publisher(RedisListPublish::new())
+        .publish(
+            OutgoingMessage::new(key.as_str(), foreign).with_headers(headers),
+            None,
+        )
+        .await
+        .expect("lpush");
+
+    let mut sub = broker
+        .subscribe_list(RedisList::new(&key))
+        .await
+        .expect("subscribe list");
+    let mut stream = Box::pin(sub.stream());
+    let first = next(&mut stream).await.expect("delivery ok");
+    assert_eq!(first.payload(), foreign);
+    assert_eq!(first.headers(), &HeaderMap::new());
+    let second = next(&mut stream).await.expect("delivery ok");
+    assert_eq!(second.payload(), foreign);
+    assert_eq!(second.headers().get_str("trace-id"), Some("4bf92f35"));
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
 /// The readable envelope carries data that is not text without touching it: these bytes are not
 /// valid UTF-8, and the earlier envelope replaced them on the way out.
 const NOT_TEXT: &[u8] = &[0xff, 0x00, 0x1f, 0xfe, 0x80];

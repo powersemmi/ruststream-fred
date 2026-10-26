@@ -377,6 +377,38 @@ async fn a_value_published_by_another_client_arrives_as_the_bare_payload() {
     broker.shutdown().await.expect("shutdown");
 }
 
+/// A value another client published is not read as a frame, even when it begins with the four
+/// zero bytes a frame without headers began with in a release before the frame marker.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_foreign_value_that_begins_with_zeros_arrives_whole() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let channel = unique_channel("foreign-zeros");
+    let foreign: &[u8] = &[0, 0, 0, 0, 0xab, 0xcd];
+
+    let mut sub = broker
+        .subscribe_pubsub(RedisPubSub::new(&channel))
+        .await
+        .expect("subscribe pubsub");
+    let mut stream = Box::pin(sub.stream());
+    let _: i64 = broker
+        .pool_handle()
+        .expect("live pool")
+        .next()
+        .publish(channel.as_str(), foreign)
+        .await
+        .expect("publish");
+
+    let msg = next(&mut stream).await.expect("delivery ok");
+    assert_eq!(msg.payload(), foreign);
+    assert_eq!(msg.headers(), &HeaderMap::new());
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
 /// Both delivery modes on a cluster, which is where they differ in what they cost: a classic
 /// publish is broadcast to every node, a sharded one stays on the slot its channel hashes to.
 /// The subscriptions are opened against the cluster the same way a service opens them.

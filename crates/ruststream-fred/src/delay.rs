@@ -29,7 +29,7 @@ use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::{AckError, HeaderMap};
 
 use crate::convert::fields_for_publish;
-use crate::envelope::{frame, unframe};
+use crate::envelope::{frame, unframe_own};
 use crate::error::RedisError;
 use crate::loopback::Loopback;
 
@@ -192,7 +192,9 @@ fn encode_member(id: &str, payload: &[u8], headers: &HeaderMap) -> Vec<u8> {
 fn decode_member(member: &[u8]) -> Option<(Bytes, HeaderMap)> {
     let id_len = u32::from_be_bytes(member.get(0..4)?.try_into().ok()?) as usize;
     let body = member.get(4usize.checked_add(id_len)?..)?;
-    Some(unframe(None, body))
+    // A member is written by this crate alone, so one a release before the frame marker queued is
+    // still read as the frame it is.
+    Some(unframe_own(body).unwrap_or_else(|| (Bytes::copy_from_slice(body), HeaderMap::new())))
 }
 
 /// The framework retry count a re-published copy carries next: the one on the delivery, plus this
@@ -310,6 +312,28 @@ impl DelayConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A member a release before the frame marker queued is still due: it reads back with its
+    /// headers instead of arriving as the frame's bytes.
+    #[test]
+    fn a_member_queued_by_an_earlier_release_still_decodes() {
+        let id = b"1700000000000-0";
+        let mut member = Vec::new();
+        member.extend_from_slice(&u32::try_from(id.len()).expect("short").to_be_bytes());
+        member.extend_from_slice(id);
+        member.extend_from_slice(&1u32.to_be_bytes());
+        let name = RETRY_COUNT_HEADER.as_bytes();
+        member.extend_from_slice(&u32::try_from(name.len()).expect("short").to_be_bytes());
+        member.extend_from_slice(name);
+        member.extend_from_slice(&1u32.to_be_bytes());
+        member.extend_from_slice(b"3");
+        member.extend_from_slice(&[0, 0, 0, 0, 7]);
+
+        let (payload, headers) = decode_member(&member).expect("decodes");
+
+        assert_eq!(payload.as_ref(), &[0, 0, 0, 0, 7]);
+        assert_eq!(headers.get_str(RETRY_COUNT_HEADER), Some("3"));
+    }
 
     #[test]
     fn member_round_trips_payload_and_headers() {

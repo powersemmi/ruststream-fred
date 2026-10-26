@@ -12,6 +12,7 @@ mod conformance_fred;
 mod conformance_suites;
 mod connect_runtime;
 mod deferred_retry;
+mod framing;
 mod fred_pool;
 mod harness_manual;
 mod in_process_fred;

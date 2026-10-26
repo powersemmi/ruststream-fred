@@ -69,14 +69,18 @@ A consumer in another language reads entries the service writes the same way: `_
 </Tabs>
 
 A list entry and a Pub/Sub message are one value, so the headers travel in a frame around the body.
-By default the frame is binary:
+A message without headers is written as the bare body.
+By default the frame is binary, and it opens with a marker header named `ruststream-frame` with an empty value:
 
 | Bytes | Meaning |
 | --- | --- |
-| 4 | the number of headers, a big-endian `u32` |
+| 4 | the number of headers plus one for the marker, a big-endian `u32` |
+| 4, `ruststream-frame`, 4 | the marker: the name's length 16, the name, and the value's length 0 |
 | 4, then the name | for each header: the name's length and the name |
 | 4, then the value | the value's length and the value |
 | the rest | the body |
+
+A body without headers that carries the marker at the place a frame carries it is written in a frame, so it reads back unchanged.
 
 A [codec](../components/subscriptions/framing.md) on the publish policy writes an envelope in that codec instead.
 With `JsonCodec` the mailer pops a JSON object:
@@ -94,8 +98,9 @@ The same envelope shows readable values in a tool like RedisInsight.
 
 A subscription reads the frame its publisher writes: [`RedisList::codec`](api:ruststream_fred::list::RedisList::codec) and [`RedisPubSub::codec`](api:ruststream_fred::pubsub::RedisPubSub::codec) set the envelope's codec, and without one the subscription reads the binary frame.
 A subscription with a codec also reads binary frames, which a service leaves behind when it switches.
+The envelope is read only in its exact shape: an object with `headers` and `payload` and no other field.
 
-A value that is neither, such as one another client pushes or publishes as plain JSON, arrives as the body with no headers:
+A value that is neither, such as one another client pushes or publishes as plain JSON, arrives as the body with no headers, whatever its first bytes are:
 
 ```bash
 redis-cli LPUSH jobs '{"id":7}'
@@ -103,6 +108,10 @@ redis-cli PUBLISH prices '{"sku":"tea","cents":450}'
 ```
 
 So a producer in another language writes plain values unless it needs headers, and then it writes the JSON envelope.
+
+A binary frame written by 0.7.1 or an earlier release has no marker, so a current subscription reads it as the body, frame bytes included.
+All services that share a list or a channel upgrade together, and a list is drained of the old values first.
+A subscription of an earlier release reads the new frame, and sees the marker as one more header.
 
 ## Testing
 

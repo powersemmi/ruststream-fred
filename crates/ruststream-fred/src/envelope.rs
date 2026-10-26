@@ -3,8 +3,10 @@
 //! Streams keep headers as native entry fields, but a Pub/Sub message or list entry is one value, so
 //! headers need a frame around the payload. Two framings, chosen per publisher/subscriber:
 //!
-//! * **No codec (default)** - a compact binary frame ([`binary_encode`]); the wire value is not
-//!   human-readable.
+//! * **No codec (default)** - a compact binary frame ([`binary_encode`]) that opens with a marker
+//!   header; the wire value is not human-readable. A message without headers is written as its
+//!   bare payload, and a bare payload that carries the marker is framed, so it reads back
+//!   unchanged.
 //! * **A codec** - the `{headers, payload}` envelope is serialized with a [`Codec`], so with the
 //!   JSON codec the wire value is readable JSON (e.g. in `RedisInsight`).
 //!
@@ -15,8 +17,9 @@
 //! unchanged.
 //!
 //! A subscriber that carries a codec reads either framing: a value that does not parse as an
-//! envelope is tried as a binary frame. A value that is neither (one a raw external client
-//! published) is delivered as the payload with empty headers.
+//! envelope in its exact shape is tried as a binary frame. A value that is neither (one a raw
+//! external client published) is delivered as the payload with empty headers, whatever its bytes
+//! look like. A binary frame of a release before the marker is such a value too.
 
 use std::any::type_name;
 use std::collections::BTreeMap;
@@ -121,9 +124,13 @@ impl Content {
 }
 
 /// The codec-serialized envelope. Readable where the data is text, lossless where it is not.
+///
+/// It is read only in the exact shape it is written in, so a value another client wrote that only
+/// resembles it (a `payload` field alone, or fields of its own beside the two) is the plain payload
+/// it is.
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Envelope {
-    #[serde(default)]
     headers: BTreeMap<String, Content>,
     payload: Content,
 }
@@ -152,11 +159,26 @@ impl Envelope {
 // --- Binary framing (the default, lossless) ----------------------------------------------------
 //
 // ```text
-// [u32 header_count]
+// [u32 header_count + 1]
+// [u32 16]["ruststream-frame"][u32 0]          the marker, a header with an empty value
 // repeated: [u32 name_len][name][u32 value_len][value]
 // [payload ... to end]
 // ```
-// All lengths big-endian.
+// All lengths big-endian. A message without headers is written as the bare payload, unless the
+// payload carries the marker where a frame does: then it is framed, so it reads back unchanged.
+// A value without the marker is a plain payload, whatever its bytes look like.
+
+/// The marker as it sits on the wire, right after the header count: a header named
+/// `ruststream-frame` (16 bytes) with an empty value.
+const MARKER_HEADER: &[u8] = b"\x00\x00\x00\x10ruststream-frame\x00\x00\x00\x00";
+
+/// Where the marker ends in a frame, and the shortest value that can carry one.
+const MARKED: usize = 4 + MARKER_HEADER.len();
+
+/// Whether `bytes` carry the marker where a frame carries it.
+fn is_marked(bytes: &[u8]) -> bool {
+    bytes.get(4..MARKED) == Some(MARKER_HEADER)
+}
 
 /// Big-endian length prefix, saturating at `u32::MAX` (lengths that large are not real messages).
 fn len_prefix(n: usize) -> [u8; 4] {
@@ -164,8 +186,12 @@ fn len_prefix(n: usize) -> [u8; 4] {
 }
 
 fn binary_encode(payload: &[u8], headers: &HeaderMap) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(4 + payload.len());
-    buf.extend_from_slice(&len_prefix(headers.len()));
+    if headers.is_empty() && !is_marked(payload) {
+        return payload.to_vec();
+    }
+    let mut buf = Vec::with_capacity(MARKED + payload.len());
+    buf.extend_from_slice(&len_prefix(headers.len().saturating_add(1)));
+    buf.extend_from_slice(MARKER_HEADER);
     for (name, value) in headers.iter() {
         let name = name.as_bytes();
         buf.extend_from_slice(&len_prefix(name.len()));
@@ -196,8 +222,17 @@ fn read_slice<'a>(bytes: &'a [u8], pos: &mut usize, len: usize) -> Option<&'a [u
 }
 
 fn try_binary_decode(bytes: &[u8]) -> Option<(Bytes, HeaderMap)> {
+    if !is_marked(bytes) {
+        return None;
+    }
     let mut pos = 0;
-    let count = read_u32(bytes, &mut pos)?;
+    let count = read_u32(bytes, &mut pos)?.checked_sub(1)?;
+    pos = MARKED;
+    read_headers(bytes, pos, count)
+}
+
+/// Reads `count` headers from `pos` on, and the payload after them.
+fn read_headers(bytes: &[u8], mut pos: usize, count: usize) -> Option<(Bytes, HeaderMap)> {
     let mut headers = HeaderMap::new();
     for _ in 0..count {
         let name_len = read_u32(bytes, &mut pos)?;
@@ -208,6 +243,20 @@ fn try_binary_decode(bytes: &[u8]) -> Option<(Bytes, HeaderMap)> {
         headers.insert(name.to_owned(), Bytes::copy_from_slice(value));
     }
     Some((Bytes::copy_from_slice(&bytes[pos..]), headers))
+}
+
+/// Reads a frame this crate wrote, in the form of the current release or of one before it, which
+/// framed every value and had no marker.
+///
+/// Only for values no other client writes (the delay queue's members): elsewhere a value without
+/// the marker is a plain payload, since a foreign value can parse as the old frame.
+pub(crate) fn unframe_own(bytes: &[u8]) -> Option<(Bytes, HeaderMap)> {
+    if is_marked(bytes) {
+        return try_binary_decode(bytes);
+    }
+    let mut pos = 0;
+    let count = read_u32(bytes, &mut pos)?;
+    read_headers(bytes, pos, count)
 }
 
 #[cfg(test)]
@@ -236,6 +285,76 @@ mod tests {
         let (payload, headers) = unframe(None, b"hi");
         assert_eq!(payload.as_ref(), b"hi");
         assert_eq!(headers, HeaderMap::new());
+    }
+
+    /// A value another client wrote is not read as a frame, however its bytes begin: four zero
+    /// bytes were a frame with no headers, and their loss went unnoticed.
+    #[test]
+    fn a_foreign_value_that_parses_as_the_old_frame_arrives_whole() {
+        let foreign: &[u8] = &[0, 0, 0, 0, 0xab, 0xcd];
+        for codec in [None, Some(Arc::new(JsonCodec) as SharedEnvelope)] {
+            let (payload, headers) = unframe(codec.as_ref(), foreign);
+            assert_eq!(payload.as_ref(), foreign);
+            assert_eq!(headers, HeaderMap::new());
+        }
+    }
+
+    /// A value with a count and a header in front, the way a released version framed it, is now
+    /// a plain value too: only the marker makes a frame.
+    #[test]
+    fn a_frame_without_the_marker_is_a_plain_value() {
+        let mut old = Vec::new();
+        old.extend_from_slice(&1u32.to_be_bytes());
+        old.extend_from_slice(&1u32.to_be_bytes());
+        old.extend_from_slice(b"k");
+        old.extend_from_slice(&1u32.to_be_bytes());
+        old.extend_from_slice(b"v");
+        old.extend_from_slice(b"body");
+
+        let (payload, headers) = unframe(None, &old);
+
+        assert_eq!(payload.as_ref(), old.as_slice());
+        assert_eq!(headers, HeaderMap::new());
+    }
+
+    /// With no headers there is nothing to frame: the value is the payload, readable by any
+    /// client.
+    #[test]
+    fn a_message_without_headers_is_written_plain() {
+        assert_eq!(frame(None, b"hello", &HeaderMap::new()), b"hello");
+    }
+
+    /// A plain payload that begins the way a frame begins is framed, so it reads back unchanged
+    /// instead of being taken apart.
+    #[test]
+    fn a_payload_that_looks_like_a_frame_reads_back_unchanged() {
+        let lookalike = frame(None, b"inner", &sample_headers());
+
+        let written = frame(None, &lookalike, &HeaderMap::new());
+        assert_ne!(
+            written, lookalike,
+            "the lookalike is framed, not written plain"
+        );
+        let (payload, headers) = unframe(None, &written);
+
+        assert_eq!(payload.as_ref(), lookalike.as_slice());
+        assert_eq!(headers, HeaderMap::new());
+    }
+
+    /// The envelope is read only in the exact shape this crate writes: a JSON value another
+    /// client wrote with a `payload` field and nothing else, or with fields of its own, is the
+    /// payload it is.
+    #[test]
+    fn a_json_value_shaped_almost_like_the_envelope_arrives_whole() {
+        let codec: SharedEnvelope = Arc::new(JsonCodec);
+        for foreign in [
+            br#"{"payload":"x"}"#.as_slice(),
+            br#"{"headers":{},"payload":"x","id":7}"#.as_slice(),
+        ] {
+            let (payload, headers) = unframe(Some(&codec), foreign);
+            assert_eq!(payload.as_ref(), foreign);
+            assert_eq!(headers, HeaderMap::new());
+        }
     }
 
     #[test]

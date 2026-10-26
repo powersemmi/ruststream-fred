@@ -13,7 +13,7 @@ A list entry or a channel message carries its headers in a binary frame, or in a
 
 A stream entry has fields, so it keeps the payload in the field `_payload` and each header in a field named `h:<header>`.
 A list element and a channel message are one value, so the headers travel in a frame around the payload.
-The default frame is a compact binary one, which tools show as bytes.
+The default frame is a compact binary one, which tools show as bytes; it opens with a marker header, and a message without headers is written as its bare payload.
 A codec set on both ends frames the value as a `{headers, payload}` envelope serialized with that codec.
 With JSON, `redis-cli` and RedisInsight show the envelope as text.
 The reading end sets it with [`RedisList::codec`](api:ruststream_fred::list::RedisList::codec), [`RedisPubSub::codec`](api:ruststream_fred::pubsub::RedisPubSub::codec) or [`RedisPubSubPattern::codec`](api:ruststream_fred::pubsub::RedisPubSubPattern::codec).
@@ -23,7 +23,9 @@ Both framings carry any bytes.
 The envelope writes a field whose bytes are valid UTF-8 as text and any other bytes as themselves.
 A subscription with a codec reads either framing.
 A subscription without one reads an envelope as its payload, and the decode of that payload fails.
-A value an outside client wrote without a frame arrives as the payload with no headers.
+A value an outside client wrote without a frame arrives as the payload with no headers, whatever its first bytes are.
+A payload of this service's that carries the marker where a frame carries it is framed, so it reads back unchanged.
+A binary frame written by 0.7.1 or an earlier release has no marker and reads as its payload, frame bytes included, so services that share a list or a channel upgrade together.
 The codecs `cbor` and `msgpack` of the core frame the envelope the same way.
 
 ## Example

@@ -63,7 +63,7 @@ impl Route {
     }
 }
 
-/// How a list or channel value is framed: raw bytes, or the envelope codec's type.
+/// How a list or channel value is framed: the binary frame, or the envelope codec's type.
 fn framing(envelope: Option<&SharedEnvelope>) -> Option<&'static str> {
     envelope.map(|codec| codec.framing())
 }
@@ -89,7 +89,7 @@ struct Framing<'a>(&'a Option<SharedEnvelope>);
 impl Display for Framing<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match framing(self.0.as_ref()) {
-            None => f.write_str("as raw bytes"),
+            None => f.write_str("by the binary frame"),
             Some(codec) => write!(f, "by `{codec}`"),
         }
     }
