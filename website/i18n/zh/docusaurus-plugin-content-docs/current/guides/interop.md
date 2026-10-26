@@ -41,7 +41,13 @@ redis-cli XADD orders '*' _payload '{"id":1,"email":"ann@example.com"}' h:trace-
 消息体就是编解码器解码的内容：使用默认编解码器时是 JSON，所以生产者把订单写成 JSON。
 消息头字段是可选的；只有 `_payload` 的条目到达时不带消息头。
 其他名字的字段会被忽略，所以生产者可以加入自己的字段。
-没有 `_payload` 的条目，消息体为空，编解码器无法解码它；解码失败策略（[`FailurePolicy`](api:ruststream::runtime::FailurePolicy)）结算这个条目，默认丢弃它。
+没有 `_payload` 的条目由其他程序写入，它的字段作为一个 JSON 对象成为消息体。
+有效 UTF-8 的值写成字符串，其他字节写成数字数组；`h:` 字段仍然是消息头：
+
+```bash
+redis-cli XADD orders '*' id 1 email ann@example.com
+# 消息体：{"email":"ann@example.com","id":"1"}
+```
 
 其他语言的消费者用同样的方式读取服务写入的条目：`_payload` 保存消息体，`h:` 字段保存消息头。
 

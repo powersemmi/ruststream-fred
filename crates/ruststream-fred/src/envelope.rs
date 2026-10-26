@@ -94,7 +94,7 @@ pub(crate) fn unframe(codec: Option<&SharedEnvelope>, bytes: &[u8]) -> (Bytes, H
 /// binary codec) instead of passing through a lossy conversion to text.
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
-enum Content {
+pub(crate) enum Content {
     Text(String),
     Bytes(Vec<u8>),
 }
@@ -105,6 +105,11 @@ impl Content {
             |_| Self::Bytes(bytes.to_vec()),
             |text| Self::Text(text.to_owned()),
         )
+    }
+
+    /// Takes the bytes over without a copy: text stays the buffer it arrived in.
+    pub(crate) fn from_vec(bytes: Vec<u8>) -> Self {
+        String::from_utf8(bytes).map_or_else(|err| Self::Bytes(err.into_bytes()), Self::Text)
     }
 
     fn into_bytes(self) -> Bytes {

@@ -41,7 +41,13 @@ redis-cli XADD orders '*' _payload '{"id":1,"email":"ann@example.com"}' h:trace-
 The body is what the codec decodes: JSON with the default codec, so the producer writes the order as JSON.
 A header field is optional; an entry with `_payload` alone arrives with no headers.
 Fields with other names are ignored, so a producer can add its own.
-An entry without `_payload` has an empty body, which the codec fails to decode; the decode failure policy ([`FailurePolicy`](api:ruststream::runtime::FailurePolicy)) settles it, and its default drops the entry.
+An entry without `_payload` is one another program wrote, and its fields become the body as one JSON object.
+Each value is a string when it is valid UTF-8 and an array of numbers otherwise; the `h:` fields stay headers:
+
+```bash
+redis-cli XADD orders '*' id 1 email ann@example.com
+# the body: {"email":"ann@example.com","id":"1"}
+```
 
 A consumer in another language reads entries the service writes the same way: `_payload` holds the body, and the `h:` fields hold the headers.
 

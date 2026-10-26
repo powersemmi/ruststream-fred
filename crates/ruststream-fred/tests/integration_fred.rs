@@ -130,6 +130,46 @@ async fn round_trip(broker: &ConnectedRedisBroker, key: &str) {
     msg.ack().await.expect("ack");
 }
 
+/// A stream is shared with whatever else writes to it: an entry another client added, without this
+/// crate's body field, arrives as the JSON object of its fields instead of an empty payload.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_entry_another_client_added_arrives_as_its_fields() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("foreign");
+    let mut sub = broker
+        .subscribe(RedisStream::new(&key).group("workers"))
+        .await
+        .expect("subscribe");
+
+    // A plain `XADD`, the way a FastStream producer writes its message.
+    let _: String = broker
+        .pool_handle()
+        .expect("live pool")
+        .xadd(
+            key.as_str(),
+            false,
+            None::<()>,
+            "*",
+            vec![("__data__", r#"{"id":1}"#), ("source", "faststream")],
+        )
+        .await
+        .expect("xadd");
+
+    let mut stream = Box::pin(sub.stream());
+    let msg = next(&mut stream).await.expect("delivery ok");
+    assert_eq!(
+        msg.payload(),
+        br#"{"__data__":"{\"id\":1}","source":"faststream"}"#,
+    );
+    assert_eq!(msg.headers(), &HeaderMap::new());
+    msg.ack().await.expect("ack");
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
 /// A short blocking read, so a subscription that finds nothing comes back at once instead of
 /// sleeping out the five-second default.
 const SHORT_BLOCK: Duration = Duration::from_millis(50);
