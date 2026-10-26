@@ -123,7 +123,10 @@ fn main() -> ExitCode {
 mod tests {
     use std::error::Error;
 
+    use fred::interfaces::{HashesInterface, KeysInterface};
+    use ruststream::ConnectedBroker;
     use ruststream::testing::TestApp;
+    use ruststream_fred::ConnectedRedisBroker;
     use ruststream_fred::prelude::*;
 
     use super::{Order, app, live};
@@ -150,11 +153,22 @@ mod tests {
         Ok(())
     }
 
+    /// A second client on the server, as another program would hold, with the names the service
+    /// reads emptied: a server kept between runs holds what earlier runs and other examples left on
+    /// `orders` and `shipments`, and that backlog would reach the handlers of this one.
+    async fn observer(url: &str) -> Result<ConnectedRedisBroker, Box<dyn Error>> {
+        let broker = RedisBroker::standalone(url).connect().await?;
+        let names = vec!["orders", "orders.priority", "shipments", "orders:totals"];
+        let _: i64 = broker.pool_handle()?.del(names).await?;
+        Ok(broker)
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_queued_script_reaches_the_shipping_queue() -> Result<(), Box<dyn Error>> {
         let Some(url) = live::url("REDIS_TEST_URL") else {
             return Ok(());
         };
+        let observer = observer(&url).await?;
         let tb = TestApp::start_live(app(&url)).await?;
         tb.broker::<RedisBroker>()
             .message(&Order { id: 9 })
@@ -167,11 +181,16 @@ mod tests {
             .subscriber("orders.priority")
             .assert_called_once()
             .settled(HandlerOutcome::ack());
-        tb.broker::<RedisBroker>()
-            .subscriber("shipments")
-            .assert_called_once()
-            .with(&9_u64);
+        // The script's writes run with the delivery's `XACK`, so they are on the server once the
+        // order settled. Its push is not a publish the live harness sees, so the pop of
+        // `shipments` is read from the count the script made beside it, not waited for.
+        let shipped: Option<i64> = observer
+            .pool_handle()?
+            .hget("orders:totals", "shipped")
+            .await?;
+        assert_eq!(shipped, Some(1));
         tb.shutdown().await?;
+        observer.shutdown().await?;
         Ok(())
     }
 }
