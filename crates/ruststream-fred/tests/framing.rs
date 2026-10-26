@@ -4,19 +4,16 @@
 
 #![cfg(feature = "testing")]
 
+use std::collections::BTreeMap;
+
 use fred::interfaces::{ListInterface, PubsubInterface};
-use futures::StreamExt;
-use ruststream::runtime::{App, AppInfo, HandlerOutcome, RustStream};
-use ruststream::testing::{InProcess, TestApp};
-use ruststream::{
-    ConnectedBroker, Deserialized, HeaderMap, IncomingMessage, Outgoing, Serialized, Subscriber,
-    SubscriptionSource, subscriber,
-};
+use ruststream::runtime::{App, AppInfo, Ctx, HandlerOutcome, Headers, RustStream};
+use ruststream::testing::TestApp;
+use ruststream::{Deserialized, Outgoing, Serialized, subscriber};
+use ruststream_fred::context::keys;
 use ruststream_fred::{RedisBroker, RedisList, RedisPubSub};
-use tokio::time::{Duration, timeout};
 
 const URL: &str = "redis://localhost:6379";
-const WAIT: Duration = Duration::from_secs(1);
 
 /// The bytes of a frame with no headers as a release before the marker wrote it, and of any value
 /// that happens to begin with four zero bytes.
@@ -83,44 +80,76 @@ async fn a_payload_that_looks_like_the_frame_reaches_the_handler_unchanged() {
     tb.shutdown().await.expect("shutdown");
 }
 
+/// Stands in for another client: on any trigger it writes the bare bytes to the list and the
+/// channel with the pool's own `LPUSH` and `PUBLISH`, outside this crate's framing.
+#[subscriber(RedisList::new("framing.foreign.trigger"))]
+async fn foreign_producer(_trigger: &Raw<'_>, Ctx(pool): Ctx<keys::FredPool>) -> HandlerOutcome {
+    let pushed: Result<i64, _> = pool.lpush("framing.foreign", ZEROS).await;
+    let published: Result<i64, _> = pool.next().publish("framing.foreign.channel", ZEROS).await;
+    if pushed.is_ok() && published.is_ok() {
+        HandlerOutcome::ack()
+    } else {
+        HandlerOutcome::drop()
+    }
+}
+
+/// Acks a delivery that carries no headers, and drops one that carries any.
+fn bare(headers: &BTreeMap<String, String>) -> HandlerOutcome {
+    if headers.is_empty() {
+        HandlerOutcome::ack()
+    } else {
+        HandlerOutcome::drop()
+    }
+}
+
+#[subscriber(RedisList::new("framing.foreign"))]
+async fn foreign_job(
+    _raw: &Raw<'_>,
+    Headers(headers): Headers<BTreeMap<String, String>>,
+) -> HandlerOutcome {
+    bare(&headers)
+}
+
+#[subscriber(RedisPubSub::new("framing.foreign.channel"))]
+async fn foreign_event(
+    _raw: &Raw<'_>,
+    Headers(headers): Headers<BTreeMap<String, String>>,
+) -> HandlerOutcome {
+    bare(&headers)
+}
+
+fn foreign_app() -> impl App {
+    RustStream::new(AppInfo::new("framing-foreign", "0.1.0")).with_broker(
+        RedisBroker::standalone(URL),
+        |b| {
+            b.include(foreign_producer);
+            b.include(foreign_job);
+            b.include(foreign_event);
+        },
+    )
+}
+
 /// A value another client pushed or published arrives as the payload it is, with no headers, even
 /// when its first bytes read as a frame of a release before the marker.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_foreign_value_that_begins_with_zeros_arrives_whole() {
-    let broker = RedisBroker::standalone(URL)
-        .connect_in_process()
-        .await
-        .expect("connect in process");
-    let pool = broker.pool_handle().expect("pool");
+    let tb = TestApp::start(foreign_app()).await.expect("start");
 
-    let mut list = SubscriptionSource::subscribe(RedisList::new("framing.foreign"), &broker)
-        .await
-        .expect("subscribe list");
-    let mut channel = broker
-        .subscribe_pubsub(RedisPubSub::new("framing.foreign.channel"))
-        .await
-        .expect("subscribe channel");
-    let _: i64 = pool.lpush("framing.foreign", ZEROS).await.expect("lpush");
-    let _: i64 = pool
-        .next()
-        .publish("framing.foreign.channel", ZEROS)
+    tb.broker::<RedisBroker>()
+        .message(&Payload(b"go".to_vec()))
+        .to("framing.foreign.trigger")
+        .publish()
         .await
         .expect("publish");
+    tb.settle().await.expect("settle");
 
-    let popped = timeout(WAIT, Box::pin(list.stream()).next())
-        .await
-        .expect("a list delivery")
-        .expect("stream has next")
-        .expect("delivery ok");
-    assert_eq!(popped.payload(), ZEROS);
-    assert_eq!(popped.headers(), &HeaderMap::new());
-    let heard = timeout(WAIT, Box::pin(channel.stream()).next())
-        .await
-        .expect("a channel delivery")
-        .expect("stream has next")
-        .expect("delivery ok");
-    assert_eq!(heard.payload(), ZEROS);
-    assert_eq!(heard.headers(), &HeaderMap::new());
+    for name in ["framing.foreign", "framing.foreign.channel"] {
+        tb.broker::<RedisBroker>()
+            .subscriber(name)
+            .assert_called_once()
+            .with_raw(ZEROS)
+            .settled(HandlerOutcome::ack());
+    }
 
-    broker.shutdown().await.expect("shutdown");
+    tb.shutdown().await.expect("shutdown");
 }
