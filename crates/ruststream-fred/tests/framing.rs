@@ -2,6 +2,8 @@
 //! client wrote arrives whole, whatever its bytes look like, and a payload of the service's own
 //! that resembles the frame reads back unchanged.
 
+#![cfg(feature = "testing")]
+
 use fred::interfaces::{ListInterface, PubsubInterface};
 use futures::StreamExt;
 use ruststream::runtime::{App, AppInfo, HandlerOutcome, RustStream};
