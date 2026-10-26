@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use fred::interfaces::{KeysInterface, ListInterface, SortedSetsInterface};
+use fred::interfaces::{KeysInterface, ListInterface, SortedSetsInterface, StreamsInterface};
 use fred::types::Expiration;
 use fred::types::sorted_sets::Ordering as ZOrdering;
 use futures::{Stream, StreamExt};
@@ -958,6 +958,39 @@ async fn pubsub_holds_its_buffer_for_a_handler_that_falls_behind() {
         assert_eq!(next_payload(&mut stream).await, vec![index]);
     }
     assert!(stays_quiet(&mut stream).await);
+}
+
+/// An entry another producer wrote, without this crate's body field, arrives as the JSON object of
+/// its fields instead of an empty payload.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_foreign_stream_entry_arrives_as_its_fields() {
+    let broker = connected().await;
+    let mut subscriber = broker
+        .subscribe(RedisStream::new("foreign").group("workers"))
+        .await
+        .expect("subscribe");
+
+    let _: String = broker
+        .pool_handle()
+        .expect("pool")
+        .xadd(
+            "foreign",
+            false,
+            None::<()>,
+            "*",
+            vec![("__data__", r#"{"id":1}"#), ("source", "faststream")],
+        )
+        .await
+        .expect("xadd");
+
+    let mut stream = Box::pin(subscriber.stream());
+    let msg = next_message(&mut stream).await;
+    assert_eq!(
+        msg.payload(),
+        br#"{"__data__":"{\"id\":1}","source":"faststream"}"#,
+    );
+    assert_eq!(msg.headers(), &HeaderMap::new());
+    msg.ack().await.expect("ack");
 }
 
 /// A name is one Redis type: a list write to a stream is refused, and a stream write to a list.

@@ -130,6 +130,46 @@ async fn round_trip(broker: &ConnectedRedisBroker, key: &str) {
     msg.ack().await.expect("ack");
 }
 
+/// A stream is shared with whatever else writes to it: an entry another client added, without this
+/// crate's body field, arrives as the JSON object of its fields instead of an empty payload.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_entry_another_client_added_arrives_as_its_fields() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("foreign");
+    let mut sub = broker
+        .subscribe(RedisStream::new(&key).group("workers"))
+        .await
+        .expect("subscribe");
+
+    // A plain `XADD`, the way a FastStream producer writes its message.
+    let _: String = broker
+        .pool_handle()
+        .expect("live pool")
+        .xadd(
+            key.as_str(),
+            false,
+            None::<()>,
+            "*",
+            vec![("__data__", r#"{"id":1}"#), ("source", "faststream")],
+        )
+        .await
+        .expect("xadd");
+
+    let mut stream = Box::pin(sub.stream());
+    let msg = next(&mut stream).await.expect("delivery ok");
+    assert_eq!(
+        msg.payload(),
+        br#"{"__data__":"{\"id\":1}","source":"faststream"}"#,
+    );
+    assert_eq!(msg.headers(), &HeaderMap::new());
+    msg.ack().await.expect("ack");
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
 /// A short blocking read, so a subscription that finds nothing comes back at once instead of
 /// sleeping out the five-second default.
 const SHORT_BLOCK: Duration = Duration::from_millis(50);
@@ -651,6 +691,51 @@ async fn list_codec_envelope_round_trips_headers() {
     let msg = next(&mut stream).await.expect("delivery ok");
     assert_eq!(msg.payload(), br#"{"id":1}"#);
     assert_eq!(msg.headers().content_type(), Some("application/json"));
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// A list is shared with whatever else pushes to it: a value another client pushed arrives whole,
+/// even when it begins with the four zero bytes a frame without headers began with in a release
+/// before the frame marker, and a message with headers still reads back with them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_foreign_list_value_that_begins_with_zeros_arrives_whole() {
+    let Some(url) = env("REDIS_TEST_URL") else {
+        return;
+    };
+    let broker = standalone(url).await;
+    let key = unique_key("list_foreign");
+    let foreign: &[u8] = &[0, 0, 0, 0, 0xab, 0xcd];
+
+    let _: i64 = broker
+        .pool_handle()
+        .expect("live pool")
+        .lpush(key.as_str(), foreign)
+        .await
+        .expect("lpush");
+    let mut headers = HeaderMap::new();
+    headers.insert("trace-id", "4bf92f35");
+    broker
+        .list_publisher(RedisListPublish::new())
+        .publish(
+            OutgoingMessage::new(key.as_str(), foreign).with_headers(headers),
+            None,
+        )
+        .await
+        .expect("lpush");
+
+    let mut sub = broker
+        .subscribe_list(RedisList::new(&key))
+        .await
+        .expect("subscribe list");
+    let mut stream = Box::pin(sub.stream());
+    let first = next(&mut stream).await.expect("delivery ok");
+    assert_eq!(first.payload(), foreign);
+    assert_eq!(first.headers(), &HeaderMap::new());
+    let second = next(&mut stream).await.expect("delivery ok");
+    assert_eq!(second.payload(), foreign);
+    assert_eq!(second.headers().get_str("trace-id"), Some("4bf92f35"));
 
     drop(stream);
     broker.shutdown().await.expect("shutdown");
