@@ -39,7 +39,6 @@ use thiserror::Error;
 pub(crate) use body::{Body, EntryBody, Meta};
 pub(crate) use erased::Framing;
 pub use fast_stream::FastStream;
-pub(crate) use framed::Content;
 pub use framed::Framed;
 pub use mount::RedisEnvelopeExt;
 pub use noop::NoOp;

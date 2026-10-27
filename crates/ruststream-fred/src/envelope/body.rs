@@ -7,7 +7,9 @@ use std::sync::OnceLock;
 use bytes::Bytes;
 use ruststream::HeaderMap;
 
-use super::{Content, EntryFields, Envelope, Location};
+use serde::Serialize;
+
+use super::{EntryFields, Envelope, Location};
 use crate::message::{DELIVERY_COUNT_HEADER, IDLE_MS_HEADER};
 
 /// Where a delivery's payload is: all of the value, a range of it, or decoded out of it.
@@ -184,6 +186,22 @@ impl<Env: Envelope> EntryBody<Env> {
 
     pub(crate) fn len(&self) -> usize {
         self.payload().len()
+    }
+}
+
+/// One field of a foreign entry in the JSON object it becomes: text when its bytes are valid
+/// UTF-8, the bytes themselves otherwise.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum Content {
+    Text(String),
+    Bytes(Vec<u8>),
+}
+
+impl Content {
+    /// Takes the bytes over without a copy: text stays the buffer it arrived in.
+    fn from_vec(bytes: Vec<u8>) -> Self {
+        String::from_utf8(bytes).map_or_else(|err| Self::Bytes(err.into_bytes()), Self::Text)
     }
 }
 

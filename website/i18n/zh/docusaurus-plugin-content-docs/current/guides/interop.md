@@ -87,16 +87,16 @@ redis-cli XADD orders '*' id 1 email ann@example.com
 
 ```bash
 redis-cli RPOP emails
-# {"headers":{},"payload":"{\"to\":\"ann@example.com\",\"subject\":\"Order 1 received\"}"}
+# {"headers":{},"payload":{"to":"ann@example.com","subject":"Order 1 received"}}
 ```
 
-`payload` 是消息体，这里是 JSON 文本形式的邮件，所以邮件程序先解析文档，再解析其中的 `payload`。
-有效 UTF-8 的消息体或消息头写成字符串，其他字节写成数字数组。
+`payload` 是消息体，这里的邮件按原样作为 JSON 值嵌入，所以邮件程序解析一次就能读完整个文档。
+不是 JSON 文本的消息体改为以 base64 放在 `payload_base64` 中，这是 CloudEvents JSON 格式的约定；消息头写成字符串。
 在 RedisInsight 这样的工具中，同样的文档显示为可读的值。
 
 ## 读取列表值或频道消息 {/* #reading-a-list-value-or-a-channel-message */}
 
-订阅读取其发布者写入的信封：挂载点通过 [`RedisEnvelopeExt::envelope`](api:ruststream_fred::RedisEnvelopeExt::envelope) 指定信封，例如 `b.include(handler.envelope(Framed::new(JsonCodec)))`，没有指定时订阅读取 broker 的信封。
+订阅读取其发布者写入的信封：挂载点通过 [`RedisEnvelopeExt::envelope`](api:ruststream_fred::envelope::RedisEnvelopeExt::envelope) 指定信封，例如 `b.include(handler.envelope(Framed::new(JsonCodec)))`，没有指定时订阅读取 broker 的信封。
 JSON 文档只按确切的形式读取：带有 `headers` 和 `payload`、没有其他字段的对象。
 
 不属于该信封的值，例如另一个客户端以纯 JSON 推入或发布的值，无论前几个字节是什么，都会作为不带消息头的消息体到达：

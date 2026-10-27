@@ -1,26 +1,43 @@
-//! Headers and payload as one document through a `RustStream` codec.
+//! Headers and payload as one document through a `RustStream` codec, the payload in the
+//! convention of the `CloudEvents` JSON format.
 
 use std::collections::BTreeMap;
 use std::fmt::{self, Debug, Formatter};
 
-use bytes::Bytes;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use ruststream::HeaderMap;
 use ruststream::codec::Codec;
-use serde::de::{IgnoredAny, MapAccess, Visitor};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::de::{self, IgnoredAny, MapAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::value::RawValue;
 
 use super::{Envelope, Location, SealError};
 
-/// Headers and payload as one `{headers, payload}` document, written through a `RustStream` codec.
+/// The media type of a JSON codec, which writes the document as JSON text.
+const JSON: &str = "application/json";
+
+/// Headers and payload as one document, `{headers, payload}`, written through a `RustStream`
+/// codec.
 ///
-/// With the JSON codec the value is text that `redis-cli` and `RedisInsight` show as it is. A
-/// field whose bytes are valid UTF-8 is written as text and any other bytes as the byte sequence
-/// itself, so a payload arrives exactly as it left, and the CBOR and msgpack codecs carry the
-/// document the same way. A value that is not a document in exactly this shape, one with a field
-/// of its own beside the two included, is delivered as the payload with no headers. The
-/// document is the one the `codec(..)` framing of earlier releases wrote.
+/// The payload follows the convention of the `CloudEvents` JSON format. With a JSON codec a payload
+/// that is a JSON text is embedded as the JSON value it is, and any other bytes travel as standard
+/// base64 in `payload_base64`; exactly one of the two fields is present:
 ///
-/// Reading the payload decodes the document once, and reading the headers decodes it again.
+/// ```text
+/// {"headers":{"event":"created"},"payload":{"id":7}}
+/// {"headers":{"event":"created"},"payload_base64":"CAc="}
+/// ```
+///
+/// With a binary codec (CBOR, msgpack) the payload is always a byte string in `payload`. A header
+/// is a text field of `headers`, and a header whose value is not text refuses the publish. A value
+/// that is not a document in exactly this shape is delivered as the payload with no headers.
+///
+/// A JSON payload reads back byte for byte, and finding it costs one scan of the document. A
+/// publish through a JSON codec checks that the payload is a JSON text, one scan of it, and
+/// encodes a payload that is not in base64. A broker whose own envelope is `Framed` registers
+/// itself with the test harness beside its tests:
+/// `ruststream::register_testable_broker!(RedisBroker<Framed<JsonCodec>>);`.
 ///
 /// # Examples
 ///
@@ -77,19 +94,28 @@ where
     const CONTENT_TYPE: &'static str = C::CONTENT_TYPE;
 
     fn locate(&self, value: &[u8]) -> Location {
+        if C::CONTENT_TYPE == JSON {
+            return locate_json(value);
+        }
         self.0
-            .decode::<Probe>(value)
-            .map_or(Location::Bare, |probe| {
-                Location::Decoded(probe.payload.into_vec())
-            })
+            .decode::<BinaryProbe>(value)
+            .map_or(Location::Bare, |probe| Location::Decoded(probe.payload.0))
     }
 
     fn headers(&self, value: &[u8]) -> HeaderMap {
+        let parsed = if C::CONTENT_TYPE == JSON {
+            serde_json::from_slice::<JsonHeaders>(value)
+                .ok()
+                .map(|block| block.headers)
+        } else {
+            self.0
+                .decode::<BinaryHeaders>(value)
+                .ok()
+                .map(|block| block.headers)
+        };
         let mut headers = HeaderMap::new();
-        if let Ok(document) = self.0.decode::<Document>(value) {
-            for (name, header) in document.headers {
-                headers.insert(name, header.into_bytes());
-            }
+        for (name, text) in parsed.unwrap_or_default() {
+            headers.insert(name, text);
         }
         headers
     }
@@ -100,12 +126,14 @@ where
         headers: &HeaderMap,
         value: &mut Vec<u8>,
     ) -> Result<(), SealError> {
-        let document = Document {
-            headers: headers
-                .iter()
-                .map(|(name, header)| (name.to_owned(), Content::from_bytes(header)))
-                .collect(),
-            payload: Content::from_bytes(payload),
+        let headers = text_headers(headers)?;
+        if C::CONTENT_TYPE == JSON {
+            seal_json(payload, &headers, value);
+            return Ok(());
+        }
+        let document = BinaryDocument {
+            headers,
+            payload: ByteString(payload),
         };
         let encoded = self
             .0
@@ -116,61 +144,154 @@ where
     }
 }
 
-/// One document field: text when its bytes are valid UTF-8, the bytes themselves otherwise.
-///
-/// The representation is untagged, so a text field is serialized as the plain string it always
-/// was and nothing distinguishes a document of text fields from one an earlier release wrote.
-/// Bytes that are not text keep their own form (a JSON array of numbers, a byte string in a
-/// binary codec) instead of passing through a lossy conversion to text.
-#[derive(Serialize, Deserialize)]
-#[serde(untagged)]
-pub(crate) enum Content {
-    Text(String),
-    Bytes(Vec<u8>),
+/// The headers as the text fields of the document; a value that is not text has no place there.
+fn text_headers(headers: &HeaderMap) -> Result<BTreeMap<&str, &str>, SealError> {
+    headers
+        .iter()
+        .map(|(name, value)| {
+            std::str::from_utf8(value)
+                .map(|text| (name, text))
+                .map_err(|_| {
+                    SealError::Encode(
+                        format!(
+                            "the header `{name}` is not text, and a document holds text headers"
+                        )
+                        .into(),
+                    )
+                })
+        })
+        .collect()
 }
 
-impl Content {
-    fn from_bytes(bytes: &[u8]) -> Self {
-        std::str::from_utf8(bytes).map_or_else(
-            |_| Self::Bytes(bytes.to_vec()),
-            |text| Self::Text(text.to_owned()),
-        )
+/// Writes the JSON document straight into `value`: the payload embedded as is when it is a JSON
+/// text, its base64 otherwise. Neither form needs escaping, so no intermediate buffer is built.
+fn seal_json(payload: &[u8], headers: &BTreeMap<&str, &str>, value: &mut Vec<u8>) {
+    value.reserve(payload.len() + 32);
+    value.extend_from_slice(br#"{"headers":"#);
+    serde_json::to_writer(&mut *value, headers).expect("a map of strings serializes");
+    // A JSON text with whitespace around it would read back without that whitespace, so only a
+    // payload that is the value alone is embedded.
+    let embeddable = serde_json::from_slice::<&RawValue>(payload)
+        .is_ok_and(|raw| raw.get().len() == payload.len());
+    if embeddable {
+        value.extend_from_slice(br#","payload":"#);
+        value.extend_from_slice(payload);
+    } else {
+        value.extend_from_slice(br#","payload_base64":""#);
+        let start = value.len();
+        value.resize(
+            start + base64::encoded_len(payload.len(), true).unwrap_or(0),
+            0,
+        );
+        let written = STANDARD
+            .encode_slice(payload, &mut value[start..])
+            .expect("the buffer is sized for the encoding");
+        value.truncate(start + written);
+        value.push(b'"');
     }
+    value.push(b'}');
+}
 
-    /// Takes the bytes over without a copy: text stays the buffer it arrived in.
-    pub(crate) fn from_vec(bytes: Vec<u8>) -> Self {
-        String::from_utf8(bytes).map_or_else(|err| Self::Bytes(err.into_bytes()), Self::Text)
-    }
-
-    fn into_vec(self) -> Vec<u8> {
-        match self {
-            Self::Text(text) => text.into_bytes(),
-            Self::Bytes(bytes) => bytes,
+/// Where the payload of a JSON document is: the embedded value, a range of the document, or the
+/// bytes its base64 decodes to.
+fn locate_json(value: &[u8]) -> Location {
+    let Ok(probe) = serde_json::from_slice::<JsonProbe<'_>>(value) else {
+        return Location::Bare;
+    };
+    match (probe.payload, probe.payload_base64) {
+        (Some(raw), None) => {
+            let text = raw.get().as_bytes();
+            // The value borrows the document, so its offset there is the distance between the two.
+            let start = text.as_ptr() as usize - value.as_ptr() as usize;
+            Location::Within(start..start + text.len())
         }
-    }
-
-    fn into_bytes(self) -> Bytes {
-        Bytes::from(self.into_vec())
+        (None, Some(encoded)) => STANDARD
+            .decode(encoded)
+            .map_or(Location::Bare, Location::Decoded),
+        _ => Location::Bare,
     }
 }
 
-/// The document, read only in the exact shape it is written in, so a value another client wrote
-/// that only resembles it (a `payload` field alone, or fields of its own beside the two) is the
-/// plain payload it is.
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Document {
-    headers: BTreeMap<String, Content>,
-    payload: Content,
-}
-
-/// The document with its headers skipped over, which is what finding the payload reads.
+/// The JSON document with its headers skipped over, which is what finding the payload reads.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Probe {
+struct JsonProbe<'a> {
     #[allow(dead_code, reason = "present for the shape check, never read")]
     headers: AnyMap,
-    payload: Content,
+    #[serde(borrow, default)]
+    payload: Option<&'a RawValue>,
+    #[serde(borrow, default)]
+    payload_base64: Option<&'a str>,
+}
+
+/// The binary document with its headers skipped over.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BinaryProbe {
+    #[allow(dead_code, reason = "present for the shape check, never read")]
+    headers: AnyMap,
+    payload: ByteBuf,
+}
+
+/// The headers of a JSON document, its payload skipped over.
+#[derive(Deserialize)]
+struct JsonHeaders {
+    headers: BTreeMap<String, String>,
+}
+
+/// The headers of a binary document, its payload skipped over. Both fields are named, since a
+/// binary codec may write a struct as the sequence of its fields.
+#[derive(Deserialize)]
+struct BinaryHeaders {
+    headers: BTreeMap<String, String>,
+    #[allow(
+        dead_code,
+        reason = "present for a codec that reads fields by position"
+    )]
+    payload: IgnoredAny,
+}
+
+/// The document a binary codec writes.
+#[derive(Serialize)]
+struct BinaryDocument<'a> {
+    headers: BTreeMap<&'a str, &'a str>,
+    payload: ByteString<'a>,
+}
+
+/// Bytes a binary codec writes as a byte string.
+struct ByteString<'a>(&'a [u8]);
+
+impl Serialize for ByteString<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(self.0)
+    }
+}
+
+/// A byte string a binary codec read.
+struct ByteBuf(Vec<u8>);
+
+impl<'de> Deserialize<'de> for ByteBuf {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Bytes;
+
+        impl Visitor<'_> for Bytes {
+            type Value = ByteBuf;
+
+            fn expecting(&self, f: &mut Formatter<'_>) -> fmt::Result {
+                f.write_str("a byte string")
+            }
+
+            fn visit_bytes<E: de::Error>(self, bytes: &[u8]) -> Result<ByteBuf, E> {
+                Ok(ByteBuf(bytes.to_vec()))
+            }
+
+            fn visit_byte_buf<E: de::Error>(self, bytes: Vec<u8>) -> Result<ByteBuf, E> {
+                Ok(ByteBuf(bytes))
+            }
+        }
+
+        deserializer.deserialize_byte_buf(Bytes)
+    }
 }
 
 /// A map whose entries are skipped over without being decoded.
@@ -202,14 +323,14 @@ impl<'de> Deserialize<'de> for AnyMap {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
     use ruststream::codec::{CborCodec, JsonCodec, MsgpackCodec};
 
     use super::*;
 
-    fn sample_headers() -> HeaderMap {
+    fn tenant() -> HeaderMap {
         let mut headers = HeaderMap::new();
-        headers.insert("content-type", "application/json");
-        headers.insert("correlation-id", "abc-1");
+        headers.insert("event", "created");
         headers
     }
 
@@ -228,113 +349,133 @@ mod tests {
     fn payload_of<C: Codec + Clone + Debug + 'static>(
         envelope: &Framed<C>,
         value: &[u8],
-    ) -> Vec<u8> {
+    ) -> Option<Vec<u8>> {
         match envelope.locate(value) {
-            Location::Bare => value.to_vec(),
-            Location::Decoded(payload) => payload,
-            Location::Within(range) => value[range].to_vec(),
+            Location::Bare => None,
+            Location::Decoded(payload) => Some(payload),
+            Location::Within(range) => Some(value[range].to_vec()),
         }
     }
 
+    /// A JSON payload is embedded as the JSON value it is, the way the `CloudEvents` JSON format
+    /// carries `data`, and reads back byte for byte, whitespace included.
     #[test]
-    fn a_document_round_trips_and_is_readable() {
+    fn a_json_payload_is_embedded_as_a_value_and_reads_back_byte_exact() {
         let json = Framed::new(JsonCodec);
-        let framed = sealed(&json, br#"{"id":1}"#, &sample_headers());
-        let text = String::from_utf8(framed.clone()).expect("utf8");
-        assert!(text.contains("\"payload\""));
-        assert!(text.contains("application/json"));
+        let payload = br#"{ "id": 7,  "tags":["a"] }"#;
 
-        assert_eq!(payload_of(&json, &framed), br#"{"id":1}"#);
-        assert_eq!(
-            json.headers(&framed).content_type(),
-            Some("application/json")
-        );
-    }
-
-    #[test]
-    fn a_value_that_is_not_a_document_is_bare() {
-        assert_eq!(Framed::new(JsonCodec).locate(b"not-json"), Location::Bare);
-    }
-
-    /// The document is read only in the exact shape this crate writes: a JSON value another
-    /// client wrote with a `payload` field and nothing else, or with fields of its own, is the
-    /// payload it is.
-    #[test]
-    fn a_json_value_shaped_almost_like_the_document_is_bare() {
-        for foreign in [
-            br#"{"payload":"x"}"#.as_slice(),
-            br#"{"headers":{},"payload":"x","id":7}"#.as_slice(),
-        ] {
-            assert_eq!(Framed::new(JsonCodec).locate(foreign), Location::Bare);
-        }
-    }
-
-    /// The wire form of a text payload is the one the `codec(..)` framing of earlier releases
-    /// wrote, so values already in Redis keep reading.
-    #[test]
-    fn a_text_document_keeps_its_wire_form() {
-        let framed = sealed(&Framed::new(JsonCodec), br#"{"id":1}"#, &sample_headers());
-        let text = String::from_utf8(framed).expect("utf8");
-
-        assert!(text.contains(r#""payload":"{\"id\":1}""#), "{text}");
-        assert!(
-            text.contains(r#""content-type":"application/json""#),
-            "{text}"
-        );
-    }
-
-    #[test]
-    fn a_document_from_an_earlier_release_still_reads() {
-        let json = Framed::new(JsonCodec);
-        let wire = br#"{"headers":{"content-type":"application/json"},"payload":"{\"id\":1}"}"#;
-
-        assert_eq!(payload_of(&json, wire), br#"{"id":1}"#);
-        assert_eq!(json.headers(wire).content_type(), Some("application/json"));
-    }
-
-    /// A header value is written the way the payload is, so a binary one survives too.
-    #[test]
-    fn a_header_value_that_is_not_text_round_trips() {
-        let json = Framed::new(JsonCodec);
-        let mut headers = HeaderMap::new();
-        headers.insert("signature", Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]));
-
-        let framed = sealed(&json, b"{}", &headers);
+        let framed = sealed(&json, payload, &tenant());
 
         assert_eq!(
-            json.headers(&framed).get("signature").map(<[u8]>::to_vec),
-            Some(vec![0xde, 0xad, 0xbe, 0xef])
+            framed,
+            br#"{"headers":{"event":"created"},"payload":{ "id": 7,  "tags":["a"] }}"#
+        );
+        assert_eq!(
+            payload_of(&json, &framed).as_deref(),
+            Some(payload.as_slice())
+        );
+        assert_eq!(json.headers(&framed).get_str("event"), Some("created"));
+    }
+
+    /// Bytes that are not a JSON text travel as standard base64 in `payload_base64`, as the
+    /// `CloudEvents` `data_base64` does.
+    #[test]
+    fn a_payload_that_is_not_json_travels_as_base64() {
+        let json = Framed::new(JsonCodec);
+        let payload: &[u8] = &[0x08, 0x07];
+
+        let framed = sealed(&json, payload, &tenant());
+
+        assert_eq!(
+            framed,
+            br#"{"headers":{"event":"created"},"payload_base64":"CAc="}"#
+        );
+        assert_eq!(payload_of(&json, &framed).as_deref(), Some(payload));
+    }
+
+    /// Text that is not a JSON value is no exception: it is bytes, so it is base64 too, and so is
+    /// a JSON text with whitespace around it, which the document would not keep.
+    #[test]
+    fn plain_text_travels_as_base64() {
+        let json = Framed::new(JsonCodec);
+
+        let framed = sealed(&json, b"hello", &HeaderMap::new());
+        assert_eq!(framed, br#"{"headers":{},"payload_base64":"aGVsbG8="}"#);
+
+        let framed = sealed(&json, b" 7\n", &HeaderMap::new());
+        assert_eq!(framed, br#"{"headers":{},"payload_base64":"IDcK"}"#);
+        assert_eq!(
+            payload_of(&json, &framed).as_deref(),
+            Some(b" 7\n".as_slice())
         );
     }
 
-    /// The document carries whatever codec a service picked, so the untagged text-or-bytes field
-    /// has to survive each one, not only JSON.
+    /// A binary codec carries the payload as a byte string in `payload`, whatever the bytes are.
     #[test]
-    fn every_codec_round_trips_bytes_that_are_not_text() {
-        let blob: &[u8] = &[0xff, 0x00, 0xfe];
-
-        let json = Framed::new(JsonCodec);
-        let framed = sealed(&json, blob, &sample_headers());
-        assert_eq!(payload_of(&json, &framed), blob, "json");
-        assert_eq!(
-            json.headers(&framed).content_type(),
-            Some("application/json")
-        );
-
+    fn a_binary_codec_carries_the_payload_as_a_byte_string() {
         let cbor = Framed::new(CborCodec);
-        let framed = sealed(&cbor, blob, &sample_headers());
-        assert_eq!(payload_of(&cbor, &framed), blob, "cbor");
+        let framed = sealed(&cbor, br#"{"id":7}"#, &tenant());
+
+        let decoded: ciborium::Value = ciborium::from_reader(framed.as_slice()).expect("cbor");
+        let payload = decoded
+            .as_map()
+            .and_then(|map| map.iter().find(|(key, _)| key.as_text() == Some("payload")))
+            .map(|(_, value)| value.clone());
         assert_eq!(
-            cbor.headers(&framed).content_type(),
-            Some("application/json")
+            payload,
+            Some(ciborium::Value::Bytes(br#"{"id":7}"#.to_vec()))
         );
+        assert_eq!(
+            payload_of(&cbor, &framed).as_deref(),
+            Some(br#"{"id":7}"#.as_slice())
+        );
+        assert_eq!(cbor.headers(&framed).get_str("event"), Some("created"));
 
         let msgpack = Framed::new(MsgpackCodec);
-        let framed = sealed(&msgpack, blob, &sample_headers());
-        assert_eq!(payload_of(&msgpack, &framed), blob, "msgpack");
+        let framed = sealed(&msgpack, &[0xff, 0x00], &tenant());
         assert_eq!(
-            msgpack.headers(&framed).content_type(),
-            Some("application/json")
+            payload_of(&msgpack, &framed).as_deref(),
+            Some([0xff, 0x00].as_slice())
+        );
+        assert_eq!(msgpack.headers(&framed).get_str("event"), Some("created"));
+    }
+
+    /// The document is recognised only in its exact shape: the headers and exactly one of the two
+    /// payload fields. Anything else is a record of another client's, delivered whole.
+    #[test]
+    fn a_document_of_another_shape_is_a_foreign_record() {
+        let json = Framed::new(JsonCodec);
+        for foreign in [
+            br#"{"headers":{},"payload":{"id":7},"payload_base64":"CAc="}"#.as_slice(),
+            br#"{"headers":{},"payload":{"id":7},"id":7}"#.as_slice(),
+            br#"{"headers":{}}"#.as_slice(),
+            br#"{"payload":{"id":7}}"#.as_slice(),
+            br#"{"headers":{},"payload_base64":"not base64!"}"#.as_slice(),
+            b"not-json".as_slice(),
+        ] {
+            assert_eq!(
+                json.locate(foreign),
+                Location::Bare,
+                "{:?}",
+                String::from_utf8_lossy(foreign)
+            );
+        }
+    }
+
+    /// A header value is text in the document; a value that is not refuses the publish by name.
+    #[test]
+    fn a_header_value_that_is_not_text_is_refused_by_name() {
+        let mut headers = HeaderMap::new();
+        headers.insert("signature", Bytes::from_static(&[0xff, 0x00]));
+
+        let refused = Framed::new(JsonCodec).seal(b"{}", &headers, &mut Vec::new());
+
+        assert!(
+            matches!(
+                &refused,
+                Err(SealError::Encode(err)) if err.to_string().contains("`signature`")
+            ),
+            "{refused:?}"
         );
     }
 

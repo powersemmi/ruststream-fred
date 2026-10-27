@@ -87,16 +87,16 @@ redis-cli XADD orders '*' id 1 email ann@example.com
 
 ```bash
 redis-cli RPOP emails
-# {"headers":{},"payload":"{\"to\":\"ann@example.com\",\"subject\":\"Order 1 received\"}"}
+# {"headers":{},"payload":{"to":"ann@example.com","subject":"Order 1 received"}}
 ```
 
-`payload` - это тело, здесь письмо в виде текста JSON, поэтому почтовый сервис разбирает документ, а затем его `payload`.
-Тело или заголовок в корректном UTF-8 записывается строкой, а любые другие байты - массивом чисел.
+`payload` - это тело, здесь письмо, встроенное как значение JSON, поэтому почтовый сервис читает весь документ одним разбором.
+Тело, которое не является текстом JSON, передаётся в base64 в поле `payload_base64` - так данные передаёт формат JSON спецификации CloudEvents. Заголовок записывается строкой.
 В таком документе значения читаются и в инструменте вроде RedisInsight.
 
 ## Чтение значения списка или сообщения канала
 
-Подписка читает конверт, который пишет её издатель: точка монтирования задаёт его через [`RedisEnvelopeExt::envelope`](api:ruststream_fred::RedisEnvelopeExt::envelope), например `b.include(handler.envelope(Framed::new(JsonCodec)))`, а без него подписка читает конверт брокера.
+Подписка читает конверт, который пишет её издатель: точка монтирования задаёт его через [`RedisEnvelopeExt::envelope`](api:ruststream_fred::envelope::RedisEnvelopeExt::envelope), например `b.include(handler.envelope(Framed::new(JsonCodec)))`, а без него подписка читает конверт брокера.
 Документ JSON читается только в точном виде: объект с полями `headers` и `payload` и без других полей.
 
 Значение не своего конверта, например простой JSON, который добавляет или публикует другой клиент, приходит как тело без заголовков, какими бы ни были его первые байты:

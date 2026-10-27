@@ -87,16 +87,16 @@ An [envelope](../components/subscriptions/envelopes.md) named on the publish pol
 
 ```bash
 redis-cli RPOP emails
-# {"headers":{},"payload":"{\"to\":\"ann@example.com\",\"subject\":\"Order 1 received\"}"}
+# {"headers":{},"payload":{"to":"ann@example.com","subject":"Order 1 received"}}
 ```
 
-`payload` is the body, here the email as JSON text, so the mailer parses the document and then its `payload`.
-A body or a header that is valid UTF-8 is written as a string, and any other bytes as an array of numbers.
+`payload` is the body, here the email embedded as the JSON value it is, so one parse reads the whole document.
+A body that is not a JSON text travels as base64 in `payload_base64` instead, the convention of CloudEvents' JSON format, and a header is a string.
 The same document shows readable values in a tool like RedisInsight.
 
 ## Reading a list value or a channel message
 
-A subscription reads the envelope its publisher writes: the mount site names it with [`RedisEnvelopeExt::envelope`](api:ruststream_fred::RedisEnvelopeExt::envelope), as `b.include(handler.envelope(Framed::new(JsonCodec)))`, and without one the subscription reads the broker's.
+A subscription reads the envelope its publisher writes: the mount site names it with [`RedisEnvelopeExt::envelope`](api:ruststream_fred::envelope::RedisEnvelopeExt::envelope), as `b.include(handler.envelope(Framed::new(JsonCodec)))`, and without one the subscription reads the broker's.
 The JSON document is read only in its exact shape: an object with `headers` and `payload` and no other field.
 
 A value that is not the envelope's own, such as one another client pushes or publishes as plain JSON, arrives as the body with no headers, whatever its first bytes are:

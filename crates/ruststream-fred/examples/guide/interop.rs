@@ -72,9 +72,9 @@ mod tests {
 
     use super::{Order, app, live, service};
 
-    /// The mailer's value: the envelope, with the email as JSON text in `payload`.
+    /// The mailer's value: the document, with the email embedded as the JSON value in `payload`.
     const EMAIL: &[u8] =
-        br#"{"headers":{},"payload":"{\"to\":\"ann@example.com\",\"subject\":\"Order 1 received\"}"}"#;
+        br#"{"headers":{},"payload":{"to":"ann@example.com","subject":"Order 1 received"}}"#;
 
     fn order() -> Order {
         Order {

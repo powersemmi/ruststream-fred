@@ -14,7 +14,7 @@ An envelope is how a message's headers travel beside its payload; the broker nam
 A list element and a channel message are one value, and a stream entry is a map of fields.
 An envelope is the layout of the headers and the payload in them.
 [`RedisBroker::envelope`](api:ruststream_fred::RedisBroker::envelope) sets the broker's envelope, and every subscription and publish policy uses it unless it names its own.
-A subscription names its own at the mount site with [`RedisEnvelopeExt::envelope`](api:ruststream_fred::RedisEnvelopeExt::envelope): `b.include(handler.envelope(FastStream))`.
+A subscription names its own at the mount site with [`RedisEnvelopeExt::envelope`](api:ruststream_fred::envelope::RedisEnvelopeExt::envelope): `b.include(handler.envelope(FastStream))`.
 On the manual path the descriptor names it: `RedisList::new("jobs").envelope(FastStream)`.
 A publish policy names its own with `envelope(..)`: `RedisListPublish::new().envelope(FastStream)`.
 The envelope is a type, so the choice costs nothing per message.
@@ -24,15 +24,20 @@ A delivery finds its payload without reading the headers, and reads them the fir
 | --- | --- | --- |
 | [`envelope::RustStream`](api:ruststream_fred::envelope::RustStream), the default | a binary frame that opens with a marker; a message without headers is its bare payload | the payload in `_payload`, each header in `h:<name>` |
 | [`FastStream`](api:ruststream_fred::envelope::FastStream) | faststream's `BinaryMessageFormatV1` | the same frame in `__data__` |
-| [`Framed`](api:ruststream_fred::envelope::Framed) | a `{headers, payload}` document written by a codec | the document in `_payload` |
+| [`Framed`](api:ruststream_fred::envelope::Framed) | a `{headers, payload}` document written by a codec, its payload in CloudEvents' convention | the document in `_payload` |
 | [`NoOp`](api:ruststream_fred::envelope::NoOp) | the payload alone | the payload in `_payload` |
 
 `envelope::RustStream` writes the bytes every earlier release wrote, so services on different releases read each other.
 A binary frame written by 0.7.1 or an earlier release has no marker and reads as its payload, frame bytes included, so services that share a list or a channel upgrade together.
 `FastStream` shares lists, channels and streams with a faststream service in both directions.
 Its header names travel as they are, so faststream's own headers arrive as `correlation_id` and `reply_to`.
-`Framed` with `JsonCodec` writes text that `redis-cli` and RedisInsight show as it is, and it reads the document `codec(..)` wrote in earlier releases.
-A field whose bytes are not valid UTF-8 travels as the bytes themselves.
+`Framed` with `JsonCodec` writes text that `redis-cli` and RedisInsight show as it is.
+Its payload follows the convention of CloudEvents' JSON format.
+A payload that is a JSON text is embedded as the value it is and reads back byte for byte: `{"headers":{"event":"created"},"payload":{"id":7}}`.
+Any other payload travels as standard base64: `{"headers":{"event":"created"},"payload_base64":"CAc="}`.
+With CBOR or msgpack the payload is a byte string in `payload`.
+A header is a text field, and a header whose value is not text refuses the publish.
+The document of the `codec(..)` framing of 0.7.2 and earlier releases carried its payload as a string, so `Framed` reads it as a JSON string; services that share such a list switch together, and the list is drained first.
 
 A value that is not one of the envelope's own arrives as the payload with no headers, whatever its first bytes are.
 A stream entry without the envelope's field arrives as one JSON object of its fields.

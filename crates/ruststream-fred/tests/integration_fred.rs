@@ -20,7 +20,6 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use bytes::Bytes;
 use fred::clients::Pool;
 use fred::interfaces::{ClientLike, KeysInterface, ListInterface, StreamsInterface};
 use fred::types::InfoKind;
@@ -741,8 +740,8 @@ async fn a_foreign_list_value_that_begins_with_zeros_arrives_whole() {
     broker.shutdown().await.expect("shutdown");
 }
 
-/// The readable envelope carries data that is not text without touching it: these bytes are not
-/// valid UTF-8, and the earlier envelope replaced them on the way out.
+/// The JSON document carries a payload that is not text without touching it, in base64: these
+/// bytes are not valid UTF-8.
 const NOT_TEXT: &[u8] = &[0xff, 0x00, 0x1f, 0xfe, 0x80];
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -754,7 +753,7 @@ async fn list_codec_envelope_round_trips_bytes_that_are_not_text() {
     let key = unique_key("list_codec_binary");
 
     let mut headers = HeaderMap::new();
-    headers.insert("signature", Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]));
+    headers.insert("signature", "sig-1");
 
     broker
         .list_publisher(RedisListPublish::new().envelope(Framed::new(JsonCodec)))
@@ -778,8 +777,8 @@ async fn list_codec_envelope_round_trips_bytes_that_are_not_text() {
         "the list envelope changed the payload"
     );
     assert_eq!(
-        msg.headers().get("signature").map(<[u8]>::to_vec),
-        Some(vec![0xde, 0xad, 0xbe, 0xef]),
+        msg.headers().get_str("signature"),
+        Some("sig-1"),
         "the list envelope changed a header value"
     );
 
@@ -804,7 +803,7 @@ async fn pubsub_codec_envelope_round_trips_bytes_that_are_not_text() {
     let mut stream = Box::pin(sub.stream());
 
     let mut headers = HeaderMap::new();
-    headers.insert("signature", Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]));
+    headers.insert("signature", "sig-1");
 
     publisher
         .publish(
@@ -821,8 +820,8 @@ async fn pubsub_codec_envelope_round_trips_bytes_that_are_not_text() {
         "the Pub/Sub envelope changed the payload"
     );
     assert_eq!(
-        msg.headers().get("signature").map(<[u8]>::to_vec),
-        Some(vec![0xde, 0xad, 0xbe, 0xef]),
+        msg.headers().get_str("signature"),
+        Some("sig-1"),
         "the Pub/Sub envelope changed a header value"
     );
 
