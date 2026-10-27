@@ -460,9 +460,9 @@ jobs:
           REDIS_SENTINEL_TEST_URL: 127.0.0.1:26379
           RUSTSTREAM_REQUIRE_LIVE: "1"
         run: |
-          cargo test -p ruststream-fred --test suite integration_fred:: -- --test-threads=1
-          cargo test -p ruststream-fred --test suite integration_claiming:: -- --test-threads=1
-          cargo test -p ruststream-fred --test suite integration_pubsub:: -- --test-threads=1
+          cargo test -p ruststream-fred --features json --test suite integration_fred:: -- --test-threads=1
+          cargo test -p ruststream-fred --features json --test suite integration_claiming:: -- --test-threads=1
+          cargo test -p ruststream-fred --features json --test suite integration_pubsub:: -- --test-threads=1
 
       - name: Run Redis conformance suite
         working-directory: ruststream-fred
@@ -470,7 +470,7 @@ jobs:
           REDIS_TEST_URL: redis://127.0.0.1:6379
           RUSTSTREAM_REQUIRE_LIVE: "1"
         run: |
-          cargo test -p ruststream-fred --features testing --test suite conformance_fred:: -- --test-threads=1
+          cargo test -p ruststream-fred --features testing,json --test suite conformance_fred:: -- --test-threads=1
 
       # The suites fed with this crate's own descriptors and publishers. The settlement suite reads
       # the claiming mode, so it needs the 8.4 standalone beside the 7.x one.
@@ -481,7 +481,7 @@ jobs:
           REDIS_84_TEST_URL: redis://127.0.0.1:6386
           RUSTSTREAM_REQUIRE_LIVE: "1"
         run: |
-          cargo test -p ruststream-fred --features testing --test suite conformance_suites:: -- --test-threads=1
+          cargo test -p ruststream-fred --features testing,json --test suite conformance_suites:: -- --test-threads=1
 
       - name: Stop Redis topologies
         if: always()
