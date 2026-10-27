@@ -9,7 +9,7 @@ members = ["crates/ruststream-fred", "crates/ruststream-fred-bench"]
 exclude = ["templates"]
 
 [workspace.package]
-version = "0.7.1"
+version = "0.7.2"
 edition = "2024"
 rust-version = "1.95"
 license = "Apache-2.0"
