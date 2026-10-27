@@ -20,14 +20,13 @@
 //! [`RedisBroker::envelope`]: crate::RedisBroker::envelope
 
 mod body;
-mod erased;
 mod fast_stream;
 mod framed;
+mod framing;
 mod mount;
 mod noop;
 mod rust_stream;
 
-use std::any::TypeId;
 use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::fmt::Debug;
@@ -37,9 +36,9 @@ use ruststream::HeaderMap;
 use thiserror::Error;
 
 pub(crate) use body::{Body, EntryBody, Meta};
-pub(crate) use erased::Framing;
 pub use fast_stream::FastStream;
-pub use framed::Framed;
+pub use framed::{FrameCodec, Framed};
+pub(crate) use framing::Framing;
 pub use mount::RedisEnvelopeExt;
 pub use noop::NoOp;
 pub use rust_stream::RustStream;
@@ -65,8 +64,9 @@ pub(crate) const PAYLOAD_FIELD: &str = "_payload";
 ///
 /// The type is the choice, and a value of it is held by the broker, by each subscription and by
 /// each delivery, so an envelope is a small value, usually a unit struct. A broker whose own
-/// envelope is [`Framed`] or one of the service's own registers itself with the test harness once,
-/// beside the tests: `ruststream::register_testable_broker!(RedisBroker<MyEnvelope>);`.
+/// envelope is one of the service's own, or [`Framed`] over a codec of the service's, registers
+/// itself with the test harness once, beside the tests:
+/// `ruststream::register_testable_broker!(RedisBroker<MyEnvelope>);`.
 ///
 /// # Examples
 ///
@@ -510,10 +510,4 @@ impl<Env: Envelope, Default: Envelope> EnvelopeChoice<Default> for Env {
     fn resolve(self, _default: &Default) -> Env {
         self
     }
-}
-
-/// How a stream subscription reading through `envelope` records its names: `None` when it reads
-/// through its broker's own `Default`, which the default publisher writes without the table.
-pub(crate) fn stream_framing<Default: Envelope, Env: Envelope>(envelope: &Env) -> Option<Framing> {
-    (TypeId::of::<Env>() != TypeId::of::<Default>()).then(|| Framing::of(envelope))
 }

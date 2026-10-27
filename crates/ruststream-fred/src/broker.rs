@@ -34,13 +34,24 @@ use tokio::sync::broadcast::Receiver;
 use crate::address::{Address, redacted};
 use crate::connection::{Closing, Connection, ReadConnection};
 use crate::delay::DelayConfig;
-use crate::envelope::{Envelope, EnvelopeChoice, Framing, RustStream, stream_framing};
+#[cfg(all(
+    feature = "testing",
+    any(feature = "json", feature = "cbor", feature = "msgpack")
+))]
+use crate::envelope::Framed;
+use crate::envelope::{Envelope, EnvelopeChoice, Framing, RustStream};
 #[cfg(feature = "testing")]
 use crate::envelope::{FastStream, NoOp};
 #[cfg(feature = "testing")]
 use crate::in_process::{self, Subscription, Write};
 use crate::loopback::{Loopback, Tap};
 use crate::recovery::RecoveryConfig;
+#[cfg(all(feature = "testing", feature = "cbor"))]
+use ruststream::codec::CborCodec;
+#[cfg(all(feature = "testing", feature = "json"))]
+use ruststream::codec::JsonCodec;
+#[cfg(all(feature = "testing", feature = "msgpack"))]
+use ruststream::codec::MsgpackCodec;
 
 use crate::{
     error::RedisError,
@@ -948,6 +959,12 @@ ruststream::register_testable_broker!(RedisBroker<RustStream>);
 ruststream::register_testable_broker!(RedisBroker<FastStream>);
 #[cfg(feature = "testing")]
 ruststream::register_testable_broker!(RedisBroker<NoOp>);
+#[cfg(all(feature = "testing", feature = "json"))]
+ruststream::register_testable_broker!(RedisBroker<Framed<JsonCodec>>);
+#[cfg(all(feature = "testing", feature = "cbor"))]
+ruststream::register_testable_broker!(RedisBroker<Framed<CborCodec>>);
+#[cfg(all(feature = "testing", feature = "msgpack"))]
+ruststream::register_testable_broker!(RedisBroker<Framed<MsgpackCodec>>);
 
 /// `DescribeServer` reports the host and port a client dials (the first seed for cluster and
 /// sentinel). Nothing else a configured address may carry reaches the description: a broker built
@@ -1179,7 +1196,7 @@ impl<Env: Envelope> ConnectedRedisBroker<Env> {
             require_claim_support(self.core.server_version(pool).as_ref(), def.key())?;
         }
         let route = Route::Stream {
-            framing: stream_framing::<Env, _>(&envelope),
+            framing: Framing::of::<Env, _>(&envelope),
         };
         let recorded = self
             .core
@@ -1272,7 +1289,7 @@ impl<Env: Envelope> ConnectedRedisBroker<Env> {
         let envelope = def.envelope_choice().clone().resolve(&self.envelope);
         let route = Route::Channel {
             mode: def.delivery_mode(),
-            framing: Framing::of(&envelope),
+            framing: Framing::of::<Env, _>(&envelope),
         };
         let recorded = self
             .core
@@ -1460,7 +1477,7 @@ impl<Env: Envelope> ConnectedRedisBroker<Env> {
             require_one_slot(def.key(), &processing)?;
         }
         let route = Route::List {
-            framing: Framing::of(&envelope),
+            framing: Framing::of::<Env, _>(&envelope),
         };
         self.core
             .record_routes(def.key(), def.dead_letter(), &route)?
@@ -1700,19 +1717,19 @@ impl<Env: Envelope> TestableBroker for ConnectedRedisBroker<Env> {
         let server = self.in_process("inject");
         let name = message.name();
         let (payload, headers) = (message.payload(), message.headers());
-        let framing = |route: Option<Framing>| route.unwrap_or_else(|| Framing::of(&self.envelope));
+        let own = &self.envelope;
         let written = match self.core.routes().route(name) {
-            Route::Stream { framing: route } if self.read_by_patterns_alone(name) => framing(route)
-                .seal(payload, headers)
+            Route::Stream { framing } if self.read_by_patterns_alone(name) => framing
+                .seal(own, name, payload, headers)
                 .map(|value| server.inject_publish(name, value, false)),
-            Route::Stream { framing: route } => framing(route)
-                .seal_entry(payload.to_vec(), headers)
+            Route::Stream { framing } => framing
+                .seal_entry(own, name, payload.to_vec(), headers)
                 .map(|fields| server.inject_stream(name, fields)),
             Route::List { framing } => framing
-                .seal(payload, headers)
+                .seal(own, name, payload, headers)
                 .map(|value| server.inject_list(name, value)),
             Route::Channel { mode, framing } => framing
-                .seal(payload, headers)
+                .seal(own, name, payload, headers)
                 .map(|value| server.inject_publish(name, value, mode == PubSubMode::Sharded)),
         }
         .unwrap_or_else(|err| panic!("the injected message to {name:?} cannot be framed: {err}"));
@@ -1727,16 +1744,17 @@ impl<Env: Envelope> TestableBroker for ConnectedRedisBroker<Env> {
     fn published(&self, name: &str) -> Vec<RawMessage> {
         let server = self.in_process("published");
         let framing = match self.core.routes().route(name) {
-            Route::Stream { framing } => framing,
-            Route::List { framing } | Route::Channel { framing, .. } => Some(framing),
-        }
-        .unwrap_or_else(|| Framing::of(&self.envelope));
+            Route::Stream { framing }
+            | Route::List { framing }
+            | Route::Channel { framing, .. } => framing,
+        };
         server
             .published(name)
             .into_iter()
             .map(|write| {
                 let (payload, headers) = match write {
                     Write::Fields(fields) => framing.open_entry(
+                        &self.envelope,
                         fields
                             .into_iter()
                             .map(|(field, value)| {
@@ -1744,7 +1762,7 @@ impl<Env: Envelope> TestableBroker for ConnectedRedisBroker<Env> {
                             })
                             .collect(),
                     ),
-                    Write::Body(body) => framing.open(body),
+                    Write::Body(body) => framing.open(&self.envelope, body),
                 };
                 RawMessage::new(name.to_owned(), payload).with_headers(headers)
             })

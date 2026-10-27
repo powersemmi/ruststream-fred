@@ -80,6 +80,22 @@ pub enum RedisError {
         #[source]
         source: SealError,
     },
+
+    /// The broker's default publisher was asked to write `destination`, which a subscription reads
+    /// through `envelope`, a service's own envelope beside a broker with another one. The default
+    /// publisher writes only the broker's envelope and the built-in ones; a publish to such a
+    /// name, a retry copy of its subscription included, names a policy with the envelope.
+    #[error(
+        "a message to `{destination}` cannot be published through the broker's default \
+         publisher: its subscription reads through `{envelope}`, so name a publish policy with \
+         that envelope (`out_retry(..)` for a retry copy)"
+    )]
+    Unrouted {
+        /// The stream, list or channel the message was published to.
+        destination: String,
+        /// The type of the envelope the subscription reads through.
+        envelope: &'static str,
+    },
 }
 
 impl RedisError {

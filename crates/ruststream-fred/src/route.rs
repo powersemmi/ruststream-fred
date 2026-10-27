@@ -19,8 +19,8 @@ use crate::pubsub::PubSubMode;
 /// How a name is written: the publish of the form that reads it, in the envelope it reads.
 #[derive(Clone)]
 pub(crate) enum Route {
-    /// `XADD`, the family of a name nothing here records. `None` is the broker's own envelope.
-    Stream { framing: Option<Framing> },
+    /// `XADD`, the family of a name nothing here records.
+    Stream { framing: Framing },
     /// `LPUSH`, framed the way the list subscription reads.
     List { framing: Framing },
     /// `PUBLISH` or `SPUBLISH`, framed the way the channel subscription reads.
@@ -29,7 +29,9 @@ pub(crate) enum Route {
 
 impl Route {
     /// A stream in the broker's own envelope.
-    pub(crate) const STREAM: Self = Self::Stream { framing: None };
+    pub(crate) const STREAM: Self = Self::Stream {
+        framing: Framing::Own,
+    };
 
     /// What a name written this way is, for the refusal that names two of them.
     const fn noun(&self) -> &'static str {
@@ -44,8 +46,8 @@ impl Route {
     /// family and the same envelope, and for a channel the same mode.
     fn writes_like(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Stream { framing: a }, Self::Stream { framing: b }) => a == b,
-            (Self::List { framing: a }, Self::List { framing: b }) => a == b,
+            (Self::Stream { framing: a }, Self::Stream { framing: b })
+            | (Self::List { framing: a }, Self::List { framing: b }) => a == b,
             (
                 Self::Channel {
                     mode: mode_a,
@@ -63,20 +65,21 @@ impl Route {
     /// Whether the default publisher has to read the table to write this name: every route but a
     /// stream in the broker's own envelope.
     const fn foreign(&self) -> bool {
-        !matches!(self, Self::Stream { framing: None })
+        !matches!(
+            self,
+            Self::Stream {
+                framing: Framing::Own
+            }
+        )
     }
 }
 
 impl Debug for Route {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Stream { framing: None } => {
-                write!(f, "{} in the broker's envelope", self.noun())
+            Self::Stream { framing } | Self::List { framing } => {
+                write!(f, "{} framed by `{framing:?}`", self.noun())
             }
-            Self::Stream {
-                framing: Some(framing),
-            }
-            | Self::List { framing } => write!(f, "{} framed by `{framing:?}`", self.noun()),
             Self::Channel { mode, framing } => {
                 let mode = match mode {
                     PubSubMode::Classic => "classic",
@@ -230,7 +233,9 @@ mod tests {
     fn a_name_nothing_reads_is_a_stream() {
         assert!(matches!(
             Routes::default().route("orders"),
-            Route::Stream { framing: None }
+            Route::Stream {
+                framing: Framing::Own
+            }
         ));
     }
 
@@ -281,7 +286,12 @@ mod tests {
         let text = err.to_string();
         assert!(text.contains("`orders`") && text.contains("stream") && text.contains("list"));
         assert!(
-            matches!(routes.route("orders"), Route::Stream { framing: None }),
+            matches!(
+                routes.route("orders"),
+                Route::Stream {
+                    framing: Framing::Own
+                }
+            ),
             "a refused subscription records neither of its names"
         );
     }
@@ -314,11 +324,15 @@ mod tests {
         );
         assert!(matches!(
             routes.route("jobs"),
-            Route::Stream { framing: None }
+            Route::Stream {
+                framing: Framing::Own
+            }
         ));
         assert!(matches!(
             routes.route("jobs.dead"),
-            Route::Stream { framing: None }
+            Route::Stream {
+                framing: Framing::Own
+            }
         ));
         routes
             .record_subscription("jobs", None, &Route::STREAM)

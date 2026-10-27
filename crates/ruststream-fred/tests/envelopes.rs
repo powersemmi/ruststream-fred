@@ -142,9 +142,6 @@ async fn faststream_carries_a_message_round_on_every_form() {
     round_trip(FastStream).await;
 }
 
-// A broker over an envelope this crate does not register, as a service registers it.
-ruststream::register_testable_broker!(RedisBroker<Framed<JsonCodec>>);
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_codec_document_carries_a_message_round_on_every_form() {
     round_trip(Framed::new(JsonCodec)).await;

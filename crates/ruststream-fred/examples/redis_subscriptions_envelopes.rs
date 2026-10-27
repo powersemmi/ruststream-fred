@@ -157,14 +157,19 @@ async fn legacy(job: &LegacyJob, ctx: &mut Context<'_>) -> HandlerOutcome {
 }
 
 fn legacy_app() -> impl App {
+    // The legacy system's layout is the envelope of the whole broker.
     RustStream::new(AppInfo::new("legacy", "0.1.0")).with_broker(
-        RedisBroker::standalone("redis://localhost:6379"),
+        RedisBroker::standalone("redis://localhost:6379").envelope(MetaLine),
         |b| {
-            b.include(legacy.envelope(MetaLine));
+            b.include(legacy);
         },
     )
 }
 // --8<-- [end:custom]
+
+// A broker whose own envelope is the service's: the test harness learns the type here.
+#[cfg(test)]
+ruststream::register_testable_broker!(RedisBroker<MetaLine>);
 
 // The scenarios are the tests below; the command in the header runs them.
 fn main() {}
@@ -227,7 +232,7 @@ mod tests {
     #[tokio::test]
     async fn a_legacy_line_reaches_the_handler() -> Result<(), Box<dyn Error>> {
         let tb = TestApp::start(legacy_app()).await?;
-        let broker = tb.broker::<RedisBroker>();
+        let broker = tb.broker::<RedisBroker<MetaLine>>();
         let mut headers = HeaderMap::new();
         headers.insert("tenant", "acme");
 

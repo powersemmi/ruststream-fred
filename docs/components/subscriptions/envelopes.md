@@ -36,7 +36,7 @@ Its header names travel as they are, so faststream's own headers arrive as `corr
 Its payload follows the convention of CloudEvents' JSON format.
 A payload that is a JSON text is embedded as the value it is and reads back byte for byte: `{"headers":{"event":"created"},"payload":{"id":7}}`.
 Any other payload travels as standard base64: `{"headers":{"event":"created"},"payload_base64":"CAc="}`.
-With CBOR or msgpack the payload is a byte string in `payload`.
+With CBOR, msgpack or a codec of the service's own the payload is a byte string in `payload`; the codec implements [`FrameCodec`](api:ruststream_fred::envelope::FrameCodec), which this crate's `json`, `cbor` and `msgpack` features do for the framework's codecs.
 A header is a text field, and a header whose value is not text refuses the publish.
 The document of the `codec(..)` framing of 0.7.2 and earlier releases carried its payload as a string, so `Framed` reads it as a JSON string; services that share such a list switch together, and the list is drained first.
 
@@ -44,6 +44,8 @@ A value that is not one of the envelope's own arrives as the payload with no hea
 A stream entry without the envelope's field arrives as one JSON object of its fields.
 A payload that only looks like an envelope is written so that it reads back unchanged.
 A subscription and the publishers that write its name use one envelope.
+The broker's default publisher, which writes a retry copy and a reply that name no policy, writes the broker's envelope and the built-in ones.
+A subscription that reads through an envelope of the service's own, on a broker with another one, has its retry copies published through a policy that names it, `out_retry(Publish::new().envelope(MyEnvelope))`; the default publisher refuses that name, and the error names it.
 Two subscriptions that read one name through different envelopes stop the service at startup.
 
 `NoOp` has no room for headers, so a delivery read through it carries none of the message's.
@@ -76,7 +78,7 @@ Jobs go to a list as JSON documents, and a price feed publishes bare JSON.
 An envelope of the service's own implements [`Envelope`](api:ruststream_fred::envelope::Envelope).
 `locate` finds the payload in a value, `headers` reads the headers, and `seal` writes a message.
 A stream entry keeps the sealed value in `_payload` unless the envelope overrides `entry_field` or the other entry methods.
-A broker whose own envelope is `Framed` or one of the service's own registers itself with the test harness beside the tests: `ruststream::register_testable_broker!(RedisBroker<MyEnvelope>);`.
+A broker whose own envelope is one of the service's own, or `Framed` over a codec of the service's, registers itself with the test harness beside the tests: `ruststream::register_testable_broker!(RedisBroker<MyEnvelope>);`.
 
 <Tabs groupId="api">
 <TabItem value="macros" label="Macros">

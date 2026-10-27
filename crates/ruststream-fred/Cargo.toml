@@ -19,6 +19,10 @@ workspace = true
 
 [features]
 default = []
+# The framework's codecs as codecs `Framed` writes its document in.
+json = ["ruststream/json", "dep:base64"]
+cbor = ["ruststream/cbor"]
+msgpack = ["ruststream/msgpack"]
 # The in-process mode `TestApp` runs an app on: an in-process Redis under `fred`'s own mock layer.
 # The conformance harness is broker-author tooling and stays a dev-dependency of this crate.
 testing = ["ruststream/testing", "fred/mocks"]
@@ -83,7 +87,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 # `Framed`'s JSON document carries a payload that is not a JSON text in base64, as CloudEvents'
 # JSON format does.
-base64 = "0.22"
+base64 = { version = "0.22", optional = true }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -279,12 +283,12 @@ required-features = ["testing"]
 
 [[example]]
 name = "redis_subscriptions_envelopes"
-required-features = ["testing"]
+required-features = ["testing", "json"]
 
 [[example]]
 name = "manual_redis_subscriptions_envelopes"
 path = "examples/manual/redis_subscriptions_envelopes.rs"
-required-features = ["testing"]
+required-features = ["testing", "json"]
 
 [[example]]
 name = "redis_streams_new"
@@ -736,11 +740,11 @@ required-features = ["testing"]
 [[example]]
 name = "guide_interop"
 path = "examples/guide/interop.rs"
-required-features = ["testing"]
+required-features = ["testing", "json"]
 
 [[example]]
 name = "manual_guide_interop"
 path = "examples/manual/guide/interop.rs"
-required-features = ["testing"]
+required-features = ["testing", "json"]
 
 # --- examples: end ---

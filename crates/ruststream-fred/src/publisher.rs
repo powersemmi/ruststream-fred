@@ -475,22 +475,16 @@ impl<Env: Envelope> Publisher for RedisDefaultPublisher<Env> {
     ) -> Result<(), Self::Error> {
         let (key, payload, headers) = msg.into_parts();
         let headers = resolved_headers(headers, options);
+        let own = &self.envelope;
         let sealed = match self.core.routes().route(key) {
-            Route::Stream { framing: None } => self
-                .envelope
-                .seal_entry(Vec::from(payload), &headers)
+            Route::Stream { framing } => framing
+                .seal_entry(own, key, Vec::from(payload), &headers)
                 .map(Sealed::Entry),
-            Route::Stream {
-                framing: Some(framing),
-            } => framing
-                .seal_entry(Vec::from(payload), &headers)
-                .map(Sealed::Entry),
-            Route::List { framing } => framing.seal(&payload, &headers).map(Sealed::List),
+            Route::List { framing } => framing.seal(own, key, &payload, &headers).map(Sealed::List),
             Route::Channel { mode, framing } => framing
-                .seal(&payload, &headers)
+                .seal(own, key, &payload, &headers)
                 .map(|body| Sealed::Channel(mode, body)),
-        }
-        .map_err(|err| RedisError::seal(key, err))?;
+        }?;
         if let Some(round) = self
             .core
             .rounds()
