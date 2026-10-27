@@ -98,14 +98,13 @@ pub(crate) const PAYLOAD_FIELD: &str = "_payload";
 ///             .map_or(Location::Bare, |line| Location::Decoded(line.body.into_bytes()))
 ///     }
 ///
-///     fn headers(&self, value: &[u8]) -> HeaderMap {
+///     fn headers(&self, value: &[u8]) -> Option<HeaderMap> {
+///         let line = serde_json::from_slice::<Line>(value).ok()?;
 ///         let mut headers = HeaderMap::new();
-///         if let Ok(line) = serde_json::from_slice::<Line>(value) {
-///             for (name, text) in line.meta {
-///                 headers.insert(name, text);
-///             }
+///         for (name, text) in line.meta {
+///             headers.insert(name, text);
 ///         }
-///         headers
+///         Some(headers)
 ///     }
 ///
 ///     fn seal(
@@ -157,7 +156,11 @@ pub trait Envelope: Clone + Debug + Send + Sync + 'static {
 
     /// The headers of a `value` that [`locate`](Self::locate) recognised, read when a handler
     /// first asks for them.
-    fn headers(&self, value: &[u8]) -> HeaderMap;
+    ///
+    /// `None` when the header block does not parse. The delivery then reads as one with no
+    /// headers, the subscription logs a warning, and a handler that requires a header meets the
+    /// ordinary missing-header error.
+    fn headers(&self, value: &[u8]) -> Option<HeaderMap>;
 
     /// Writes `payload` and `headers` as one value, appended to `value`.
     ///
@@ -200,9 +203,10 @@ pub trait Envelope: Clone + Debug + Send + Sync + 'static {
         self.locate(value)
     }
 
-    /// The headers of a stream entry whose value [`locate_entry`](Self::locate_entry) recognised.
-    /// `fields` are the entry's other fields. By default the headers of the value.
-    fn entry_headers(&self, value: &[u8], fields: &EntryFields) -> HeaderMap {
+    /// The headers of a stream entry whose value [`locate_entry`](Self::locate_entry) recognised,
+    /// `None` when they do not parse. `fields` are the entry's other fields. By default the
+    /// headers of the value.
+    fn entry_headers(&self, value: &[u8], fields: &EntryFields) -> Option<HeaderMap> {
         let _ = fields;
         self.headers(value)
     }
@@ -234,12 +238,11 @@ pub trait Envelope: Clone + Debug + Send + Sync + 'static {
 ///         }
 ///     }
 ///
-///     fn headers(&self, value: &[u8]) -> HeaderMap {
+///     fn headers(&self, value: &[u8]) -> Option<HeaderMap> {
+///         let line = value.split(|byte| *byte == b'\n').next()?;
 ///         let mut headers = HeaderMap::new();
-///         if let Some(line) = value.split(|byte| *byte == b'\n').next() {
-///             headers.insert("tenant", line[b"tenant:".len()..].to_vec());
-///         }
-///         headers
+///         headers.insert("tenant", line.get(b"tenant:".len()..)?.to_vec());
+///         Some(headers)
 ///     }
 ///
 ///     fn seal(
@@ -293,11 +296,11 @@ pub enum Location {
 ///         Location::Within(1 + tenant..value.len())
 ///     }
 ///
-///     fn headers(&self, value: &[u8]) -> HeaderMap {
-///         let tenant = value.first().map_or(0, |len| usize::from(*len));
+///     fn headers(&self, value: &[u8]) -> Option<HeaderMap> {
+///         let tenant = usize::from(*value.first()?);
 ///         let mut headers = HeaderMap::new();
-///         headers.insert("tenant", value[1..1 + tenant].to_vec());
-///         headers
+///         headers.insert("tenant", value.get(1..1 + tenant)?.to_vec());
+///         Some(headers)
 ///     }
 ///
 ///     fn seal(
@@ -351,8 +354,8 @@ pub enum SealError {
 ///         Location::Within(0..value.len())
 ///     }
 ///
-///     fn headers(&self, _value: &[u8]) -> HeaderMap {
-///         HeaderMap::new()
+///     fn headers(&self, _value: &[u8]) -> Option<HeaderMap> {
+///         Some(HeaderMap::new())
 ///     }
 ///
 ///     fn seal(
@@ -369,12 +372,12 @@ pub enum SealError {
 ///         "body"
 ///     }
 ///
-///     fn entry_headers(&self, _value: &[u8], fields: &EntryFields) -> HeaderMap {
+///     fn entry_headers(&self, _value: &[u8], fields: &EntryFields) -> Option<HeaderMap> {
 ///         let mut headers = HeaderMap::new();
 ///         if let Some(tenant) = fields.get("tenant") {
 ///             headers.insert("tenant", tenant.to_vec());
 ///         }
-///         headers
+///         Some(headers)
 ///     }
 /// }
 /// ```

@@ -194,7 +194,9 @@ impl<Env: Envelope> IncomingMessage for RedisMessage<Env> {
     }
 
     fn headers(&self) -> &HeaderMap {
-        self.body.headers()
+        // The handle goes only when the delivery settles, which consumes it.
+        self.body
+            .headers(self.ack.as_ref().map_or("", |handle| handle.key.as_str()))
     }
 
     // The runtime's keyed worker lanes read the key from here, not from `Partitioned`, so the
@@ -276,7 +278,7 @@ impl<Env: Envelope> IncomingMessage for RedisMessage<Env> {
             &handle.key,
             &handle.id,
             self.body.payload(),
-            self.body.headers(),
+            self.body.headers(&handle.key),
             delay,
             self.body.envelope(),
         )
@@ -297,7 +299,7 @@ async fn republish<Env: Envelope>(
 ) -> Result<(), AckError> {
     let fields = body
         .envelope()
-        .seal_entry(body.payload().to_vec(), body.headers())
+        .seal_entry(body.payload().to_vec(), body.headers(&handle.key))
         .map_err(|err| AckError::Broker(Box::new(RedisError::seal(&handle.key, err))))?;
     let _: String = handle
         .pool

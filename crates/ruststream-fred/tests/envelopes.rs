@@ -444,7 +444,7 @@ impl Envelope for Counting {
         envelope::RustStream.locate(value)
     }
 
-    fn headers(&self, value: &[u8]) -> HeaderMap {
+    fn headers(&self, value: &[u8]) -> Option<HeaderMap> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         envelope::RustStream.headers(value)
     }

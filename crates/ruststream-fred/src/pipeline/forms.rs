@@ -137,7 +137,7 @@ impl<Env: Envelope> Form for StreamForm<Env> {
         if requeue {
             let fields = body
                 .envelope()
-                .seal_entry(body.payload().to_vec(), body.headers())
+                .seal_entry(body.payload().to_vec(), body.headers(&self.key))
                 .map_err(|err| AckError::Broker(Box::new(RedisError::seal(&self.key, err))))?;
             ops.push(StreamOp::Republish(fields));
         }
@@ -165,7 +165,7 @@ impl<Env: Envelope> Form for StreamForm<Env> {
             .scheduled(
                 &id,
                 body.payload(),
-                body.headers(),
+                body.headers(&self.key),
                 delay_by,
                 body.envelope(),
             )

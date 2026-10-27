@@ -122,14 +122,13 @@ impl Envelope for MetaLine {
         })
     }
 
-    fn headers(&self, value: &[u8]) -> HeaderMap {
+    fn headers(&self, value: &[u8]) -> Option<HeaderMap> {
+        let line = serde_json::from_slice::<Line>(value).ok()?;
         let mut headers = HeaderMap::new();
-        if let Ok(line) = serde_json::from_slice::<Line>(value) {
-            for (name, text) in line.meta {
-                headers.insert(name, text);
-            }
+        for (name, text) in line.meta {
+            headers.insert(name, text);
         }
-        headers
+        Some(headers)
     }
 
     fn seal(

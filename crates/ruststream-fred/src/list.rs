@@ -588,6 +588,14 @@ impl<Env: Envelope> BatchSubscriber for RedisListSubscriber<Env> {
 }
 
 /// The wire side of a list subscription: one blocking pop per delivery.
+/// What every delivery of a list subscription shares: the connection it was read on and the
+/// subscription's two keys. One reference per delivery, however many of them it reads.
+pub(crate) struct ListShared {
+    connection: Arc<Connection>,
+    key: String,
+    processing: String,
+}
+
 pub(crate) struct ListWire<Env> {
     connection: Arc<Connection>,
     /// The connection every pop goes out on, apart from the pool: a blocking pop holds its
@@ -601,6 +609,8 @@ pub(crate) struct ListWire<Env> {
     recovery: Option<RecoveryConfig>,
     /// The subscription's registration with the in-process server; empty on a real connection.
     tap: Tap,
+    /// What every delivery carries back to settle itself.
+    shared: Arc<ListShared>,
 }
 
 impl<Env> Debug for ListWire<Env> {
@@ -629,6 +639,11 @@ impl<Env: Envelope> ListWire<Env> {
         recovery: Option<RecoveryConfig>,
         tap: Tap,
     ) -> Self {
+        let shared = Arc::new(ListShared {
+            connection: Arc::clone(&connection),
+            key: key.clone(),
+            processing: processing.clone(),
+        });
         Self {
             connection,
             reader,
@@ -639,6 +654,7 @@ impl<Env: Envelope> ListWire<Env> {
             envelope,
             recovery,
             tap,
+            shared,
         }
     }
 
@@ -646,7 +662,7 @@ impl<Env: Envelope> ListWire<Env> {
         RedisListMessage {
             body: Body::open(self.envelope.clone(), raw),
             ack: None,
-            connection: Arc::clone(&self.connection),
+            shared: Arc::clone(&self.shared),
             flight: self.tap.delivered(),
         }
     }
@@ -658,12 +674,8 @@ impl<Env: Envelope> ListWire<Env> {
     ) -> RedisListMessage<Env> {
         RedisListMessage {
             body: Body::open(self.envelope.clone(), raw),
-            connection: Arc::clone(&self.connection),
-            ack: Some(ListAck {
-                main_key: self.key.clone(),
-                processing_key: self.processing.clone(),
-                recovery,
-            }),
+            shared: Arc::clone(&self.shared),
+            ack: Some(ListAck { recovery }),
             flight: self.tap.delivered(),
         }
     }
@@ -736,7 +748,7 @@ impl<Env: Envelope> ListWire<Env> {
 
     /// The window's client: a connection of the pool, where no pop blocks.
     pub(crate) fn round_client(&self) -> Client {
-        self.connection.pool().next().clone()
+        self.shared.connection.pool().next().clone()
     }
 
     /// The key this subscription reads.
@@ -1008,8 +1020,6 @@ impl<Env: Envelope> ruststream::Subscriber for ListWire<Env> {
 
 /// Settlement handle for a reliable-mode list delivery.
 struct ListAck {
-    main_key: String,
-    processing_key: String,
     /// Set when orphan recovery is enabled: the ZSET key and the member tracking this claim, so
     /// settling removes its recovery tracking.
     recovery: Option<RecoveryHandle>,
@@ -1028,9 +1038,9 @@ pub struct RedisListMessage<Env = RustStream> {
     /// located, its headers read when first asked for.
     body: Body<Env>,
     ack: Option<ListAck>,
-    /// The connection the entry was read on: what settles it, and what `Ctx<keys::FredPool>`
-    /// hands the handler.
-    connection: Arc<Connection>,
+    /// The connection the entry was read on and the subscription's keys: what settles it, what
+    /// `Ctx<keys::FredPool>` hands the handler, and what a warning names.
+    shared: Arc<ListShared>,
     /// The test harness's count of this delivery; empty outside the in-process mode.
     #[cfg_attr(
         not(feature = "testing"),
@@ -1045,7 +1055,7 @@ pub struct RedisListMessage<Env = RustStream> {
 impl<Env: Envelope> RedisListMessage<Env> {
     /// The broker's connection pool, for the per-delivery context.
     pub(crate) fn pool(&self) -> &Pool {
-        self.connection.pool()
+        self.shared.connection.pool()
     }
 
     /// Takes the harness's count of this delivery, for a window to hold until its flush.
@@ -1078,7 +1088,7 @@ impl<Env: Envelope> IncomingMessage for RedisListMessage<Env> {
     }
 
     fn headers(&self) -> &HeaderMap {
-        self.body.headers()
+        self.body.headers(&self.shared.key)
     }
 
     // See `RedisMessage`: the keyed worker lanes read the key from here, not from `Partitioned`.
@@ -1090,22 +1100,30 @@ impl<Env: Envelope> IncomingMessage for RedisListMessage<Env> {
         let Some(handle) = self.ack else {
             return Err(AckError::Unsupported);
         };
-        self.connection.ensure_open_to_settle()?;
-        settle(self.connection.pool(), &handle, self.body.value()).await
+        let shared = &self.shared;
+        shared.connection.ensure_open_to_settle()?;
+        settle(
+            shared.connection.pool(),
+            &shared.processing,
+            &handle,
+            self.body.value(),
+        )
+        .await
     }
 
     async fn nack(self, requeue: bool) -> Result<(), AckError> {
         let Some(handle) = self.ack else {
             return Err(AckError::Unsupported);
         };
-        self.connection.ensure_open_to_settle()?;
-        let pool = self.connection.pool();
+        let shared = &self.shared;
+        shared.connection.ensure_open_to_settle()?;
+        let pool = shared.connection.pool();
         if requeue {
             // Return the original entry verbatim to the main list, before removing it from
             // processing (a crash in between leaves a duplicate rather than a loss).
-            lpush(pool, handle.main_key.as_str(), self.body.value().clone()).await?;
+            lpush(pool, &shared.key, self.body.value().clone()).await?;
         }
-        settle(pool, &handle, self.body.value()).await
+        settle(pool, &shared.processing, &handle, self.body.value()).await
     }
 }
 
@@ -1120,9 +1138,14 @@ async fn lpush(pool: &Pool, key: &str, body: Bytes) -> Result<(), AckError> {
 
 /// Removes the entry from the processing list and, when recovery is enabled, drops its tracking from
 /// the recovery ZSET.
-async fn settle(pool: &Pool, handle: &ListAck, value: &Bytes) -> Result<(), AckError> {
+async fn settle(
+    pool: &Pool,
+    processing: &str,
+    handle: &ListAck,
+    value: &Bytes,
+) -> Result<(), AckError> {
     let _: i64 = pool
-        .lrem(handle.processing_key.as_str(), 1, value.clone())
+        .lrem(processing, 1, value.clone())
         .await
         .map_err(ack_broker)?;
     if let Some(rec) = &handle.recovery {

@@ -1101,7 +1101,7 @@ impl<Env: Envelope> IncomingMessage for RedisPubSubMessage<Env> {
     }
 
     fn headers(&self) -> &HeaderMap {
-        self.body.headers()
+        self.body.headers(&self.channel)
     }
 
     // See `RedisMessage`: the keyed worker lanes read the key from here, not from `Partitioned`.

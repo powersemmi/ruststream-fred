@@ -102,7 +102,7 @@ where
             .map_or(Location::Bare, |probe| Location::Decoded(probe.payload.0))
     }
 
-    fn headers(&self, value: &[u8]) -> HeaderMap {
+    fn headers(&self, value: &[u8]) -> Option<HeaderMap> {
         let parsed = if C::CONTENT_TYPE == JSON {
             serde_json::from_slice::<JsonHeaders>(value)
                 .ok()
@@ -112,12 +112,12 @@ where
                 .decode::<BinaryHeaders>(value)
                 .ok()
                 .map(|block| block.headers)
-        };
+        }?;
         let mut headers = HeaderMap::new();
-        for (name, text) in parsed.unwrap_or_default() {
+        for (name, text) in parsed {
             headers.insert(name, text);
         }
-        headers
+        Some(headers)
     }
 
     fn seal(
@@ -374,7 +374,12 @@ mod tests {
             payload_of(&json, &framed).as_deref(),
             Some(payload.as_slice())
         );
-        assert_eq!(json.headers(&framed).get_str("event"), Some("created"));
+        assert_eq!(
+            json.headers(&framed)
+                .expect("the header block parses")
+                .get_str("event"),
+            Some("created")
+        );
     }
 
     /// Bytes that are not a JSON text travel as standard base64 in `payload_base64`, as the
@@ -429,7 +434,12 @@ mod tests {
             payload_of(&cbor, &framed).as_deref(),
             Some(br#"{"id":7}"#.as_slice())
         );
-        assert_eq!(cbor.headers(&framed).get_str("event"), Some("created"));
+        assert_eq!(
+            cbor.headers(&framed)
+                .expect("the header block parses")
+                .get_str("event"),
+            Some("created")
+        );
 
         let msgpack = Framed::new(MsgpackCodec);
         let framed = sealed(&msgpack, &[0xff, 0x00], &tenant());
@@ -437,7 +447,13 @@ mod tests {
             payload_of(&msgpack, &framed).as_deref(),
             Some([0xff, 0x00].as_slice())
         );
-        assert_eq!(msgpack.headers(&framed).get_str("event"), Some("created"));
+        assert_eq!(
+            msgpack
+                .headers(&framed)
+                .expect("the header block parses")
+                .get_str("event"),
+            Some("created")
+        );
     }
 
     /// The document is recognised only in its exact shape: the headers and exactly one of the two

@@ -89,7 +89,7 @@ pub(crate) fn open<Env: Envelope>(envelope: Env, value: Bytes) -> (Bytes, Header
     let body = Body::open(envelope, value);
     (
         Bytes::copy_from_slice(body.payload()),
-        body.headers().clone(),
+        body.headers("").clone(),
     )
 }
 
@@ -102,7 +102,7 @@ pub(crate) fn open_entry<Env: Envelope>(
     let body = EntryBody::open(envelope, fields, None);
     (
         Bytes::copy_from_slice(body.payload()),
-        body.headers().clone(),
+        body.headers("").clone(),
     )
 }
 

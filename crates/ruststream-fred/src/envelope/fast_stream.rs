@@ -90,26 +90,22 @@ impl Envelope for FastStream {
         }
     }
 
-    fn headers(&self, value: &[u8]) -> HeaderMap {
-        let mut headers = HeaderMap::new();
+    /// The header block is read within its bounds, the offsets the frame names; a block that runs
+    /// past them, or a name that is not text, does not parse.
+    fn headers(&self, value: &[u8]) -> Option<HeaderMap> {
         let mut pos = IDENTITY.len() + 2;
-        let Some(start) = read_u32(value, &mut pos) else {
-            return headers;
-        };
-        pos = start;
-        let Some(count) = read_u16(value, &mut pos) else {
-            return headers;
-        };
+        let start = read_u32(value, &mut pos)?;
+        let end = read_u32(value, &mut pos)?;
+        let block = value.get(start..end)?;
+        let mut pos = 0;
+        let count = read_u16(block, &mut pos)?;
+        let mut headers = HeaderMap::new();
         for _ in 0..count {
-            let Some((name, header)) = read_string(value, &mut pos)
-                .zip(read_string(value, &mut pos))
-                .and_then(|(name, header)| Some((std::str::from_utf8(name).ok()?, header)))
-            else {
-                break;
-            };
+            let name = std::str::from_utf8(read_string(block, &mut pos)?).ok()?;
+            let header = read_string(block, &mut pos)?;
             headers.insert(name.to_owned(), Bytes::copy_from_slice(header));
         }
-        headers
+        Some(headers)
     }
 
     fn seal(
@@ -220,7 +216,7 @@ mod tests {
         let frame = faststream_frame();
 
         assert_eq!(payload_of(&frame), br#"{"id":7}"#);
-        let headers = FastStream.headers(&frame);
+        let headers = FastStream.headers(&frame).expect("the header block parses");
         assert_eq!(headers.get_str("correlation_id"), Some("c-1"));
         assert_eq!(headers.get_str("tenant"), Some("acme"));
         assert_eq!(headers.len(), 2);
@@ -254,7 +250,10 @@ mod tests {
             .expect("the frame carries the message");
 
         assert_eq!(payload_of(&value), lookalike.as_slice());
-        assert_eq!(FastStream.headers(&value), HeaderMap::new());
+        assert_eq!(
+            FastStream.headers(&value).expect("the header block parses"),
+            HeaderMap::new()
+        );
     }
 
     #[test]

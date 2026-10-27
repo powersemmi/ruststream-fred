@@ -1,13 +1,14 @@
 //! A delivery's value as it arrived, with its payload located and its headers read on demand.
 
+use std::any::type_name;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::sync::OnceLock;
 
 use bytes::Bytes;
 use ruststream::HeaderMap;
-
 use serde::Serialize;
+use tracing::warn;
 
 use super::{EntryFields, Envelope, Location};
 use crate::message::{DELIVERY_COUNT_HEADER, IDLE_MS_HEADER};
@@ -73,10 +74,14 @@ impl<Env: Envelope> Body<Env> {
         self.payload.slice(&self.value)
     }
 
-    /// Reads the headers on the first call and keeps them.
-    pub(crate) fn headers(&self) -> &HeaderMap {
-        self.headers
-            .get_or_init(|| self.envelope.headers(&self.value))
+    /// Reads the headers on the first call and keeps them. A header block that does not parse
+    /// reads as no headers, and `subscription` names it in the warning.
+    pub(crate) fn headers(&self, subscription: &str) -> &HeaderMap {
+        self.headers.get_or_init(|| {
+            self.envelope
+                .headers(&self.value)
+                .unwrap_or_else(|| unreadable::<Env>(subscription))
+        })
     }
 
     /// The value as it arrived.
@@ -132,7 +137,19 @@ impl<Env: Envelope> EntryBody<Env> {
         mut fields: HashMap<String, Vec<u8>>,
         meta: Option<Meta>,
     ) -> Self {
-        let (value, payload, fields) = match fields.remove(envelope.entry_field()) {
+        let value = if fields.len() == 1 {
+            // The common entry is the one field: taken by iteration, its name never hashed.
+            let (name, value) = fields.drain().next().expect("the map holds one field");
+            if name == envelope.entry_field() {
+                Some(value)
+            } else {
+                fields.insert(name, value);
+                None
+            }
+        } else {
+            fields.remove(envelope.entry_field())
+        };
+        let (value, payload, fields) = match value {
             Some(value) => {
                 let payload = Payload::of(envelope.locate_entry(&value), &value);
                 (Bytes::from(value), payload, EntryFields::new(fields))
@@ -157,13 +174,17 @@ impl<Env: Envelope> EntryBody<Env> {
         self.payload.slice(&self.value)
     }
 
-    /// Reads the headers on the first call and keeps them, with the read's counts beside them.
-    pub(crate) fn headers(&self) -> &HeaderMap {
+    /// Reads the headers on the first call and keeps them, with the read's counts beside them. A
+    /// header block that does not parse reads as no headers, and `subscription` names it in the
+    /// warning.
+    pub(crate) fn headers(&self, subscription: &str) -> &HeaderMap {
         self.headers.get_or_init(|| {
             let mut headers = if self.payload.is_whole() {
                 HeaderMap::new()
             } else {
-                self.envelope.entry_headers(&self.value, &self.fields)
+                self.envelope
+                    .entry_headers(&self.value, &self.fields)
+                    .unwrap_or_else(|| unreadable::<Env>(subscription))
             };
             if let Some(meta) = self.meta {
                 headers.insert(DELIVERY_COUNT_HEADER, meta.delivery_count.to_string());
@@ -205,6 +226,18 @@ impl Content {
     }
 }
 
+/// The headers of a delivery whose header block does not parse: none, and a warning that names the
+/// subscription and the envelope.
+#[cold]
+fn unreadable<Env>(subscription: &str) -> HeaderMap {
+    warn!(
+        subscription,
+        envelope = type_name::<Env>(),
+        "a delivery's header block does not parse; it reads as a delivery with no headers"
+    );
+    HeaderMap::new()
+}
+
 /// The JSON object a foreign entry's fields make.
 fn foreign_payload(fields: HashMap<String, Vec<u8>>) -> Bytes {
     let object: BTreeMap<String, Content> = fields
@@ -229,6 +262,10 @@ mod tests {
         Bytes::from(value)
     }
 
+    /// Where the name of the first header starts in this crate's frame: after the count, the
+    /// marker and the name's length.
+    const MARKED_NAME: usize = 4 + 24 + 4;
+
     fn tenant() -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert("tenant", "acme");
@@ -242,8 +279,36 @@ mod tests {
 
         assert_eq!(body.payload(), b"{}");
         assert!(!body.headers_read(), "finding the payload read the headers");
-        assert_eq!(body.headers().get_str("tenant"), Some("acme"));
+        assert_eq!(body.headers("orders").get_str("tenant"), Some("acme"));
         assert!(body.headers_read());
+    }
+
+    /// A frame whose header block does not parse still delivers its payload, and reads as no
+    /// headers: here faststream's frame claims a third header where the block holds two.
+    #[test]
+    fn a_header_block_that_does_not_parse_reads_as_no_headers() {
+        let mut headers = tenant();
+        headers.insert("trace", "t-1");
+        let mut value = Vec::new();
+        FastStream
+            .seal(b"{}", &headers, &mut value)
+            .expect("the frame carries the message");
+        value[19] = 3;
+        let body = Body::open(FastStream, Bytes::from(value));
+
+        assert_eq!(body.payload(), b"{}");
+        assert_eq!(body.headers("orders"), &HeaderMap::new());
+
+        let mut value = Vec::new();
+        RustStream
+            .seal(b"{}", &tenant(), &mut value)
+            .expect("the frame carries any message");
+        // The header's name, `tenant`, is no longer text.
+        value[MARKED_NAME] = 0xff;
+        let body = Body::open(RustStream, Bytes::from(value));
+
+        assert_eq!(body.payload(), b"{}");
+        assert_eq!(body.headers("orders"), &HeaderMap::new());
     }
 
     #[test]
@@ -251,7 +316,7 @@ mod tests {
         let body = Body::open(FastStream, Bytes::from_static(b"plain"));
 
         assert_eq!(body.payload(), b"plain");
-        assert_eq!(body.headers(), &HeaderMap::new());
+        assert_eq!(body.headers("orders"), &HeaderMap::new());
     }
 
     #[test]
@@ -263,7 +328,7 @@ mod tests {
 
         assert_eq!(body.payload(), b"{}");
         assert!(!body.headers_read(), "finding the payload read the headers");
-        assert_eq!(body.headers().get_str("tenant"), Some("acme"));
+        assert_eq!(body.headers("orders").get_str("tenant"), Some("acme"));
     }
 
     /// An entry another producer wrote carries no field of the envelope's (a faststream entry
@@ -282,7 +347,7 @@ mod tests {
             body.payload(),
             br#"{"__data__":"{\"id\":1}","h:tenant":"acme","source":"faststream"}"#,
         );
-        assert_eq!(body.headers(), &HeaderMap::new());
+        assert_eq!(body.headers("orders"), &HeaderMap::new());
     }
 
     /// A field value that is not text keeps its bytes, as the codec document keeps them.
@@ -309,7 +374,10 @@ mod tests {
 
         let body = EntryBody::open(NoOp, fields, meta);
 
-        assert_eq!(body.headers().get_str(DELIVERY_COUNT_HEADER), Some("3"));
-        assert_eq!(body.headers().get_str(IDLE_MS_HEADER), Some("40"));
+        assert_eq!(
+            body.headers("orders").get_str(DELIVERY_COUNT_HEADER),
+            Some("3")
+        );
+        assert_eq!(body.headers("orders").get_str(IDLE_MS_HEADER), Some("40"));
     }
 }

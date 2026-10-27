@@ -54,8 +54,8 @@ impl Envelope for NoOp {
         Location::Bare
     }
 
-    fn headers(&self, _value: &[u8]) -> HeaderMap {
-        HeaderMap::new()
+    fn headers(&self, _value: &[u8]) -> Option<HeaderMap> {
+        Some(HeaderMap::new())
     }
 
     fn seal(
@@ -100,7 +100,10 @@ mod tests {
 
         assert_eq!(value, b"{}");
         assert_eq!(NoOp.locate(&value), Location::Bare);
-        assert_eq!(NoOp.headers(&value), HeaderMap::new());
+        assert_eq!(
+            NoOp.headers(&value).expect("the header block parses"),
+            HeaderMap::new()
+        );
     }
 
     #[test]

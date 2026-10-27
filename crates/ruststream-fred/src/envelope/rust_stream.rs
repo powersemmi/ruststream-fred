@@ -99,15 +99,13 @@ impl Envelope for RustStream {
         Location::Within(pos..value.len())
     }
 
-    fn headers(&self, value: &[u8]) -> HeaderMap {
+    fn headers(&self, value: &[u8]) -> Option<HeaderMap> {
         let mut headers = HeaderMap::new();
         let mut pos = 0;
-        let Some(count) = read_u32(value, &mut pos).and_then(|n| n.checked_sub(1)) else {
-            return headers;
-        };
+        let count = read_u32(value, &mut pos)?.checked_sub(1)?;
         pos = MARKED;
-        read_headers(value, &mut pos, count, &mut headers);
-        headers
+        read_headers(value, &mut pos, count, &mut headers)?;
+        Some(headers)
     }
 
     fn seal(
@@ -154,14 +152,14 @@ impl Envelope for RustStream {
 
     /// Every `h:` field is a header; a field outside that namespace is a newer producer's and is
     /// left alone.
-    fn entry_headers(&self, _value: &[u8], fields: &EntryFields) -> HeaderMap {
+    fn entry_headers(&self, _value: &[u8], fields: &EntryFields) -> Option<HeaderMap> {
         let mut headers = HeaderMap::new();
         for (key, value) in fields.iter() {
             if let Some(name) = key.strip_prefix(HEADER_PREFIX) {
                 headers.insert(name.to_owned(), Bytes::copy_from_slice(value));
             }
         }
-        headers
+        Some(headers)
     }
 }
 
@@ -273,7 +271,9 @@ mod tests {
         let framed = sealed(b"{}", &sample_headers());
 
         assert_eq!(payload_of(&framed), b"{}");
-        let headers = RustStream.headers(&framed);
+        let headers = RustStream
+            .headers(&framed)
+            .expect("the header block parses");
         assert_eq!(headers.content_type(), Some("application/json"));
         assert_eq!(headers.correlation_id(), Some("abc-1"));
     }
@@ -287,7 +287,10 @@ mod tests {
         assert_eq!(sealed(b"{}", &headers), released_frame());
         assert_eq!(payload_of(&released_frame()), b"{}");
         assert_eq!(
-            RustStream.headers(&released_frame()).get_str("tenant"),
+            RustStream
+                .headers(&released_frame())
+                .expect("the header block parses")
+                .get_str("tenant"),
             Some("acme")
         );
     }
@@ -347,7 +350,12 @@ mod tests {
             "the lookalike is framed, not written plain"
         );
         assert_eq!(payload_of(&written), lookalike.as_slice());
-        assert_eq!(RustStream.headers(&written), HeaderMap::new());
+        assert_eq!(
+            RustStream
+                .headers(&written)
+                .expect("the header block parses"),
+            HeaderMap::new()
+        );
     }
 
     /// A stream entry keeps the payload in `_payload` and each header in an `h:` field, the
@@ -376,7 +384,9 @@ mod tests {
         rest.insert("h:tenant".to_owned(), b"acme".to_vec());
         rest.insert("not-a-header".to_owned(), b"x".to_vec());
 
-        let headers = RustStream.entry_headers(b"{}", &EntryFields::new(rest));
+        let headers = RustStream
+            .entry_headers(b"{}", &EntryFields::new(rest))
+            .expect("the header fields parse");
 
         assert_eq!(headers.get_str("tenant"), Some("acme"));
         assert_eq!(headers.len(), 1);

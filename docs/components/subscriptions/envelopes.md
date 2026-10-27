@@ -19,6 +19,7 @@ On the manual path the descriptor names it: `RedisList::new("jobs").envelope(Fas
 A publish policy names its own with `envelope(..)`: `RedisListPublish::new().envelope(FastStream)`.
 The envelope is a type, so the choice costs nothing per message.
 A delivery finds its payload without reading the headers, and reads them the first time a handler asks.
+A header block that does not parse reads as no headers, and the subscription logs a warning; a handler that requires a header then meets the ordinary missing-header error.
 
 | Envelope | List element, channel message | Stream entry |
 | --- | --- | --- |
