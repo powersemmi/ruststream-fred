@@ -5,6 +5,7 @@
 //! compiler's messages show.
 
 use super::{Atomic, Pipelined, Plain};
+use crate::envelope::Inherited;
 use crate::pubsub::{RedisPubSub, RedisPubSubPattern};
 use crate::{RedisList, RedisStream};
 
@@ -37,7 +38,7 @@ use crate::{RedisList, RedisStream};
 /// }
 /// # }
 /// ```
-pub type RedisStreamPipeline = Pipelined<RedisStream, Plain>;
+pub type RedisStreamPipeline<Env = Inherited> = Pipelined<RedisStream<Env>, Plain>;
 
 /// A stream subscription with an atomic window: what `.pipeline().atomic()` at the mount site makes of a [`RedisStream`].
 ///
@@ -68,7 +69,7 @@ pub type RedisStreamPipeline = Pipelined<RedisStream, Plain>;
 /// }
 /// # }
 /// ```
-pub type RedisStreamAtomic = Pipelined<RedisStream, Atomic>;
+pub type RedisStreamAtomic<Env = Inherited> = Pipelined<RedisStream<Env>, Atomic>;
 
 /// A list subscription with a window: what `.pipeline()` at the mount site makes of a [`RedisList`].
 ///
@@ -99,7 +100,7 @@ pub type RedisStreamAtomic = Pipelined<RedisStream, Atomic>;
 /// }
 /// # }
 /// ```
-pub type RedisListPipeline = Pipelined<RedisList, Plain>;
+pub type RedisListPipeline<Env = Inherited> = Pipelined<RedisList<Env>, Plain>;
 
 /// A list subscription with an atomic window: what `.pipeline().atomic()` at the mount site makes of a [`RedisList`].
 ///
@@ -130,7 +131,7 @@ pub type RedisListPipeline = Pipelined<RedisList, Plain>;
 /// }
 /// # }
 /// ```
-pub type RedisListAtomic = Pipelined<RedisList, Atomic>;
+pub type RedisListAtomic<Env = Inherited> = Pipelined<RedisList<Env>, Atomic>;
 
 /// A Pub/Sub channel subscription with a window: what `.pipeline()` at the mount site makes of a [`RedisPubSub`].
 ///
@@ -161,7 +162,7 @@ pub type RedisListAtomic = Pipelined<RedisList, Atomic>;
 /// }
 /// # }
 /// ```
-pub type RedisPubSubPipeline = Pipelined<RedisPubSub, Plain>;
+pub type RedisPubSubPipeline<Env = Inherited> = Pipelined<RedisPubSub<Env>, Plain>;
 
 /// A Pub/Sub channel subscription with an atomic window: what `.pipeline().atomic()` at the mount site makes of a [`RedisPubSub`].
 ///
@@ -192,7 +193,7 @@ pub type RedisPubSubPipeline = Pipelined<RedisPubSub, Plain>;
 /// }
 /// # }
 /// ```
-pub type RedisPubSubAtomic = Pipelined<RedisPubSub, Atomic>;
+pub type RedisPubSubAtomic<Env = Inherited> = Pipelined<RedisPubSub<Env>, Atomic>;
 
 /// A Pub/Sub pattern subscription with a window: what `.pipeline()` at the mount site makes of a [`RedisPubSubPattern`].
 ///
@@ -223,7 +224,7 @@ pub type RedisPubSubAtomic = Pipelined<RedisPubSub, Atomic>;
 /// }
 /// # }
 /// ```
-pub type RedisPubSubPatternPipeline = Pipelined<RedisPubSubPattern, Plain>;
+pub type RedisPubSubPatternPipeline<Env = Inherited> = Pipelined<RedisPubSubPattern<Env>, Plain>;
 
 /// A Pub/Sub pattern subscription with an atomic window: what `.pipeline().atomic()` at the mount site makes of a [`RedisPubSubPattern`].
 ///
@@ -254,4 +255,4 @@ pub type RedisPubSubPatternPipeline = Pipelined<RedisPubSubPattern, Plain>;
 /// }
 /// # }
 /// ```
-pub type RedisPubSubPatternAtomic = Pipelined<RedisPubSubPattern, Atomic>;
+pub type RedisPubSubPatternAtomic<Env = Inherited> = Pipelined<RedisPubSubPattern<Env>, Atomic>;

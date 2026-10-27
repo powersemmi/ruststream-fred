@@ -33,11 +33,10 @@ use tokio::sync::broadcast::Receiver;
 
 use crate::address::{Address, redacted};
 use crate::connection::{Closing, Connection, ReadConnection};
-#[cfg(feature = "testing")]
-use crate::convert::{fields_for_publish, parts_from_fields};
 use crate::delay::DelayConfig;
+use crate::envelope::{Envelope, EnvelopeChoice, Framing, RustStream, stream_framing};
 #[cfg(feature = "testing")]
-use crate::envelope::{frame, unframe};
+use crate::envelope::{FastStream, NoOp};
 #[cfg(feature = "testing")]
 use crate::in_process::{self, Subscription, Write};
 use crate::loopback::{Loopback, Tap};
@@ -47,7 +46,7 @@ use crate::{
     error::RedisError,
     list::{ListWire, RedisList, RedisListPublish, RedisListPublisher, RedisListSubscriber},
     pipeline::{Owner, Rounds},
-    publisher::{RedisDefaultPublisher, RedisPublisher},
+    publisher::{RedisDefaultPublisher, RedisPublish, RedisPublisher},
     pubsub::{
         PubSubMode, PubSubWire, RedisPubSub, RedisPubSubPattern, RedisPubSubPublish,
         RedisPubSubPublisher, RedisPubSubSubscriber, Resubscribe, Resubscribing,
@@ -292,11 +291,12 @@ impl std::fmt::Debug for AuthConfig {
 /// ```
 #[derive(Debug, Clone)]
 #[must_use]
-pub struct RedisBroker {
+pub struct RedisBroker<Env = RustStream> {
     topology: Topology,
     pool_size: usize,
     default_group: Option<String>,
     auth: AuthConfig,
+    envelope: Env,
 }
 
 impl RedisBroker {
@@ -402,6 +402,65 @@ impl RedisBroker {
             pool_size: DEFAULT_POOL_SIZE,
             default_group: None,
             auth: AuthConfig::default(),
+            envelope: RustStream,
+        }
+    }
+}
+
+impl<Env: Envelope> RedisBroker<Env> {
+    /// Sets the envelope every subscription and publish policy of this broker uses unless it names
+    /// its own: how a message's headers travel beside its payload. Defaults to
+    /// [`envelope::RustStream`], this crate's own layout.
+    ///
+    /// A descriptor's or a policy's own `envelope(..)` wins over this one. The
+    /// [Envelopes](https://powersemmi.github.io/ruststream-fred/latest/components/subscriptions/envelopes/)
+    /// page shows the built-in envelopes in a service.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # mod demo {
+    /// use ruststream_fred::stream::prelude::*;
+    /// use serde::{Deserialize, Serialize};
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Order {
+    ///     id: u64,
+    /// }
+    ///
+    /// #[derive(Serialize, Outgoing)]
+    /// #[outgoing(name = "orders.billed")]
+    /// struct Billed {
+    ///     id: u64,
+    /// }
+    ///
+    /// #[subscriber(RedisStream::new("orders").group("billing"), reply)]
+    /// async fn bill(order: &Order) -> Billed {
+    ///     Billed { id: order.id }
+    /// }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     // A faststream service writes `orders` and reads `orders.billed`.
+    ///     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(
+    ///         RedisBroker::standalone("redis://localhost:6379").envelope(FastStream),
+    ///         |b| {
+    ///             b.include(bill).out_reply(Publish);
+    ///         },
+    ///     )
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
+    ///
+    /// [`envelope::RustStream`]: crate::envelope::RustStream
+    pub fn envelope<Other: Envelope>(self, envelope: Other) -> RedisBroker<Other> {
+        RedisBroker {
+            topology: self.topology,
+            pool_size: self.pool_size,
+            default_group: self.default_group,
+            auth: self.auth,
+            envelope,
         }
     }
 
@@ -776,9 +835,9 @@ impl RedisBroker {
     }
 }
 
-impl Broker for RedisBroker {
+impl<Env: Envelope> Broker for RedisBroker<Env> {
     type Error = RedisError;
-    type Connected = ConnectedRedisBroker;
+    type Connected = ConnectedRedisBroker<Env>;
 
     /// Opens (or adopts) the connection pool, consuming the unconnected form.
     ///
@@ -838,6 +897,7 @@ impl Broker for RedisBroker {
                 #[cfg(feature = "testing")]
                 opened: Mutex::default(),
             }),
+            envelope: self.envelope,
         })
     }
 }
@@ -850,7 +910,7 @@ impl Broker for RedisBroker {
 /// default group and the cluster flag carry over, and a cluster topology refuses what spans hash
 /// slots. What the model answers is described in the crate's testing overview.
 #[cfg(feature = "testing")]
-impl InProcess for RedisBroker {
+impl<Env: Envelope> InProcess for RedisBroker<Env> {
     async fn connect_in_process(self) -> Result<Self::Connected, Self::Error> {
         let config = self.build_config()?;
         let clustered = config.server.is_clustered();
@@ -874,17 +934,25 @@ impl InProcess for RedisBroker {
                 loopback: Loopback::to(server),
                 opened: Mutex::default(),
             }),
+            envelope: self.envelope,
         })
     }
 }
 
+// A broker type is registered with the harness by name, so each of the envelopes that need no
+// type of the service's own is registered here; a service registers a broker over its own envelope
+// beside its tests.
 #[cfg(feature = "testing")]
-ruststream::register_testable_broker!(RedisBroker);
+ruststream::register_testable_broker!(RedisBroker<RustStream>);
+#[cfg(feature = "testing")]
+ruststream::register_testable_broker!(RedisBroker<FastStream>);
+#[cfg(feature = "testing")]
+ruststream::register_testable_broker!(RedisBroker<NoOp>);
 
 /// `DescribeServer` reports the host and port a client dials (the first seed for cluster and
 /// sentinel). Nothing else a configured address may carry reaches the description: a broker built
 /// from an already-connected pool describes no host at all.
-impl DescribeServer for RedisBroker {
+impl<Env: Envelope> DescribeServer for RedisBroker<Env> {
     fn describe_server(&self) -> ServerSpec {
         let host = match &self.topology {
             Topology::Standalone(url) => describe_address(url, 6379),
@@ -1080,11 +1148,14 @@ impl std::fmt::Debug for RedisCore {
 /// representable. [`ConnectedBroker::shutdown`] consumes it, which makes a publish or subscribe
 /// after shutdown a compile error for the owner of the handle.
 #[derive(Debug)]
-pub struct ConnectedRedisBroker {
+pub struct ConnectedRedisBroker<Env = RustStream> {
     core: Arc<RedisCore>,
+    /// What a subscription or a publish policy that names no envelope of its own reads and writes
+    /// through.
+    envelope: Env,
 }
 
-impl ConnectedRedisBroker {
+impl<Env: Envelope> ConnectedRedisBroker<Env> {
     /// Opens a stream subscription described by `def`.
     ///
     /// Ensures the consumer group exists (`XGROUP CREATE ... MKSTREAM`, ignoring an
@@ -1095,7 +1166,11 @@ impl ConnectedRedisBroker {
     /// Returns [`RedisError::ShutDown`] when the connection was already torn down,
     /// [`RedisError::InvalidOptions`] when `def` names no consumer group, or
     /// [`RedisError::Subscribe`] when the group cannot be created.
-    pub async fn subscribe(&self, def: RedisStream) -> Result<RedisSubscriber, RedisError> {
+    pub async fn subscribe<Choice: EnvelopeChoice<Env>>(
+        &self,
+        def: RedisStream<Choice>,
+    ) -> Result<RedisSubscriber<Choice::Envelope>, RedisError> {
+        let envelope = def.envelope_choice().clone().resolve(&self.envelope);
         let connection = self.core.connection()?;
         let pool = connection.pool();
         let group = def.group_or_err()?.to_owned();
@@ -1103,9 +1178,12 @@ impl ConnectedRedisBroker {
         if let ReadMode::Claiming { .. } = def.mode() {
             require_claim_support(self.core.server_version(pool).as_ref(), def.key())?;
         }
+        let route = Route::Stream {
+            framing: stream_framing::<Env, _>(&envelope),
+        };
         let recorded = self
             .core
-            .record_routes(def.key(), def.dead_letter(), &Route::Stream)?;
+            .record_routes(def.key(), def.dead_letter(), &route)?;
         ensure_group(pool, def.key(), &group, def.start().as_id()).await?;
         let reader = self.read_connection().await?;
         let delay = def.delay_config().map(|cfg| cfg.on(self.core.loopback()));
@@ -1121,6 +1199,7 @@ impl ConnectedRedisBroker {
             def.mode(),
             delay,
             tap,
+            envelope,
         ))
     }
 
@@ -1133,9 +1212,9 @@ impl ConnectedRedisBroker {
             reason = "the connection is read under `testing` only"
         )
     )]
-    fn stream_tap(
+    fn stream_tap<Choice>(
         &self,
-        def: &RedisStream,
+        def: &RedisStream<Choice>,
         group: &str,
         consumer: &str,
         delay: Option<&DelayConfig>,
@@ -1178,19 +1257,26 @@ impl ConnectedRedisBroker {
     /// Returns [`RedisError::ShutDown`] when the connection was already torn down,
     /// [`RedisError::Connect`] when the dedicated client cannot connect, or
     /// [`RedisError::Subscribe`] when the subscribe command fails.
-    pub async fn subscribe_pubsub(
+    pub async fn subscribe_pubsub<Choice: EnvelopeChoice<Env>>(
         &self,
-        def: RedisPubSub,
-    ) -> Result<RedisPubSubSubscriber, RedisError> {
+        def: RedisPubSub<Choice>,
+    ) -> Result<RedisPubSubSubscriber<Choice::Envelope>, RedisError> {
         Ok(RedisPubSubSubscriber::new(self.open_pubsub(def).await?))
     }
 
     /// Subscribes a dedicated client to the channel `def` names and hands back its wire.
-    pub(crate) async fn open_pubsub(&self, def: RedisPubSub) -> Result<PubSubWire, RedisError> {
-        let codec = def.codec_handle();
+    pub(crate) async fn open_pubsub<Choice: EnvelopeChoice<Env>>(
+        &self,
+        def: RedisPubSub<Choice>,
+    ) -> Result<PubSubWire<Choice::Envelope>, RedisError> {
+        let envelope = def.envelope_choice().clone().resolve(&self.envelope);
+        let route = Route::Channel {
+            mode: def.delivery_mode(),
+            framing: Framing::of(&envelope),
+        };
         let recorded = self
             .core
-            .record_routes(def.channel(), def.dead_letter(), &def.route())?;
+            .record_routes(def.channel(), def.dead_letter(), &route)?;
         let client = self.new_client(def.buffer_size()).await?;
         // Opened before the subscribe, because the messages arrive over a broadcast channel whose
         // receiver sees only what is sent after it exists. The connection is dedicated to this one
@@ -1236,7 +1322,7 @@ impl ConnectedRedisBroker {
             def.channel().to_owned(),
             client,
             rx,
-            codec,
+            envelope,
             pool,
             tap,
             self.runtime().clone(),
@@ -1305,21 +1391,21 @@ impl ConnectedRedisBroker {
     /// Returns [`RedisError::ShutDown`] when the connection was already torn down,
     /// [`RedisError::Connect`] when the dedicated client cannot connect, or
     /// [`RedisError::Subscribe`] when the subscribe command fails.
-    pub async fn subscribe_pubsub_pattern(
+    pub async fn subscribe_pubsub_pattern<Choice: EnvelopeChoice<Env>>(
         &self,
-        def: RedisPubSubPattern,
-    ) -> Result<RedisPubSubSubscriber, RedisError> {
+        def: RedisPubSubPattern<Choice>,
+    ) -> Result<RedisPubSubSubscriber<Choice::Envelope>, RedisError> {
         Ok(RedisPubSubSubscriber::new(
             self.open_pubsub_pattern(def).await?,
         ))
     }
 
     /// Subscribes a dedicated client to the glob `def` names and hands back its wire.
-    pub(crate) async fn open_pubsub_pattern(
+    pub(crate) async fn open_pubsub_pattern<Choice: EnvelopeChoice<Env>>(
         &self,
-        def: RedisPubSubPattern,
-    ) -> Result<PubSubWire, RedisError> {
-        let codec = def.codec_handle();
+        def: RedisPubSubPattern<Choice>,
+    ) -> Result<PubSubWire<Choice::Envelope>, RedisError> {
+        let envelope = def.envelope_choice().clone().resolve(&self.envelope);
         let client = self.new_client(def.buffer_size()).await?;
         // Opened before the subscribe, for the reason `subscribe_pubsub` gives.
         let rx = client.message_rx();
@@ -1337,7 +1423,7 @@ impl ConnectedRedisBroker {
             def.pattern().to_owned(),
             client,
             rx,
-            codec,
+            envelope,
             self.core.pool()?,
             tap,
             self.runtime().clone(),
@@ -1351,12 +1437,19 @@ impl ConnectedRedisBroker {
     /// Returns [`RedisError::ShutDown`] when the connection was already torn down,
     /// [`RedisError::InvalidOptions`] when `def` names a recovery ZSET without a `min_idle`, or
     /// [`RedisError::Connect`] when the connection the subscription reads on cannot connect.
-    pub async fn subscribe_list(&self, def: RedisList) -> Result<RedisListSubscriber, RedisError> {
+    pub async fn subscribe_list<Choice: EnvelopeChoice<Env>>(
+        &self,
+        def: RedisList<Choice>,
+    ) -> Result<RedisListSubscriber<Choice::Envelope>, RedisError> {
         self.open_list(def).await.map(RedisListSubscriber::new)
     }
 
     /// Validates `def` against this connection and hands back its wire.
-    pub(crate) async fn open_list(&self, def: RedisList) -> Result<ListWire, RedisError> {
+    pub(crate) async fn open_list<Choice: EnvelopeChoice<Env>>(
+        &self,
+        def: RedisList<Choice>,
+    ) -> Result<ListWire<Choice::Envelope>, RedisError> {
+        let envelope = def.envelope_choice().clone().resolve(&self.envelope);
         let connection = self.core.connection()?;
         let recovery = def
             .recovery_config()?
@@ -1366,11 +1459,13 @@ impl ConnectedRedisBroker {
         if reliable && self.core.clustered() {
             require_one_slot(def.key(), &processing)?;
         }
+        let route = Route::List {
+            framing: Framing::of(&envelope),
+        };
         self.core
-            .record_routes(def.key(), def.dead_letter(), &def.route())?
+            .record_routes(def.key(), def.dead_letter(), &route)?
             .keep();
         let block = def.block_or_default();
-        let codec = def.codec_handle();
         let reader = self.read_connection().await?;
         let tap = self.list_tap(def.key(), recovery.as_ref());
         Ok(ListWire::new(
@@ -1380,7 +1475,7 @@ impl ConnectedRedisBroker {
             reliable,
             processing,
             block,
-            codec,
+            envelope,
             recovery,
             tap,
         ))
@@ -1417,10 +1512,22 @@ impl ConnectedRedisBroker {
         }
     }
 
-    /// Returns a stream publisher (`XADD`) bound to this connection.
+    /// Returns a stream publisher (`XADD`) bound to this connection, in the broker's envelope.
     #[must_use]
-    pub fn publisher(&self) -> RedisPublisher {
-        RedisPublisher::new(Arc::clone(&self.core))
+    pub fn publisher(&self) -> RedisPublisher<Env> {
+        RedisPublisher::new(Arc::clone(&self.core), self.envelope.clone())
+    }
+
+    /// Returns a stream publisher (`XADD`) configured by `publish` (its envelope).
+    #[must_use]
+    pub fn stream_publisher<Choice: EnvelopeChoice<Env>>(
+        &self,
+        publish: RedisPublish<Choice>,
+    ) -> RedisPublisher<Choice::Envelope> {
+        RedisPublisher::new(
+            Arc::clone(&self.core),
+            publish.into_envelope().resolve(&self.envelope),
+        )
     }
 
     /// Returns the publisher of the broker's default policy, [`RedisDefaultPublish`], which
@@ -1428,20 +1535,26 @@ impl ConnectedRedisBroker {
     ///
     /// [`RedisDefaultPublish`]: crate::RedisDefaultPublish
     #[must_use]
-    pub fn default_publisher(&self) -> RedisDefaultPublisher {
-        RedisDefaultPublisher::new(Arc::clone(&self.core))
+    pub fn default_publisher(&self) -> RedisDefaultPublisher<Env> {
+        RedisDefaultPublisher::new(Arc::clone(&self.core), self.envelope.clone())
     }
 
-    /// Returns a Pub/Sub publisher configured by `publish` (mode and envelope codec).
+    /// Returns a Pub/Sub publisher configured by `publish` (mode and envelope).
     #[must_use]
-    pub fn pubsub_publisher(&self, publish: RedisPubSubPublish) -> RedisPubSubPublisher {
-        RedisPubSubPublisher::new(Arc::clone(&self.core), publish)
+    pub fn pubsub_publisher<Choice: EnvelopeChoice<Env>>(
+        &self,
+        publish: RedisPubSubPublish<Choice>,
+    ) -> RedisPubSubPublisher<Choice::Envelope> {
+        RedisPubSubPublisher::new(Arc::clone(&self.core), publish, &self.envelope)
     }
 
-    /// Returns a list publisher (`LPUSH`) configured by `publish` (envelope codec and key TTL).
+    /// Returns a list publisher (`LPUSH`) configured by `publish` (envelope and key TTL).
     #[must_use]
-    pub fn list_publisher(&self, publish: RedisListPublish) -> RedisListPublisher {
-        RedisListPublisher::new(Arc::clone(&self.core), publish)
+    pub fn list_publisher<Choice: EnvelopeChoice<Env>>(
+        &self,
+        publish: RedisListPublish<Choice>,
+    ) -> RedisListPublisher<Choice::Envelope> {
+        RedisListPublisher::new(Arc::clone(&self.core), publish, &self.envelope)
     }
 
     /// The rounds a publish of this connection may join.
@@ -1523,7 +1636,7 @@ impl ConnectedRedisBroker {
     }
 }
 
-impl ConnectedBroker for ConnectedRedisBroker {
+impl<Env: Envelope> ConnectedBroker for ConnectedRedisBroker<Env> {
     type Error = RedisError;
     type Closed = ClosedRedisBroker;
 
@@ -1572,7 +1685,7 @@ enum PubSubTarget<'a> {
 /// the connection `connect_in_process` produced, and a live connection has no log to read and no
 /// synchronous way to take a message.
 #[cfg(feature = "testing")]
-impl TestableBroker for ConnectedRedisBroker {
+impl<Env: Envelope> TestableBroker for ConnectedRedisBroker<Env> {
     fn install_coordinator(&self, coordinator: Coordinator) {
         if let Some(server) = self.core.loopback().server() {
             server.install(coordinator);
@@ -1587,42 +1700,43 @@ impl TestableBroker for ConnectedRedisBroker {
         let server = self.in_process("inject");
         let name = message.name();
         let (payload, headers) = (message.payload(), message.headers());
+        let framing = |route: Option<Framing>| route.unwrap_or_else(|| Framing::of(&self.envelope));
         let written = match self.core.routes().route(name) {
-            Route::Stream if self.read_by_patterns_alone(name) => {
-                server.inject_publish(name, frame(None, payload, headers), false)
-            }
-            Route::Stream => {
-                server.inject_stream(name, fields_for_publish(payload.to_vec(), headers))
-            }
-            Route::List { envelope } => {
-                server.inject_list(name, frame(envelope.as_ref(), payload, headers))
-            }
-            Route::Channel { mode, envelope } => server.inject_publish(
-                name,
-                frame(envelope.as_ref(), payload, headers),
-                mode == PubSubMode::Sharded,
-            ),
-        };
+            Route::Stream { framing: route } if self.read_by_patterns_alone(name) => framing(route)
+                .seal(payload, headers)
+                .map(|value| server.inject_publish(name, value, false)),
+            Route::Stream { framing: route } => framing(route)
+                .seal_entry(payload.to_vec(), headers)
+                .map(|fields| server.inject_stream(name, fields)),
+            Route::List { framing } => framing
+                .seal(payload, headers)
+                .map(|value| server.inject_list(name, value)),
+            Route::Channel { mode, framing } => framing
+                .seal(payload, headers)
+                .map(|value| server.inject_publish(name, value, mode == PubSubMode::Sharded)),
+        }
+        .unwrap_or_else(|err| panic!("the injected message to {name:?} cannot be framed: {err}"));
         if let Err(err) = written {
             panic!("the injected message to {name:?} is not one Redis takes: {err}");
         }
     }
 
     /// Every write to `name`, decoded the way the subscription reading it decodes: an entry's
-    /// fields, or a list element or a channel message in its subscription's framing. A requeue's
+    /// fields, or a list element or a channel message in its subscription's envelope. A requeue's
     /// copy and a delayed entry the sweep adds back are writes too.
     fn published(&self, name: &str) -> Vec<RawMessage> {
         let server = self.in_process("published");
-        let envelope = match self.core.routes().route(name) {
-            Route::Stream => None,
-            Route::List { envelope } | Route::Channel { envelope, .. } => envelope,
-        };
+        let framing = match self.core.routes().route(name) {
+            Route::Stream { framing } => framing,
+            Route::List { framing } | Route::Channel { framing, .. } => Some(framing),
+        }
+        .unwrap_or_else(|| Framing::of(&self.envelope));
         server
             .published(name)
             .into_iter()
             .map(|write| {
                 let (payload, headers) = match write {
-                    Write::Fields(fields) => parts_from_fields(
+                    Write::Fields(fields) => framing.open_entry(
                         fields
                             .into_iter()
                             .map(|(field, value)| {
@@ -1630,7 +1744,7 @@ impl TestableBroker for ConnectedRedisBroker {
                             })
                             .collect(),
                     ),
-                    Write::Body(body) => unframe(envelope.as_ref(), &body),
+                    Write::Body(body) => framing.open(body),
                 };
                 RawMessage::new(name.to_owned(), payload).with_headers(headers)
             })
@@ -1666,7 +1780,7 @@ impl TestableBroker for ConnectedRedisBroker {
             })
             .collect();
         let patterns = match self.core.routes().route(destination) {
-            Route::Stream => {
+            Route::Stream { .. } => {
                 owe(destination, groups.len());
                 groups.is_empty()
             }
@@ -1704,7 +1818,7 @@ impl TestableBroker for ConnectedRedisBroker {
 }
 
 #[cfg(feature = "testing")]
-impl ConnectedRedisBroker {
+impl<Env: Envelope> ConnectedRedisBroker<Env> {
     /// Whether `name` is read by a pattern subscription and by no stream group: what the harness
     /// then publishes to the channel instead of adding to a stream.
     fn read_by_patterns_alone(&self, name: &str) -> bool {
@@ -1756,8 +1870,8 @@ impl ClosedRedisBroker {
     clippy::use_self,
     reason = "the type name disambiguates the inherent subscribe from this trait method"
 )]
-impl Subscribe for ConnectedRedisBroker {
-    type Subscriber = RedisSubscriber;
+impl<Env: Envelope> Subscribe for ConnectedRedisBroker<Env> {
+    type Subscriber = RedisSubscriber<Env>;
     /// A bare name opens a consumer group over that stream key, and an `XADD` there is read by the
     /// group again, so the name is both ends and a retry copy needs nothing from the mount site.
     type Copies = AddressedCopies;

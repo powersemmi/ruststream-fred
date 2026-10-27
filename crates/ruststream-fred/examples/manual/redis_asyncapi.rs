@@ -179,6 +179,7 @@ mod tests {
                 "consumer": "worker-1",
                 "readMode": "claiming",
                 "minIdleMs": 30_000,
+                "envelope": { "contentType": "application/octet-stream" },
             })
         );
         assert_eq!(

@@ -50,7 +50,7 @@ fn service(broker: RedisBroker) -> impl App<State = ()> {
     RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(broker, |b| {
         // The envelope in JSON: a value the mailer reads with any JSON parser.
         b.include(take_order)
-            .out_reply(list::Publish::default().codec(JsonCodec));
+            .out_reply(list::Publish::default().envelope(Framed::new(JsonCodec)));
     })
 }
 // --8<-- [end:write]

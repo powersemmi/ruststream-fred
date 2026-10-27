@@ -12,12 +12,13 @@ use std::time::Duration;
 use fred::clients::Pool;
 use fred::types::config::Config;
 use ruststream::asyncapi::build_spec;
+use ruststream::codec::JsonCodec;
 use ruststream::conformance::harness;
 use ruststream::prelude::*;
 use ruststream::{DescribeServer, SubscriptionSource};
 use ruststream_fred::{
-    ConnectedRedisBroker, PubSubMode, RedisBroker, RedisList, RedisListPublish, RedisPubSub,
-    RedisPubSubPattern, RedisPubSubPublish, RedisPublish, RedisStream,
+    ConnectedRedisBroker, FastStream, Framed, PubSubMode, RedisBroker, RedisList, RedisListPublish,
+    RedisPubSub, RedisPubSubPattern, RedisPubSubPublish, RedisPublish, RedisStream,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -153,7 +154,11 @@ fn a_publisher_names_the_destination_it_was_mounted_on() {
     let document = document();
     assert_eq!(
         extension(&document, "audit.done"),
-        serde_json::json!({ "form": "stream", "key": "audit.done" }),
+        serde_json::json!({
+            "form": "stream",
+            "key": "audit.done",
+            "envelope": { "contentType": "application/octet-stream" },
+        }),
     );
     assert_eq!(
         extension(&document, "batches.done"),
@@ -223,4 +228,42 @@ fn a_broker_over_an_adopted_pool_reports_no_host() {
             .as_deref(),
         Some("localhost:6379"),
     );
+}
+
+#[subscriber(RedisStream::new("payments").group("billing"), reply("payments.done"))]
+async fn handle_payment(order: &Order) -> Receipt {
+    Receipt { id: order.id }
+}
+
+#[subscriber(RedisList::<Framed<JsonCodec>>::new_in("documents"))]
+async fn handle_document(order: &Order) -> HandlerOutcome {
+    let _ = order;
+    HandlerOutcome::ack()
+}
+
+/// A broker reading faststream's frame, with one list that keeps a JSON document and a reply
+/// published as one.
+fn enveloped_document() -> Value {
+    let app = RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(
+        RedisBroker::standalone(URL).envelope(FastStream),
+        |b| {
+            b.include(handle_payment)
+                .out_reply(RedisPubSubPublish::new().envelope(Framed::new(JsonCodec)));
+            b.include(handle_document);
+        },
+    );
+    let json = build_spec(&app).to_json().expect("the document serializes");
+    serde_json::from_str(&json).expect("the document is JSON")
+}
+
+/// Every channel reports the media type of the value its envelope writes: the broker's where the
+/// descriptor or the policy names none, and the one it names otherwise.
+#[test]
+fn each_channel_reports_the_content_type_of_its_envelope() {
+    let document = enveloped_document();
+    let content_type = |name: &str| extension(&document, name)["envelope"]["contentType"].clone();
+
+    assert_eq!(content_type("payments"), "application/octet-stream");
+    assert_eq!(content_type("documents"), "application/json");
+    assert_eq!(content_type("payments.done"), "application/json");
 }

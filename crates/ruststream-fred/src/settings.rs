@@ -97,13 +97,13 @@ mod blocking {
         fn block(self, block: Duration) -> Self;
     }
 
-    impl Blocks for RedisStream {
+    impl<Env> Blocks for RedisStream<Env> {
         fn block(self, block: Duration) -> Self {
             Self::block(self, block)
         }
     }
 
-    impl Blocks for RedisList {
+    impl<Env> Blocks for RedisList<Env> {
         fn block(self, block: Duration) -> Self {
             Self::block(self, block)
         }

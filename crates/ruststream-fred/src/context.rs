@@ -32,6 +32,7 @@ use fred::clients::Pool;
 use ruststream::runtime::{Context, Ctx, FromContext};
 use ruststream::{BuildBatchContext, BuildContext, Field};
 
+use crate::envelope::Envelope;
 use crate::list::RedisListMessage;
 use crate::message::RedisMessage;
 use crate::pipeline::{Form, RedisPipeline, RoundMessage};
@@ -114,8 +115,8 @@ impl StreamContext {
     }
 }
 
-impl BuildContext<RedisMessage> for StreamContext {
-    fn build(msg: &RedisMessage) -> Self {
+impl<Env: Envelope> BuildContext<RedisMessage<Env>> for StreamContext {
+    fn build(msg: &RedisMessage<Env>) -> Self {
         Self {
             entry: msg.entry_id(),
             position: ruststream::Positioned::position(msg),
@@ -190,8 +191,8 @@ impl StreamBatchContext {
     }
 }
 
-impl BuildBatchContext<RedisMessage> for StreamBatchContext {
-    fn build(first: &RedisMessage) -> Self {
+impl<Env: Envelope> BuildBatchContext<RedisMessage<Env>> for StreamBatchContext {
+    fn build(first: &RedisMessage<Env>) -> Self {
         Self {
             seeker: first.seeker().clone(),
         }
@@ -263,8 +264,8 @@ impl PubSubContext {
     }
 }
 
-impl BuildContext<RedisPubSubMessage> for PubSubContext {
-    fn build(msg: &RedisPubSubMessage) -> Self {
+impl<Env: Envelope> BuildContext<RedisPubSubMessage<Env>> for PubSubContext {
+    fn build(msg: &RedisPubSubMessage<Env>) -> Self {
         Self {
             channel: msg.channel().to_owned(),
             from_pattern: msg.from_pattern(),
@@ -316,20 +317,20 @@ impl PoolContext {
     }
 }
 
-impl BuildContext<RedisMessage> for PoolContext {
-    fn build(msg: &RedisMessage) -> Self {
+impl<Env: Envelope> BuildContext<RedisMessage<Env>> for PoolContext {
+    fn build(msg: &RedisMessage<Env>) -> Self {
         Self::from_pool(msg.seeker().pool().clone())
     }
 }
 
-impl BuildContext<RedisListMessage> for PoolContext {
-    fn build(msg: &RedisListMessage) -> Self {
+impl<Env: Envelope> BuildContext<RedisListMessage<Env>> for PoolContext {
+    fn build(msg: &RedisListMessage<Env>) -> Self {
         Self::from_pool(msg.pool().clone())
     }
 }
 
-impl BuildContext<RedisPubSubMessage> for PoolContext {
-    fn build(msg: &RedisPubSubMessage) -> Self {
+impl<Env: Envelope> BuildContext<RedisPubSubMessage<Env>> for PoolContext {
+    fn build(msg: &RedisPubSubMessage<Env>) -> Self {
         Self::from_pool(msg.pool().clone())
     }
 }

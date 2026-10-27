@@ -50,7 +50,7 @@ async fn dispatch(order: &Order, Out(jobs): Out<impl Publisher, Jobs>) -> Handle
 }
 
 /// Runs each job for the tenant its header names.
-#[subscriber(RedisList::new("jobs").codec(JsonCodec))]
+#[subscriber(RedisList::<Framed<JsonCodec>>::new_in("jobs"))]
 async fn run(job: &Job, ctx: &mut Context<'_>) -> HandlerOutcome {
     let Some(tenant) = ctx.headers().get_str("tenant") else {
         tracing::warn!(job.order, "a job without a tenant is dropped");
@@ -65,7 +65,10 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(broker, |b| {
         // Both ends name JSON, so `redis-cli` and RedisInsight show each entry as text.
         b.include(dispatch)
-            .out(Jobs, RedisListPublish::new().codec(JsonCodec))
+            .out(
+                Jobs,
+                RedisListPublish::new().envelope(Framed::new(JsonCodec)),
+            )
             .build();
         b.include(run);
     })

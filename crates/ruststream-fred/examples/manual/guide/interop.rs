@@ -65,7 +65,7 @@ fn service(broker: RedisBroker) -> impl App<State = ()> {
         let orders = RedisStream::new("orders").group("mail");
         // The envelope in JSON: a value the mailer reads with any JSON parser.
         b.include(subscriber(orders, TakeOrder).reply().build())
-            .out_reply(list::Publish::default().codec(JsonCodec));
+            .out_reply(list::Publish::default().envelope(Framed::new(JsonCodec)));
     })
 }
 

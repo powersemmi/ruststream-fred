@@ -4,6 +4,8 @@ use std::error::Error as StdError;
 
 use thiserror::Error;
 
+use crate::envelope::SealError;
+
 /// Errors surfaced by the Redis broker implementation.
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -66,6 +68,18 @@ pub enum RedisError {
     /// settle, the entries whose settles failed stay pending and are delivered again.
     #[error("{0}")]
     Flush(String),
+
+    /// A message to `destination` does not fit the envelope it is published through: a header on
+    /// [`NoOp`](crate::NoOp), a header longer than [`FastStream`](crate::FastStream)'s frame holds,
+    /// or a document its codec cannot write.
+    #[error("a message to `{destination}` cannot be published: {source}")]
+    Seal {
+        /// The stream, list or channel the message was published to.
+        destination: String,
+        /// What the envelope refused.
+        #[source]
+        source: SealError,
+    },
 }
 
 impl RedisError {
@@ -77,6 +91,14 @@ impl RedisError {
     /// Wraps a `fred` error as a [`RedisError::Subscribe`].
     pub(crate) fn subscribe(err: fred::error::Error) -> Self {
         Self::Subscribe(Box::new(err))
+    }
+
+    /// The refusal of the envelope a message to `destination` was published through.
+    pub(crate) fn seal(destination: &str, source: SealError) -> Self {
+        Self::Seal {
+            destination: destination.to_owned(),
+            source,
+        }
     }
 
     /// Wraps a `fred` error as a [`RedisError::Publish`].

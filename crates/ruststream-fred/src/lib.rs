@@ -7,9 +7,7 @@ mod asyncapi;
 mod broker;
 mod claim;
 mod connection;
-mod convert;
 mod delay;
-mod envelope;
 mod error;
 #[cfg(feature = "testing")]
 mod in_process;
@@ -26,6 +24,7 @@ mod subscriber;
 // These modules carry their own `//!` summaries. A second doc fragment here would be written in
 // the crate root's scope, and rustdoc would then resolve the module's intra-doc links there too.
 pub mod context;
+pub mod envelope;
 pub mod prelude;
 
 // The three transport forms. Each is public for its own `prelude` and its `Publish` alias, so a
@@ -38,6 +37,7 @@ pub mod stream;
 
 pub use broker::{ClosedRedisBroker, ConnectedRedisBroker, RedisBroker};
 pub use delay::DelayedRetry;
+pub use envelope::{Envelope, FastStream, Framed, NoOp};
 pub use error::RedisError;
 pub use list::{
     RedisList, RedisListMessage, RedisListPublish, RedisListPublisher, RedisListSubscriber,

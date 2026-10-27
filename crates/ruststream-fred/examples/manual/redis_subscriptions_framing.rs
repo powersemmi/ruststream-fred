@@ -114,9 +114,12 @@ fn app() -> impl App {
         // Both ends name JSON, so `redis-cli` and RedisInsight show each entry as text.
         let orders = RedisStream::new("orders").group("dispatch");
         b.include(subscriber(orders, Dispatch).build())
-            .out(Jobs, RedisListPublish::new().codec(JsonCodec))
+            .out(
+                Jobs,
+                RedisListPublish::new().envelope(Framed::new(JsonCodec)),
+            )
             .build();
-        let jobs = RedisList::new("jobs").codec(JsonCodec);
+        let jobs = RedisList::<Framed<JsonCodec>>::new_in("jobs");
         b.include(subscriber(jobs, Run).build());
     })
 }

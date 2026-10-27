@@ -153,7 +153,7 @@ item's own documentation keeps the detail.
 
 ## Publishing
 
-- [RedisPublish][c-publishing]: [`RedisPublish`], `XADD` to a stream, and its live
+- [RedisPublish][c-publishing]: [`RedisPublish`](struct@RedisPublish), `XADD` to a stream, and its live
   [`RedisPublisher`].
 - [RedisDefaultPublish][c-default]: [`RedisDefaultPublish`], each name written the way the
   service reads it.
@@ -164,7 +164,7 @@ item's own documentation keeps the detail.
 
 ## Transactions
 
-- [Transactions][c-transactions]: [`RedisTransactionalPublish`], one `MULTI` / `EXEC` block of
+- [Transactions][c-transactions]: [`RedisTransactionalPublish`](struct@RedisTransactionalPublish), one `MULTI` / `EXEC` block of
   publishes on a stream publisher; a cluster refuses it at startup.
 - [transaction][c-transaction]: [`RedisTransaction`], a transaction that owns its buffer.
 - [owned_transaction][c-owned-transaction]: the same over values.

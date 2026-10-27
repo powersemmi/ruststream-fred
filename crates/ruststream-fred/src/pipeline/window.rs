@@ -790,11 +790,12 @@ mod tests {
     use ruststream::AckError;
 
     use super::*;
+    use crate::envelope::RustStream;
     use crate::pipeline::forms::PubSubForm;
 
-    fn window() -> Arc<Window<PubSubForm>> {
+    fn window() -> Arc<Window<PubSubForm<RustStream>>> {
         Arc::new(Window::new(
-            PubSubForm,
+            PubSubForm::default(),
             Client::default(),
             false,
             "orders",
