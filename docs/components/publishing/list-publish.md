@@ -13,7 +13,7 @@ import TabItem from '@theme/TabItem';
 
 The message's name is the list key.
 A [list consumer](../lists/index.md) pops from the other end, so the list is a first-in, first-out queue.
-Headers travel beside the payload in a [binary frame](../subscriptions/framing.md) by default; [`codec`](api:ruststream_fred::list::RedisListPublish::codec) frames them with a codec the consumer also sets.
+Headers travel beside the payload in the broker's [envelope](../subscriptions/envelopes.md); [`envelope`](api:ruststream_fred::list::RedisListPublish::envelope) names another, which the consumer reads too.
 
 [`ttl`](api:ruststream_fred::list::RedisListPublish::ttl) sets a time to live on the list key and arms it again with `PEXPIRE` at every publish.
 A queue in use never expires; a queue nobody pushes to for the whole interval does, with whatever it still holds.

@@ -1,0 +1,249 @@
+//! How headers travel beside the payload: the broker's envelope, one a descriptor or a policy
+//! names instead, and an envelope of the service's own. Each scenario is a test.
+//!
+//! ```text
+//! cargo test --example redis_subscriptions_envelopes --features testing
+//! ```
+
+// A plain build compiles the service; the tests that use it exist only in the test build.
+#![cfg_attr(not(test), allow(dead_code, unused_imports))]
+
+use std::collections::BTreeMap;
+
+use ruststream::codec::JsonCodec;
+use ruststream_fred::envelope::{Envelope, Location, SealError};
+use ruststream_fred::prelude::*;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
+#[outgoing(name = "orders")]
+struct Order {
+    id: u64,
+    tenant: String,
+}
+
+#[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
+#[outgoing(name = "jobs")]
+struct Job {
+    order: u64,
+}
+
+#[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
+#[outgoing(name = "legacy.jobs")]
+struct LegacyJob {
+    order: u64,
+}
+
+#[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
+#[outgoing(name = "prices")]
+struct Price {
+    sku: String,
+    cents: u64,
+}
+
+// --8<-- [start:envelopes]
+/// The list jobs leave through.
+#[derive(OutSlot)]
+#[publishes(Job)]
+struct Jobs;
+
+/// Reads the orders a faststream shop appends, in the broker's envelope, and queues a job for
+/// each with the tenant in a header.
+#[subscriber(RedisStream::new("orders").group("dispatch"))]
+async fn dispatch(order: &Order, Out(jobs): Out<impl Publisher, Jobs>) -> HandlerOutcome {
+    let mut headers = HeaderMap::new();
+    headers.insert("tenant", order.tenant.clone());
+    let job = Job { order: order.id };
+    if jobs
+        .message(&job)
+        .with_headers(headers)
+        .publish()
+        .await
+        .is_err()
+    {
+        return HandlerOutcome::retry();
+    }
+    HandlerOutcome::ack()
+}
+
+/// Runs each job for the tenant its header names; the list holds JSON documents.
+#[subscriber(RedisList::<Framed<JsonCodec>>::new_in("jobs"))]
+async fn run(job: &Job, ctx: &mut Context<'_>) -> HandlerOutcome {
+    let Some(tenant) = ctx.headers().get_str("tenant") else {
+        tracing::warn!(job.order, "a job without a tenant is dropped");
+        return HandlerOutcome::drop();
+    };
+    tracing::info!(job.order, tenant, "job run");
+    HandlerOutcome::ack()
+}
+
+/// Reads the prices a feed publishes as bare JSON, with no headers.
+#[subscriber(RedisPubSub::<NoOp>::new_in("prices"))]
+async fn on_price(price: &Price) -> HandlerOutcome {
+    tracing::info!(price.sku, price.cents, "price");
+    HandlerOutcome::ack()
+}
+
+fn app() -> impl App {
+    // faststream's frame wherever nothing names another envelope.
+    let broker = RedisBroker::standalone("redis://localhost:6379").envelope(FastStream);
+    RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(broker, |b| {
+        // Both ends of `jobs` name JSON, so `redis-cli` and RedisInsight show each job as text.
+        b.include(dispatch)
+            .out(
+                Jobs,
+                RedisListPublish::new().envelope(Framed::new(JsonCodec)),
+            )
+            .build();
+        b.include(run);
+        b.include(on_price);
+    })
+}
+// --8<-- [end:envelopes]
+
+// --8<-- [start:custom]
+/// One JSON line with the headers under `meta` and the payload as text under `body`: the layout
+/// a legacy system on the same list writes.
+#[derive(Debug, Clone, Copy, Default)]
+struct MetaLine;
+
+#[derive(Serialize, Deserialize)]
+struct Line {
+    meta: BTreeMap<String, String>,
+    body: String,
+}
+
+impl Envelope for MetaLine {
+    const CONTENT_TYPE: &'static str = "application/json";
+
+    fn locate(&self, value: &[u8]) -> Location {
+        serde_json::from_slice::<Line>(value).map_or(Location::Bare, |line| {
+            Location::Decoded(line.body.into_bytes())
+        })
+    }
+
+    fn headers(&self, value: &[u8]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        if let Ok(line) = serde_json::from_slice::<Line>(value) {
+            for (name, text) in line.meta {
+                headers.insert(name, text);
+            }
+        }
+        headers
+    }
+
+    fn seal(
+        &self,
+        payload: &[u8],
+        headers: &HeaderMap,
+        value: &mut Vec<u8>,
+    ) -> Result<(), SealError> {
+        let line = Line {
+            meta: headers
+                .iter()
+                .map(|(name, text)| (name.to_owned(), String::from_utf8_lossy(text).into_owned()))
+                .collect(),
+            body: String::from_utf8_lossy(payload).into_owned(),
+        };
+        serde_json::to_writer(value, &line).map_err(|err| SealError::Encode(Box::new(err)))
+    }
+}
+
+/// Reads the legacy system's lines, the tenant from `meta`.
+#[subscriber(RedisList::<MetaLine>::new_in("legacy.jobs"))]
+async fn legacy(job: &LegacyJob, ctx: &mut Context<'_>) -> HandlerOutcome {
+    let tenant = ctx.headers().get_str("tenant").unwrap_or("unknown");
+    tracing::info!(job.order, tenant, "legacy job run");
+    HandlerOutcome::ack()
+}
+
+fn legacy_app() -> impl App {
+    RustStream::new(AppInfo::new("legacy", "0.1.0")).with_broker(
+        RedisBroker::standalone("redis://localhost:6379"),
+        |b| {
+            b.include(legacy);
+        },
+    )
+}
+// --8<-- [end:custom]
+
+// The scenarios are the tests below; the command in the header runs them.
+fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use ruststream::testing::TestApp;
+
+    use super::*;
+
+    /// An order in faststream's frame becomes a job, and the tenant header leaves with the job in
+    /// its JSON document and reaches the handler on the list.
+    #[tokio::test]
+    async fn the_envelope_carries_the_header_to_the_list_handler() -> Result<(), Box<dyn Error>> {
+        let tb = TestApp::start(app()).await?;
+        let broker = tb.broker::<RedisBroker<FastStream>>();
+
+        broker
+            .message(&Order {
+                id: 1,
+                tenant: "acme".to_owned(),
+            })
+            .publish()
+            .await?;
+
+        broker
+            .subscriber("jobs")
+            .assert_called_once()
+            .with(&Job { order: 1 })
+            .settled(HandlerOutcome::ack());
+        tb.shutdown().await?;
+        Ok(())
+    }
+
+    /// A price published with no envelope reaches the handler as it is.
+    #[tokio::test]
+    async fn a_bare_price_reaches_the_handler() -> Result<(), Box<dyn Error>> {
+        let tb = TestApp::start(app()).await?;
+        let broker = tb.broker::<RedisBroker<FastStream>>();
+        let tea = Price {
+            sku: "tea".to_owned(),
+            cents: 450,
+        };
+
+        broker.message(&tea).publish().await?;
+
+        broker
+            .subscriber("prices")
+            .assert_called_once()
+            .with(&tea)
+            .settled(HandlerOutcome::ack());
+        tb.shutdown().await?;
+        Ok(())
+    }
+
+    /// A job written as the legacy system writes it, with its tenant in `meta`, is read through
+    /// the envelope of the service's own.
+    #[tokio::test]
+    async fn a_legacy_line_reaches_the_handler() -> Result<(), Box<dyn Error>> {
+        let tb = TestApp::start(legacy_app()).await?;
+        let broker = tb.broker::<RedisBroker>();
+        let mut headers = HeaderMap::new();
+        headers.insert("tenant", "acme");
+
+        broker
+            .message(&LegacyJob { order: 7 })
+            .with_headers(headers)
+            .publish()
+            .await?;
+
+        broker
+            .subscriber("legacy.jobs")
+            .assert_called_once()
+            .with(&LegacyJob { order: 7 })
+            .settled(HandlerOutcome::ack());
+        tb.shutdown().await?;
+        Ok(())
+    }
+}

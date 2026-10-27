@@ -17,6 +17,8 @@ const guides: Record<string, string> = {
 const pages: Record<string, string> = {
   // The benchmarks explain what the architecture costs.
   benchmarks: '/architecture/benchmarks/',
+  // The framing of a list element or a channel message became the envelope of every form.
+  'components/subscriptions/framing': '/components/subscriptions/envelopes/',
 };
 
 /** Old address to its target, relative to the build's base URL. */

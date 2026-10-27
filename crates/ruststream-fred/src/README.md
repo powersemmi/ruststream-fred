@@ -90,8 +90,8 @@ item's own documentation keeps the detail.
   goes.
 - [block][c-block]: [`RedisSubscribeExt::block`], how long one read waits on the server.
 - [Batches][c-batches]: a slice handler, a native `COUNT` on a stream.
-- [Framing][c-framing]: the binary frame or the codec envelope of a list entry and a channel
-  message.
+- [Envelopes][c-envelopes]: [`envelope`], how the headers travel beside the payload, set with
+  [`RedisBroker::envelope`] and overridden per descriptor and policy.
 
 ## Streams
 
@@ -217,7 +217,7 @@ for the sentinels, and `credential-provider` rotating credentials through a call
 [c-subscriptions]: https://powersemmi.github.io/ruststream-fred/latest/components/subscriptions/
 [c-block]: https://powersemmi.github.io/ruststream-fred/latest/components/subscriptions/block/
 [c-batches]: https://powersemmi.github.io/ruststream-fred/latest/components/subscriptions/batches/
-[c-framing]: https://powersemmi.github.io/ruststream-fred/latest/components/subscriptions/framing/
+[c-envelopes]: https://powersemmi.github.io/ruststream-fred/latest/components/subscriptions/envelopes/
 [c-streams]: https://powersemmi.github.io/ruststream-fred/latest/components/streams/
 [c-reclaim]: https://powersemmi.github.io/ruststream-fred/latest/components/streams/reclaim/
 [c-claiming]: https://powersemmi.github.io/ruststream-fred/latest/components/streams/claiming/

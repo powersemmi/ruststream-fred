@@ -273,12 +273,12 @@ path = "examples/manual/redis_subscriptions_batches.rs"
 required-features = ["testing"]
 
 [[example]]
-name = "redis_subscriptions_framing"
+name = "redis_subscriptions_envelopes"
 required-features = ["testing"]
 
 [[example]]
-name = "manual_redis_subscriptions_framing"
-path = "examples/manual/redis_subscriptions_framing.rs"
+name = "manual_redis_subscriptions_envelopes"
+path = "examples/manual/redis_subscriptions_envelopes.rs"
 required-features = ["testing"]
 
 [[example]]

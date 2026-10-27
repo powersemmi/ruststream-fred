@@ -63,9 +63,9 @@ pub(crate) const PAYLOAD_FIELD: &str = "_payload";
 /// payload that only looks like an envelope so that it reads back unchanged.
 ///
 /// The type is the choice, and a value of it is held by the broker, by each subscription and by
-/// each delivery, so an envelope is a small value, usually a unit struct. A broker whose default
-/// envelope is not one of this crate's own registers itself with the test harness once, beside
-/// the tests: `ruststream::register_testable_broker!(RedisBroker<MyEnvelope>);`.
+/// each delivery, so an envelope is a small value, usually a unit struct. A broker whose own
+/// envelope is [`Framed`] or one of the service's own registers itself with the test harness once,
+/// beside the tests: `ruststream::register_testable_broker!(RedisBroker<MyEnvelope>);`.
 ///
 /// # Examples
 ///
@@ -211,11 +211,51 @@ pub trait Envelope: Clone + Debug + Send + Sync + 'static {
 ///
 /// # Examples
 ///
-/// ```
-/// use ruststream_fred::envelope::{Envelope, Location, NoOp};
+/// An envelope whose value is a tenant line and the payload after it: the payload is a range of
+/// the value, and a value without the line is no envelope of its own.
 ///
-/// // `NoOp` has no layout, so every value is its own payload.
-/// assert_eq!(NoOp.locate(b"order 7"), Location::Bare);
+/// ```
+/// use ruststream::HeaderMap;
+/// use ruststream_fred::envelope::{Envelope, Location, SealError};
+///
+/// #[derive(Debug, Clone, Copy)]
+/// struct TenantLine;
+///
+/// impl Envelope for TenantLine {
+///     const CONTENT_TYPE: &'static str = "text/plain";
+///
+///     fn locate(&self, value: &[u8]) -> Location {
+///         match value.iter().position(|byte| *byte == b'\n') {
+///             Some(end) if value.starts_with(b"tenant:") => {
+///                 Location::Within(end + 1..value.len())
+///             }
+///             _ => Location::Bare,
+///         }
+///     }
+///
+///     fn headers(&self, value: &[u8]) -> HeaderMap {
+///         let mut headers = HeaderMap::new();
+///         if let Some(line) = value.split(|byte| *byte == b'\n').next() {
+///             headers.insert("tenant", line[b"tenant:".len()..].to_vec());
+///         }
+///         headers
+///     }
+///
+///     fn seal(
+///         &self,
+///         payload: &[u8],
+///         headers: &HeaderMap,
+///         value: &mut Vec<u8>,
+///     ) -> Result<(), SealError> {
+///         if let Some(tenant) = headers.get("tenant") {
+///             value.extend_from_slice(b"tenant:");
+///             value.extend_from_slice(tenant);
+///             value.push(b'\n');
+///         }
+///         value.extend_from_slice(payload);
+///         Ok(())
+///     }
+/// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -230,18 +270,52 @@ pub enum Location {
 
 /// Why an [`Envelope`] could not write a message.
 ///
+/// A publish through the envelope fails with it, inside
+/// [`RedisError::Seal`](crate::RedisError::Seal) with the destination named.
+///
 /// # Examples
+///
+/// An envelope with room for one header, the tenant, refuses any other by name:
 ///
 /// ```
 /// use ruststream::HeaderMap;
-/// use ruststream_fred::envelope::{Envelope, NoOp, SealError};
+/// use ruststream_fred::envelope::{Envelope, Location, SealError};
 ///
-/// let mut headers = HeaderMap::new();
-/// headers.insert("tenant", "acme");
-/// let mut value = Vec::new();
+/// #[derive(Debug, Clone, Copy)]
+/// struct TenantOnly;
 ///
-/// let refused = NoOp.seal(b"{}", &headers, &mut value);
-/// assert!(matches!(refused, Err(SealError::HeaderNotCarried { header }) if header == "tenant"));
+/// impl Envelope for TenantOnly {
+///     const CONTENT_TYPE: &'static str = "application/octet-stream";
+///
+///     fn locate(&self, value: &[u8]) -> Location {
+///         let tenant = value.first().map_or(0, |len| usize::from(*len));
+///         Location::Within(1 + tenant..value.len())
+///     }
+///
+///     fn headers(&self, value: &[u8]) -> HeaderMap {
+///         let tenant = value.first().map_or(0, |len| usize::from(*len));
+///         let mut headers = HeaderMap::new();
+///         headers.insert("tenant", value[1..1 + tenant].to_vec());
+///         headers
+///     }
+///
+///     fn seal(
+///         &self,
+///         payload: &[u8],
+///         headers: &HeaderMap,
+///         value: &mut Vec<u8>,
+///     ) -> Result<(), SealError> {
+///         if let Some((name, _)) = headers.iter().find(|(name, _)| *name != "tenant") {
+///             return Err(SealError::HeaderNotCarried { header: name.to_owned() });
+///         }
+///         let tenant = headers.get("tenant").unwrap_or_default();
+///         let len = u8::try_from(tenant.len()).map_err(|err| SealError::Encode(Box::new(err)))?;
+///         value.push(len);
+///         value.extend_from_slice(tenant);
+///         value.extend_from_slice(payload);
+///         Ok(())
+///     }
+/// }
 /// ```
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -280,7 +354,12 @@ pub enum SealError {
 ///         HeaderMap::new()
 ///     }
 ///
-///     fn seal(&self, payload: &[u8], _: &HeaderMap, value: &mut Vec<u8>) -> Result<(), SealError> {
+///     fn seal(
+///         &self,
+///         payload: &[u8],
+///         _headers: &HeaderMap,
+///         value: &mut Vec<u8>,
+///     ) -> Result<(), SealError> {
 ///         value.extend_from_slice(payload);
 ///         Ok(())
 ///     }

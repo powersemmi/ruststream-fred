@@ -27,6 +27,7 @@
     "Open a consumer window with `b.include(handler.pipeline())`, `.atomic()` for one `MULTI` / `EXEC` per delivery; queue Redis commands through `Ctx<keys::Pipeline>`, and take `Ctx<keys::FredPool>` for an answer needed now.",
     "Put a pipelined handler's publishes in its round: the reply with `.out_reply(Publish).transform(InRound)`, a slot bounded `Out<impl Bindable>` with `pipeline.bind(out)`.",
     "On a cluster write a reliable list's key under a hash tag, `RedisList::new(\"{jobs}\")`, so the default processing list shares its slot; a subscription whose two keys land on different slots does not start.",
+    "Name the envelope, how headers travel beside the payload, once on the broker with `RedisBroker::envelope(FastStream)` (or `NoOp`, `Framed::new(codec)`); a descriptor overrides it on its type, `RedisList::<NoOp>::new_in(key)`, and a publish policy with `.envelope(..)`.",
     "Test by handing `ruststream::testing::TestApp::start` the service's own app and addressing `tb.broker::<RedisBroker>()`; run the same body against a server with `TestApp::start_live` for scripts, failover, authentication and TLS."
   ]
 }

@@ -502,12 +502,86 @@ impl<Env: Envelope + Default> RedisStream<Env> {
 
     /// A reclaim subscription on `key`, as [`reclaim`](RedisStream::reclaim), that reads the
     /// entries through the envelope `Env` instead of the broker's.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # mod demo {
+    /// use std::time::Duration;
+    ///
+    /// use ruststream_fred::stream::prelude::*;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Order {
+    ///     id: u64,
+    /// }
+    ///
+    /// // Takes over the faststream orders a dead consumer of the group never acked.
+    /// #[subscriber(
+    ///     RedisStream::<FastStream>::reclaim_in("orders", Duration::from_secs(30))
+    ///         .group("billing")
+    /// )]
+    /// async fn recover(order: &Order) -> HandlerOutcome {
+    ///     tracing::info!(order.id, "recovered");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(
+    ///         RedisBroker::standalone("redis://localhost:6379"),
+    ///         |b| {
+    ///             b.include(recover);
+    ///         },
+    ///     )
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
     pub fn reclaim_in(key: impl Into<String>, min_idle: Duration) -> Self {
         RedisStream::reclaim(key, min_idle).with_envelope(Env::default())
     }
 
     /// A claiming subscription on `key`, as [`claiming`](RedisStream::claiming), that reads the
     /// entries through the envelope `Env` instead of the broker's.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # mod demo {
+    /// use std::time::Duration;
+    ///
+    /// use ruststream_fred::stream::prelude::*;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Order {
+    ///     id: u64,
+    /// }
+    ///
+    /// // Fresh faststream orders and the stale ones of the group, in one read (Redis 8.4).
+    /// #[subscriber(
+    ///     RedisStream::<FastStream>::claiming_in("orders", Duration::from_secs(30))
+    ///         .group("billing")
+    /// )]
+    /// async fn bill(order: &Order) -> HandlerOutcome {
+    ///     tracing::info!(order.id, "billed");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(
+    ///         RedisBroker::standalone("redis://localhost:6379"),
+    ///         |b| {
+    ///             b.include(bill);
+    ///         },
+    ///     )
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
     pub fn claiming_in(key: impl Into<String>, min_idle: Duration) -> Self {
         RedisStream::claiming(key, min_idle).with_envelope(Env::default())
     }

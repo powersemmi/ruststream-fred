@@ -16,13 +16,12 @@ The rest of the extension is the descriptor's own settings.
 
 | Form | Fields |
 |---|---|
-| `stream` | `group`, `consumer`, `readMode` (`fresh`, `reclaim` or `claiming`), and `minIdleMs` for the two modes that claim |
+| `stream` | `group`, `consumer`, `readMode` (`fresh`, `reclaim` or `claiming`), `minIdleMs` for the two modes that claim, `envelope` |
 | `list` | `reliable`, `processing` (the processing list of a reliable list), `envelope` |
 | `pubsub` | `mode` (`classic` or `sharded`), `pattern`, `envelope` |
 
 A [`RedisPubSubPattern`](../pubsub/pattern.md) channel reports `pattern: true`, so a reader knows the address is a glob and not a channel to publish to.
-`envelope.contentType` is the framing a list entry or a channel message carries its headers in.
-A stream entry holds its headers as fields, so a stream has no envelope.
+`envelope.contentType` is the media type of the value the [envelope](../subscriptions/envelopes.md) writes: `application/octet-stream` for a binary frame, the codec's media type for a codec document.
 A setting the descriptor leaves to the broker, such as a consumer name it did not set, stays out.
 
 ## Example

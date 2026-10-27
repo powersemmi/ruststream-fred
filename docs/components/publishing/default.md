@@ -13,7 +13,7 @@ A reply with no named policy goes through [`RedisDefaultPublish`](api:ruststream
 
 The runtime wires it for every registration that replies and names no policy: `b.include(handler)` with no `.out_reply(..)`.
 Its live form, [`RedisDefaultPublisher`](api:ruststream_fred::RedisDefaultPublisher), looks up how the service reads the destination.
-A name the service reads as a list gets an `LPUSH`, a channel a `PUBLISH`, a stream an `XADD`, each in the [framing](../subscriptions/framing.md) that subscription decodes.
+A name the service reads as a list gets an `LPUSH`, a channel a `PUBLISH`, a stream an `XADD`, each in the [envelope](../subscriptions/envelopes.md) that subscription reads.
 A name the service does not read gets an `XADD`.
 The choice is made per name, so one handler's replies may go to a list and another's to a stream.
 A mount site that names a policy, such as [`RedisPublish`](./index.md), overrides the default.
