@@ -37,7 +37,7 @@ pub mod stream;
 
 pub use broker::{ClosedRedisBroker, ConnectedRedisBroker, RedisBroker};
 pub use delay::DelayedRetry;
-pub use envelope::{Envelope, FastStream, Framed, NoOp};
+pub use envelope::{Envelope, FastStream, Framed, NoOp, RedisEnvelopeExt};
 pub use error::RedisError;
 pub use list::{
     RedisList, RedisListMessage, RedisListPublish, RedisListPublisher, RedisListSubscriber,

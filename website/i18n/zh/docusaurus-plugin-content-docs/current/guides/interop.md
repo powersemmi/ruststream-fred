@@ -96,7 +96,7 @@ redis-cli RPOP emails
 
 ## 读取列表值或频道消息 {/* #reading-a-list-value-or-a-channel-message */}
 
-订阅读取其发布者写入的信封：[`RedisList::new_in`](api:ruststream_fred::list::RedisList::new_in) 和 [`RedisPubSub::new_in`](api:ruststream_fred::pubsub::RedisPubSub::new_in) 在类型上指定信封，例如 `RedisList::<Framed<JsonCodec>>::new_in("emails")`，没有指定时订阅读取 broker 的信封。
+订阅读取其发布者写入的信封：挂载点通过 [`RedisEnvelopeExt::envelope`](api:ruststream_fred::RedisEnvelopeExt::envelope) 指定信封，例如 `b.include(handler.envelope(Framed::new(JsonCodec)))`，没有指定时订阅读取 broker 的信封。
 JSON 文档只按确切的形式读取：带有 `headers` 和 `payload`、没有其他字段的对象。
 
 不属于该信封的值，例如另一个客户端以纯 JSON 推入或发布的值，无论前几个字节是什么，都会作为不带消息头的消息体到达：

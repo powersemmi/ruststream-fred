@@ -114,8 +114,8 @@ pub mod prelude {
     pub use crate::pipeline::{Bindable, InRound, RedisPipelineSteps};
     pub use crate::{
         DelayedRetry, FastStream, Framed, NoOp, PARTITION_KEY_HEADER, RedisBroker,
-        RedisGroupPosition, RedisGroupSeeker, RedisPublishOptions, RedisPublishSteps,
-        RedisSubscribeExt, envelope,
+        RedisEnvelopeExt, RedisGroupPosition, RedisGroupSeeker, RedisPublishOptions,
+        RedisPublishSteps, RedisSubscribeExt, envelope,
     };
 
     #[cfg(any(
@@ -457,139 +457,59 @@ impl RedisStream {
     }
 }
 
-impl<Env: Envelope + Default> RedisStream<Env> {
-    /// A fresh-tail subscription on `key`, as [`new`](RedisStream::new), that reads the entries
-    /// through the envelope `Env` instead of the broker's: how a message's headers sit beside its
-    /// payload in the entry's fields.
-    ///
-    /// The envelope is named on the type, `RedisStream::<FastStream>::new_in(..)`, which is where
-    /// `#[subscriber(..)]` reads the descriptor's type from.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # mod demo {
-    /// use ruststream_fred::stream::prelude::*;
-    /// use serde::Deserialize;
-    ///
-    /// #[derive(Deserialize)]
-    /// struct Order {
-    ///     id: u64,
-    /// }
-    ///
-    /// // A faststream service writes this stream; the rest of the service keeps the broker's own.
-    /// #[subscriber(RedisStream::<FastStream>::new_in("orders").group("billing"))]
-    /// async fn bill(order: &Order) -> HandlerOutcome {
-    ///     tracing::info!(order.id, "billed");
-    ///     HandlerOutcome::ack()
-    /// }
-    ///
-    /// #[ruststream::app]
-    /// fn app() -> impl App {
-    ///     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(
-    ///         RedisBroker::standalone("redis://localhost:6379"),
-    ///         |b| {
-    ///             b.include(bill);
-    ///         },
-    ///     )
-    /// }
-    /// # }
-    /// # fn main() {}
-    /// ```
-    pub fn new_in(key: impl Into<String>) -> Self {
-        RedisStream::new(key).with_envelope(Env::default())
-    }
-
-    /// A reclaim subscription on `key`, as [`reclaim`](RedisStream::reclaim), that reads the
-    /// entries through the envelope `Env` instead of the broker's.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # mod demo {
-    /// use std::time::Duration;
-    ///
-    /// use ruststream_fred::stream::prelude::*;
-    /// use serde::Deserialize;
-    ///
-    /// #[derive(Deserialize)]
-    /// struct Order {
-    ///     id: u64,
-    /// }
-    ///
-    /// // Takes over the faststream orders a dead consumer of the group never acked.
-    /// #[subscriber(
-    ///     RedisStream::<FastStream>::reclaim_in("orders", Duration::from_secs(30))
-    ///         .group("billing")
-    /// )]
-    /// async fn recover(order: &Order) -> HandlerOutcome {
-    ///     tracing::info!(order.id, "recovered");
-    ///     HandlerOutcome::ack()
-    /// }
-    ///
-    /// #[ruststream::app]
-    /// fn app() -> impl App {
-    ///     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(
-    ///         RedisBroker::standalone("redis://localhost:6379"),
-    ///         |b| {
-    ///             b.include(recover);
-    ///         },
-    ///     )
-    /// }
-    /// # }
-    /// # fn main() {}
-    /// ```
-    pub fn reclaim_in(key: impl Into<String>, min_idle: Duration) -> Self {
-        RedisStream::reclaim(key, min_idle).with_envelope(Env::default())
-    }
-
-    /// A claiming subscription on `key`, as [`claiming`](RedisStream::claiming), that reads the
-    /// entries through the envelope `Env` instead of the broker's.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # mod demo {
-    /// use std::time::Duration;
-    ///
-    /// use ruststream_fred::stream::prelude::*;
-    /// use serde::Deserialize;
-    ///
-    /// #[derive(Deserialize)]
-    /// struct Order {
-    ///     id: u64,
-    /// }
-    ///
-    /// // Fresh faststream orders and the stale ones of the group, in one read (Redis 8.4).
-    /// #[subscriber(
-    ///     RedisStream::<FastStream>::claiming_in("orders", Duration::from_secs(30))
-    ///         .group("billing")
-    /// )]
-    /// async fn bill(order: &Order) -> HandlerOutcome {
-    ///     tracing::info!(order.id, "billed");
-    ///     HandlerOutcome::ack()
-    /// }
-    ///
-    /// #[ruststream::app]
-    /// fn app() -> impl App {
-    ///     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(
-    ///         RedisBroker::standalone("redis://localhost:6379"),
-    ///         |b| {
-    ///             b.include(bill);
-    ///         },
-    ///     )
-    /// }
-    /// # }
-    /// # fn main() {}
-    /// ```
-    pub fn claiming_in(key: impl Into<String>, min_idle: Duration) -> Self {
-        RedisStream::claiming(key, min_idle).with_envelope(Env::default())
-    }
-}
-
 impl<Env> RedisStream<Env> {
-    /// The same descriptor reading through `envelope`.
-    fn with_envelope<Other: Envelope>(self, envelope: Other) -> RedisStream<Other> {
+    /// Reads through `envelope` instead of the broker's: how a message's headers sit beside its
+    /// payload. The publishers that write the same name use the same envelope.
+    ///
+    /// The manual path names the envelope here. Under `#[subscriber(..)]` the descriptor's type is
+    /// fixed by its constructor, so the mount site names it instead, with
+    /// [`RedisEnvelopeExt::envelope`](crate::RedisEnvelopeExt::envelope).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # mod demo {
+    /// use std::future::{Future, ready};
+    ///
+    /// use ruststream::schemars::{self, JsonSchema};
+    /// use ruststream_fred::prelude::*;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize, JsonSchema)]
+    /// struct Audit {
+    ///     id: u64,
+    /// }
+    ///
+    /// /// Logs every audit record.
+    /// struct Log;
+    ///
+    /// impl Handle<Audit> for Log {
+    ///     fn handle(
+    ///         &self,
+    ///         audit: &Audit,
+    ///         _outs: &(),
+    ///         _ctx: &mut Context<'_>,
+    ///     ) -> impl Future<Output = Result<(), HandlerOutcome>> {
+    ///         tracing::info!(audit.id, "audit");
+    ///         ready(Ok(()))
+    ///     }
+    /// }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     RustStream::new(AppInfo::new("audit", "0.1.0")).with_broker(
+    ///         RedisBroker::standalone("redis://localhost:6379"),
+    ///         |b| {
+    ///             // A faststream service writes these.
+    ///             let source = RedisStream::new("audit").group("audit").envelope(FastStream);
+    ///             b.include(subscriber(source, Log).build());
+    ///         },
+    ///     )
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
+    pub fn envelope<Other: Envelope>(self, envelope: Other) -> RedisStream<Other> {
         RedisStream {
             key: self.key,
             group: self.group,

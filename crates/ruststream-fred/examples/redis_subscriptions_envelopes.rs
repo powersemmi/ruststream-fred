@@ -67,7 +67,7 @@ async fn dispatch(order: &Order, Out(jobs): Out<impl Publisher, Jobs>) -> Handle
 }
 
 /// Runs each job for the tenant its header names; the list holds JSON documents.
-#[subscriber(RedisList::<Framed<JsonCodec>>::new_in("jobs"))]
+#[subscriber(RedisList::new("jobs"))]
 async fn run(job: &Job, ctx: &mut Context<'_>) -> HandlerOutcome {
     let Some(tenant) = ctx.headers().get_str("tenant") else {
         tracing::warn!(job.order, "a job without a tenant is dropped");
@@ -78,7 +78,7 @@ async fn run(job: &Job, ctx: &mut Context<'_>) -> HandlerOutcome {
 }
 
 /// Reads the prices a feed publishes as bare JSON, with no headers.
-#[subscriber(RedisPubSub::<NoOp>::new_in("prices"))]
+#[subscriber(RedisPubSub::new("prices"))]
 async fn on_price(price: &Price) -> HandlerOutcome {
     tracing::info!(price.sku, price.cents, "price");
     HandlerOutcome::ack()
@@ -95,8 +95,8 @@ fn app() -> impl App {
                 RedisListPublish::new().envelope(Framed::new(JsonCodec)),
             )
             .build();
-        b.include(run);
-        b.include(on_price);
+        b.include(run.envelope(Framed::new(JsonCodec)));
+        b.include(on_price.envelope(NoOp));
     })
 }
 // --8<-- [end:envelopes]
@@ -150,7 +150,7 @@ impl Envelope for MetaLine {
 }
 
 /// Reads the legacy system's lines, the tenant from `meta`.
-#[subscriber(RedisList::<MetaLine>::new_in("legacy.jobs"))]
+#[subscriber(RedisList::new("legacy.jobs"))]
 async fn legacy(job: &LegacyJob, ctx: &mut Context<'_>) -> HandlerOutcome {
     let tenant = ctx.headers().get_str("tenant").unwrap_or("unknown");
     tracing::info!(job.order, tenant, "legacy job run");
@@ -161,7 +161,7 @@ fn legacy_app() -> impl App {
     RustStream::new(AppInfo::new("legacy", "0.1.0")).with_broker(
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
-            b.include(legacy);
+            b.include(legacy.envelope(MetaLine));
         },
     )
 }

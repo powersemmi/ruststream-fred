@@ -4,7 +4,7 @@
 //! - [RedisPubSubPattern][pattern]: [`RedisPubSubPattern`], every channel a glob matches.
 //! - [PubSubMode][mode]: [`PubSubMode`], classic or sharded delivery.
 //! - [buffer][buffer]: [`RedisPubSub::buffer`], what a busy subscription holds.
-//! - [Envelopes][envelopes]: [`RedisPubSub::new_in`], how the headers travel beside the
+//! - [Envelopes][envelopes]: [`RedisPubSub::envelope`], how the headers travel beside the
 //!   payload.
 //! - [RedisPubSubPublish][publish]: [`Publish`], `PUBLISH` or `SPUBLISH`.
 //! - [Prelude][prelude]: [`prelude`], everything a Pub/Sub service imports.
@@ -119,8 +119,8 @@ pub mod prelude {
     pub use crate::context::{PipelineContext, PoolContext, PubSubContext, keys};
     pub use crate::pipeline::{Bindable, InRound, RedisPipelineSteps};
     pub use crate::{
-        FastStream, Framed, NoOp, PARTITION_KEY_HEADER, RedisBroker, RedisPublishOptions,
-        RedisPublishSteps, envelope,
+        FastStream, Framed, NoOp, PARTITION_KEY_HEADER, RedisBroker, RedisEnvelopeExt,
+        RedisPublishOptions, RedisPublishSteps, envelope,
     };
 
     #[cfg(any(
@@ -233,49 +233,59 @@ impl RedisPubSub {
     }
 }
 
-impl<Env: Envelope + Default> RedisPubSub<Env> {
-    /// A subscription on the exact `channel` that reads the messages through the envelope `Env`
-    /// instead of the broker's: how a message's headers sit beside its payload. The publishers on
-    /// the channel write the same envelope.
+impl<Env> RedisPubSub<Env> {
+    /// Reads through `envelope` instead of the broker's: how a message's headers sit beside its
+    /// payload. The publishers that write the same name use the same envelope.
     ///
-    /// The envelope is named on the type, which is where `#[subscriber(..)]` reads the
-    /// descriptor's type from.
+    /// The manual path names the envelope here. Under `#[subscriber(..)]` the descriptor's type is
+    /// fixed by its constructor, so the mount site names it instead, with
+    /// [`RedisEnvelopeExt::envelope`](crate::RedisEnvelopeExt::envelope).
     ///
     /// # Examples
     ///
     /// ```
     /// # mod demo {
-    /// use ruststream_fred::pubsub::prelude::*;
-    /// # #[derive(serde::Deserialize)]
-    /// # struct Event { kind: String }
+    /// use std::future::{Future, ready};
     ///
-    /// // A faststream service broadcasts on this channel.
-    /// #[subscriber(RedisPubSub::<FastStream>::new_in("events"))]
-    /// async fn on_event(event: &Event) -> HandlerOutcome {
-    ///     tracing::info!(event.kind, "event");
-    ///     HandlerOutcome::ack()
+    /// use ruststream::schemars::{self, JsonSchema};
+    /// use ruststream_fred::prelude::*;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize, JsonSchema)]
+    /// struct Audit {
+    ///     id: u64,
+    /// }
+    ///
+    /// /// Logs every audit record.
+    /// struct Log;
+    ///
+    /// impl Handle<Audit> for Log {
+    ///     fn handle(
+    ///         &self,
+    ///         audit: &Audit,
+    ///         _outs: &(),
+    ///         _ctx: &mut Context<'_>,
+    ///     ) -> impl Future<Output = Result<(), HandlerOutcome>> {
+    ///         tracing::info!(audit.id, "audit");
+    ///         ready(Ok(()))
+    ///     }
     /// }
     ///
     /// #[ruststream::app]
     /// fn app() -> impl App {
-    ///     RustStream::new(AppInfo::new("events", "0.1.0")).with_broker(
+    ///     RustStream::new(AppInfo::new("audit", "0.1.0")).with_broker(
     ///         RedisBroker::standalone("redis://localhost:6379"),
     ///         |b| {
-    ///             b.include(on_event);
+    ///             // A faststream service writes these.
+    ///             let source = RedisPubSub::new("audit").envelope(FastStream);
+    ///             b.include(subscriber(source, Log).build());
     ///         },
     ///     )
     /// }
     /// # }
     /// # fn main() {}
     /// ```
-    pub fn new_in(channel: impl Into<String>) -> Self {
-        RedisPubSub::new(channel).with_envelope(Env::default())
-    }
-}
-
-impl<Env> RedisPubSub<Env> {
-    /// The same descriptor reading through `envelope`.
-    fn with_envelope<Other: Envelope>(self, envelope: Other) -> RedisPubSub<Other> {
+    pub fn envelope<Other: Envelope>(self, envelope: Other) -> RedisPubSub<Other> {
         RedisPubSub {
             channel: self.channel,
             mode: self.mode,
@@ -461,49 +471,59 @@ impl RedisPubSubPattern {
     }
 }
 
-impl<Env: Envelope + Default> RedisPubSubPattern<Env> {
-    /// A subscription on every channel matching the glob `pattern` that reads the messages through
-    /// the envelope `Env` instead of the broker's. The publishers on the matched channels write the
-    /// same envelope.
+impl<Env> RedisPubSubPattern<Env> {
+    /// Reads through `envelope` instead of the broker's: how a message's headers sit beside its
+    /// payload. The publishers that write the same name use the same envelope.
     ///
-    /// The envelope is named on the type, which is where `#[subscriber(..)]` reads the
-    /// descriptor's type from.
+    /// The manual path names the envelope here. Under `#[subscriber(..)]` the descriptor's type is
+    /// fixed by its constructor, so the mount site names it instead, with
+    /// [`RedisEnvelopeExt::envelope`](crate::RedisEnvelopeExt::envelope).
     ///
     /// # Examples
     ///
     /// ```
     /// # mod demo {
-    /// use ruststream_fred::pubsub::prelude::*;
-    /// # #[derive(serde::Deserialize)]
-    /// # struct Event { kind: String }
+    /// use std::future::{Future, ready};
     ///
-    /// // Other clients publish bare JSON, with no headers, on these channels.
-    /// #[subscriber(RedisPubSubPattern::<NoOp>::new_in("events.*"))]
-    /// async fn on_event(event: &Event) -> HandlerOutcome {
-    ///     tracing::info!(event.kind, "event");
-    ///     HandlerOutcome::ack()
+    /// use ruststream::schemars::{self, JsonSchema};
+    /// use ruststream_fred::prelude::*;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize, JsonSchema)]
+    /// struct Audit {
+    ///     id: u64,
+    /// }
+    ///
+    /// /// Logs every audit record.
+    /// struct Log;
+    ///
+    /// impl Handle<Audit> for Log {
+    ///     fn handle(
+    ///         &self,
+    ///         audit: &Audit,
+    ///         _outs: &(),
+    ///         _ctx: &mut Context<'_>,
+    ///     ) -> impl Future<Output = Result<(), HandlerOutcome>> {
+    ///         tracing::info!(audit.id, "audit");
+    ///         ready(Ok(()))
+    ///     }
     /// }
     ///
     /// #[ruststream::app]
     /// fn app() -> impl App {
-    ///     RustStream::new(AppInfo::new("events", "0.1.0")).with_broker(
+    ///     RustStream::new(AppInfo::new("audit", "0.1.0")).with_broker(
     ///         RedisBroker::standalone("redis://localhost:6379"),
     ///         |b| {
-    ///             b.include(on_event).out_retry(Publish::new()).to("events.retry");
+    ///             // A faststream service writes these.
+    ///             let source = RedisPubSubPattern::new("audit.*").envelope(FastStream);
+    ///             b.include(subscriber(source, Log).build());
     ///         },
     ///     )
     /// }
     /// # }
     /// # fn main() {}
     /// ```
-    pub fn new_in(pattern: impl Into<String>) -> Self {
-        RedisPubSubPattern::new(pattern).with_envelope(Env::default())
-    }
-}
-
-impl<Env> RedisPubSubPattern<Env> {
-    /// The same descriptor reading through `envelope`.
-    fn with_envelope<Other: Envelope>(self, envelope: Other) -> RedisPubSubPattern<Other> {
+    pub fn envelope<Other: Envelope>(self, envelope: Other) -> RedisPubSubPattern<Other> {
         RedisPubSubPattern {
             pattern: self.pattern,
             envelope,

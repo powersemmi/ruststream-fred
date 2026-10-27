@@ -17,9 +17,10 @@ use ruststream::testing::TestApp;
 use ruststream::{Deserialized, HeaderMap, OutSlot, Outgoing, Publisher, Serialized, subscriber};
 use ruststream_fred::context::keys;
 use ruststream_fred::envelope::{self, Envelope, Location, SealError};
+use ruststream_fred::pipeline::RedisPipelineSteps;
 use ruststream_fred::{
-    FastStream, Framed, NoOp, RedisBroker, RedisList, RedisListPublish, RedisPubSub,
-    RedisPublishOptions, RedisPublishSteps, RedisStream,
+    FastStream, Framed, NoOp, RedisBroker, RedisEnvelopeExt, RedisList, RedisListPublish,
+    RedisPubSub, RedisPublishOptions, RedisPublishSteps, RedisStream,
 };
 use serde::{Deserialize, Serialize};
 
@@ -251,7 +252,7 @@ async fn relay(raw: &Raw<'_>, Out(peer): Out<impl Publisher, Peer>) -> HandlerOu
 }
 
 /// Reads `fs.out` with no envelope, as the bytes Redis holds.
-#[subscriber(RedisList::<NoOp>::new_in("fs.out"))]
+#[subscriber(RedisList::new("fs.out"))]
 async fn wire(raw: &Raw<'_>) -> HandlerOutcome {
     tracing::debug!(len = raw.0.len(), "wire");
     HandlerOutcome::ack()
@@ -262,7 +263,7 @@ fn relay_app() -> impl App {
         b.include(relay)
             .out(Peer, RedisListPublish::new().envelope(FastStream))
             .build();
-        b.include(wire);
+        b.include(wire.envelope(NoOp));
     })
 }
 
@@ -514,6 +515,56 @@ async fn headers_are_parsed_only_where_a_handler_reads_them() {
         1,
         "the headers were parsed for a delivery whose handler never read them"
     );
+
+    tb.shutdown().await.expect("shutdown");
+}
+
+#[subscriber(RedisList::new("piped.jobs"))]
+async fn piped(
+    _raw: &Raw<'_>,
+    Headers(headers): Headers<BTreeMap<String, String>>,
+) -> HandlerOutcome {
+    by_tenant(&headers)
+}
+
+/// Stands in for a faststream service writing faststream's frame to `piped.jobs`.
+#[subscriber(RedisList::new("piped.trigger"))]
+async fn piped_producer(_trigger: &Raw<'_>, Ctx(pool): Ctx<keys::FredPool>) -> HandlerOutcome {
+    let pushed: Result<i64, _> = pool.lpush("piped.jobs", FASTSTREAM_FRAME).await;
+    if pushed.is_ok() {
+        HandlerOutcome::ack()
+    } else {
+        HandlerOutcome::drop()
+    }
+}
+
+/// The mount site names the envelope after the window `.pipeline()` opened, and the subscription
+/// reads through it while the broker keeps its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_mount_site_names_the_envelope_through_a_window() {
+    let tb = TestApp::start(RustStream::new(AppInfo::new("piped", "0.1.0")).with_broker(
+        RedisBroker::standalone(URL),
+        |b| {
+            b.include(piped_producer);
+            b.include(piped.pipeline().envelope(FastStream));
+        },
+    ))
+    .await
+    .expect("start");
+
+    tb.broker::<RedisBroker>()
+        .message(&Payload(b"go".to_vec()))
+        .to("piped.trigger")
+        .publish()
+        .await
+        .expect("publish");
+    tb.settle().await.expect("settle");
+
+    tb.broker::<RedisBroker>()
+        .subscriber("piped.jobs")
+        .assert_called_once()
+        .with_raw(ORDER)
+        .settled(HandlerOutcome::ack());
 
     tb.shutdown().await.expect("shutdown");
 }

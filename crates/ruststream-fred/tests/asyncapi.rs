@@ -17,8 +17,9 @@ use ruststream::conformance::harness;
 use ruststream::prelude::*;
 use ruststream::{DescribeServer, SubscriptionSource};
 use ruststream_fred::{
-    ConnectedRedisBroker, FastStream, Framed, PubSubMode, RedisBroker, RedisList, RedisListPublish,
-    RedisPubSub, RedisPubSubPattern, RedisPubSubPublish, RedisPublish, RedisStream,
+    ConnectedRedisBroker, FastStream, Framed, PubSubMode, RedisBroker, RedisEnvelopeExt, RedisList,
+    RedisListPublish, RedisPubSub, RedisPubSubPattern, RedisPubSubPublish, RedisPublish,
+    RedisStream,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -235,7 +236,7 @@ async fn handle_payment(order: &Order) -> Receipt {
     Receipt { id: order.id }
 }
 
-#[subscriber(RedisList::<Framed<JsonCodec>>::new_in("documents"))]
+#[subscriber(RedisList::new("documents"))]
 async fn handle_document(order: &Order) -> HandlerOutcome {
     let _ = order;
     HandlerOutcome::ack()
@@ -249,7 +250,7 @@ fn enveloped_document() -> Value {
         |b| {
             b.include(handle_payment)
                 .out_reply(RedisPubSubPublish::new().envelope(Framed::new(JsonCodec)));
-            b.include(handle_document);
+            b.include(handle_document.envelope(Framed::new(JsonCodec)));
         },
     );
     let json = build_spec(&app).to_json().expect("the document serializes");

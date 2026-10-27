@@ -7,10 +7,11 @@ use super::{Envelope, Location, SealError};
 /// No envelope at all: the value is the payload, as a client that knows nothing of headers writes
 /// and reads it.
 ///
-/// A delivery read through `NoOp` has no headers. A publish through it that carries a header
-/// fails with an error naming the header and the destination, instead of losing the header: a
-/// retry copy the runtime publishes carries its retry count in a header, so a retry through a
-/// `NoOp` policy fails the same way. On a stream the payload is the field `_payload`.
+/// A delivery read through `NoOp` carries none of the message's headers; the headers a stream read
+/// itself reports, the delivery count and the idle time of a claiming read, stay. A publish through
+/// it that carries a header fails with an error naming the header and the destination, instead of
+/// losing the header: a retry copy the runtime publishes carries its retry count in a header, so
+/// a retry through a `NoOp` policy fails the same way. On a stream the payload is the field `_payload`.
 ///
 /// # Examples
 ///
@@ -25,7 +26,7 @@ use super::{Envelope, Location, SealError};
 /// }
 ///
 /// // A sensor gateway `XADD`s bare JSON into `_payload`, with no headers.
-/// #[subscriber(RedisStream::<NoOp>::new_in("readings").group("dashboard"))]
+/// #[subscriber(RedisStream::new("readings").group("dashboard"))]
 /// async fn show(reading: &Reading) -> HandlerOutcome {
 ///     tracing::info!(reading.celsius, "reading");
 ///     HandlerOutcome::ack()
@@ -36,7 +37,7 @@ use super::{Envelope, Location, SealError};
 ///     RustStream::new(AppInfo::new("dashboard", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(show);
+///             b.include(show.envelope(NoOp));
 ///         },
 ///     )
 /// }

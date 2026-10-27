@@ -41,7 +41,7 @@ use super::{Envelope, Location, SealError};
 ///     order: u64,
 /// }
 ///
-/// #[subscriber(RedisList::<Framed<JsonCodec>>::new_in("orders"), reply)]
+/// #[subscriber(RedisList::new("orders"), reply)]
 /// async fn plan(order: &Order) -> Job {
 ///     Job { order: order.id }
 /// }
@@ -52,7 +52,7 @@ use super::{Envelope, Location, SealError};
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
 ///             // The job is pushed as a JSON document a person reads in `redis-cli`.
-///             b.include(plan)
+///             b.include(plan.envelope(Framed::new(JsonCodec)))
 ///                 .out_reply(Publish::new().envelope(Framed::new(JsonCodec)));
 ///         },
 ///     )

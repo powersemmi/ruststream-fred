@@ -23,6 +23,7 @@ mod body;
 mod erased;
 mod fast_stream;
 mod framed;
+mod mount;
 mod noop;
 mod rust_stream;
 
@@ -40,6 +41,7 @@ pub(crate) use erased::Framing;
 pub use fast_stream::FastStream;
 pub(crate) use framed::Content;
 pub use framed::Framed;
+pub use mount::RedisEnvelopeExt;
 pub use noop::NoOp;
 pub use rust_stream::RustStream;
 pub(crate) use rust_stream::unframe_own;
@@ -128,7 +130,7 @@ pub(crate) const PAYLOAD_FIELD: &str = "_payload";
 ///     id: u64,
 /// }
 ///
-/// #[subscriber(RedisList::<MetaLine>::new_in("jobs"))]
+/// #[subscriber(RedisList::new("jobs"))]
 /// async fn run_job(job: &Job) -> HandlerOutcome {
 ///     tracing::info!(job.id, "running");
 ///     HandlerOutcome::ack()
@@ -139,7 +141,7 @@ pub(crate) const PAYLOAD_FIELD: &str = "_payload";
 ///     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(run_job);
+///             b.include(run_job.envelope(MetaLine));
 ///         },
 ///     )
 /// }
@@ -463,8 +465,8 @@ mod sealed {
 ///     id: u64,
 /// }
 ///
-/// // The descriptor's own envelope wins over the broker's.
-/// #[subscriber(RedisList::<NoOp>::new_in("raw-jobs"))]
+/// // The subscription's own envelope wins over the broker's.
+/// #[subscriber(RedisList::new("raw-jobs"))]
 /// async fn run_job(job: &Job) -> HandlerOutcome {
 ///     tracing::info!(job.id, "running");
 ///     HandlerOutcome::ack()
@@ -475,7 +477,7 @@ mod sealed {
 ///     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379").envelope(FastStream),
 ///         |b| {
-///             b.include(run_job);
+///             b.include(run_job.envelope(NoOp));
 ///         },
 ///     )
 /// }

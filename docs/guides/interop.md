@@ -96,7 +96,7 @@ The same document shows readable values in a tool like RedisInsight.
 
 ## Reading a list value or a channel message
 
-A subscription reads the envelope its publisher writes: [`RedisList::new_in`](api:ruststream_fred::list::RedisList::new_in) and [`RedisPubSub::new_in`](api:ruststream_fred::pubsub::RedisPubSub::new_in) name it on the type, as `RedisList::<Framed<JsonCodec>>::new_in("emails")`, and without one the subscription reads the broker's.
+A subscription reads the envelope its publisher writes: the mount site names it with [`RedisEnvelopeExt::envelope`](api:ruststream_fred::RedisEnvelopeExt::envelope), as `b.include(handler.envelope(Framed::new(JsonCodec)))`, and without one the subscription reads the broker's.
 The JSON document is read only in its exact shape: an object with `headers` and `payload` and no other field.
 
 A value that is not the envelope's own, such as one another client pushes or publishes as plain JSON, arrives as the body with no headers, whatever its first bytes are:

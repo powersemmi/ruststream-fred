@@ -71,9 +71,9 @@ pub use crate::pipeline::{Bindable, InRound, RedisPipelineSteps};
 
 pub use crate::{
     DelayedRetry, FastStream, Framed, NoOp, PARTITION_KEY_HEADER, PubSubMode, RedisBroker,
-    RedisGroupPosition, RedisGroupSeeker, RedisList, RedisListPublish, RedisPubSub,
-    RedisPubSubPattern, RedisPubSubPublish, RedisPublish, RedisPublishOptions, RedisPublishSteps,
-    RedisStream, RedisSubscribeExt, StreamStart, envelope,
+    RedisEnvelopeExt, RedisGroupPosition, RedisGroupSeeker, RedisList, RedisListPublish,
+    RedisPubSub, RedisPubSubPattern, RedisPubSubPublish, RedisPublish, RedisPublishOptions,
+    RedisPublishSteps, RedisStream, RedisSubscribeExt, StreamStart, envelope,
 };
 
 // The policies keep their prefixed names here, and there is no bare `Publish`: this glob spans all

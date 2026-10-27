@@ -5,7 +5,7 @@
 //! - [Recovery][recovery]: [`RedisList::recovery_zset`], the watchdog that returns a dead
 //!   consumer's entries.
 //! - [processing][processing]: [`RedisList::processing`], and the hash tag a cluster needs.
-//! - [Envelopes][envelopes]: [`RedisList::new_in`], how the headers travel beside the payload.
+//! - [Envelopes][envelopes]: [`RedisList::envelope`], how the headers travel beside the payload.
 //! - [RedisListPublish][publish]: [`Publish`], `LPUSH` with an optional key expiry.
 //! - [Prelude][prelude]: [`prelude`], everything a list service imports.
 //!
@@ -114,8 +114,8 @@ pub mod prelude {
     pub use crate::context::{PipelineContext, PoolContext, keys};
     pub use crate::pipeline::{Bindable, InRound, RedisPipelineSteps};
     pub use crate::{
-        FastStream, Framed, NoOp, PARTITION_KEY_HEADER, RedisBroker, RedisPublishOptions,
-        RedisPublishSteps, RedisSubscribeExt, envelope,
+        FastStream, Framed, NoOp, PARTITION_KEY_HEADER, RedisBroker, RedisEnvelopeExt,
+        RedisPublishOptions, RedisPublishSteps, RedisSubscribeExt, envelope,
     };
 
     #[cfg(any(
@@ -237,53 +237,59 @@ impl RedisList {
     }
 }
 
-impl<Env: Envelope + Default> RedisList<Env> {
-    /// A simple (at-most-once) `BRPOP` work-queue consumer on `key` that reads the entries through
-    /// the envelope `Env` instead of the broker's: how a message's headers sit beside its payload
-    /// in the list element. The publisher that fills the list writes the same envelope.
+impl<Env> RedisList<Env> {
+    /// Reads through `envelope` instead of the broker's: how a message's headers sit beside its
+    /// payload. The publishers that write the same name use the same envelope.
     ///
-    /// The envelope is named on the type, `RedisList::<FastStream>::new_in(..)`, which is where
-    /// `#[subscriber(..)]` reads the descriptor's type from.
+    /// The manual path names the envelope here. Under `#[subscriber(..)]` the descriptor's type is
+    /// fixed by its constructor, so the mount site names it instead, with
+    /// [`RedisEnvelopeExt::envelope`](crate::RedisEnvelopeExt::envelope).
     ///
     /// # Examples
     ///
     /// ```
     /// # mod demo {
-    /// use ruststream_fred::list::prelude::*;
+    /// use std::future::{Future, ready};
+    ///
+    /// use ruststream::schemars::{self, JsonSchema};
+    /// use ruststream_fred::prelude::*;
     /// use serde::Deserialize;
     ///
-    /// #[derive(Deserialize)]
-    /// struct Job {
+    /// #[derive(Deserialize, JsonSchema)]
+    /// struct Audit {
     ///     id: u64,
     /// }
     ///
-    /// // A faststream service fills this queue.
-    /// #[subscriber(RedisList::<FastStream>::new_in("jobs").reliable())]
-    /// async fn run_job(job: &Job) -> HandlerOutcome {
-    ///     tracing::info!(job.id, "running");
-    ///     HandlerOutcome::ack()
+    /// /// Logs every audit record.
+    /// struct Log;
+    ///
+    /// impl Handle<Audit> for Log {
+    ///     fn handle(
+    ///         &self,
+    ///         audit: &Audit,
+    ///         _outs: &(),
+    ///         _ctx: &mut Context<'_>,
+    ///     ) -> impl Future<Output = Result<(), HandlerOutcome>> {
+    ///         tracing::info!(audit.id, "audit");
+    ///         ready(Ok(()))
+    ///     }
     /// }
     ///
     /// #[ruststream::app]
     /// fn app() -> impl App {
-    ///     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
+    ///     RustStream::new(AppInfo::new("audit", "0.1.0")).with_broker(
     ///         RedisBroker::standalone("redis://localhost:6379"),
     ///         |b| {
-    ///             b.include(run_job);
+    ///             // A faststream service writes these.
+    ///             let source = RedisList::new("audit").envelope(FastStream);
+    ///             b.include(subscriber(source, Log).build());
     ///         },
     ///     )
     /// }
     /// # }
     /// # fn main() {}
     /// ```
-    pub fn new_in(key: impl Into<String>) -> Self {
-        RedisList::new(key).with_envelope(Env::default())
-    }
-}
-
-impl<Env> RedisList<Env> {
-    /// The same descriptor reading through `envelope`.
-    fn with_envelope<Other: Envelope>(self, envelope: Other) -> RedisList<Other> {
+    pub fn envelope<Other: Envelope>(self, envelope: Other) -> RedisList<Other> {
         RedisList {
             key: self.key,
             reliable: self.reliable,

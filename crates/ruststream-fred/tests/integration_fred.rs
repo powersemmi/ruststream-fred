@@ -684,7 +684,7 @@ async fn list_codec_envelope_round_trips_headers() {
         .expect("lpush");
 
     let mut sub = broker
-        .subscribe_list(RedisList::<Framed<JsonCodec>>::new_in(&key))
+        .subscribe_list(RedisList::new(&key).envelope(Framed::new(JsonCodec)))
         .await
         .expect("subscribe list");
     let mut stream = Box::pin(sub.stream());
@@ -766,7 +766,7 @@ async fn list_codec_envelope_round_trips_bytes_that_are_not_text() {
         .expect("lpush");
 
     let mut sub = broker
-        .subscribe_list(RedisList::<Framed<JsonCodec>>::new_in(&key))
+        .subscribe_list(RedisList::new(&key).envelope(Framed::new(JsonCodec)))
         .await
         .expect("subscribe list");
     let mut stream = Box::pin(sub.stream());
@@ -796,7 +796,7 @@ async fn pubsub_codec_envelope_round_trips_bytes_that_are_not_text() {
     let channel = unique_key("pubsub_codec_binary");
 
     let mut sub = broker
-        .subscribe_pubsub(RedisPubSub::<Framed<JsonCodec>>::new_in(&channel))
+        .subscribe_pubsub(RedisPubSub::new(&channel).envelope(Framed::new(JsonCodec)))
         .await
         .expect("subscribe pubsub");
     let publisher =

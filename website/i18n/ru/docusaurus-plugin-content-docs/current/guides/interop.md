@@ -96,7 +96,7 @@ redis-cli RPOP emails
 
 ## Чтение значения списка или сообщения канала
 
-Подписка читает конверт, который пишет её издатель: [`RedisList::new_in`](api:ruststream_fred::list::RedisList::new_in) и [`RedisPubSub::new_in`](api:ruststream_fred::pubsub::RedisPubSub::new_in) задают его в типе, например `RedisList::<Framed<JsonCodec>>::new_in("emails")`, а без него подписка читает конверт брокера.
+Подписка читает конверт, который пишет её издатель: точка монтирования задаёт его через [`RedisEnvelopeExt::envelope`](api:ruststream_fred::RedisEnvelopeExt::envelope), например `b.include(handler.envelope(Framed::new(JsonCodec)))`, а без него подписка читает конверт брокера.
 Документ JSON читается только в точном виде: объект с полями `headers` и `payload` и без других полей.
 
 Значение не своего конверта, например простой JSON, который добавляет или публикует другой клиент, приходит как тело без заголовков, какими бы ни были его первые байты:

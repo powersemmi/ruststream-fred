@@ -55,7 +55,7 @@ const MARKED: usize = 4 + MARKER_HEADER.len();
 /// }
 ///
 /// // The broker reads faststream's frame; this one list keeps the crate's own.
-/// #[subscriber(RedisList::<envelope::RustStream>::new_in("jobs"))]
+/// #[subscriber(RedisList::new("jobs"))]
 /// async fn run_job(job: &Job) -> HandlerOutcome {
 ///     tracing::info!(job.id, "running");
 ///     HandlerOutcome::ack()
@@ -66,7 +66,7 @@ const MARKED: usize = 4 + MARKER_HEADER.len();
 ///     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379").envelope(FastStream),
 ///         |b| {
-///             b.include(run_job);
+///             b.include(run_job.envelope(envelope::RustStream));
 ///         },
 ///     )
 /// }

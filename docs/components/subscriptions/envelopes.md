@@ -14,7 +14,8 @@ An envelope is how a message's headers travel beside its payload; the broker nam
 A list element and a channel message are one value, and a stream entry is a map of fields.
 An envelope is the layout of the headers and the payload in them.
 [`RedisBroker::envelope`](api:ruststream_fred::RedisBroker::envelope) sets the broker's envelope, and every subscription and publish policy uses it unless it names its own.
-A descriptor names its own on the type: `RedisList::<FastStream>::new_in("jobs")`, and `new_in`, `reclaim_in` and `claiming_in` on `RedisStream`.
+A subscription names its own at the mount site with [`RedisEnvelopeExt::envelope`](api:ruststream_fred::RedisEnvelopeExt::envelope): `b.include(handler.envelope(FastStream))`.
+On the manual path the descriptor names it: `RedisList::new("jobs").envelope(FastStream)`.
 A publish policy names its own with `envelope(..)`: `RedisListPublish::new().envelope(FastStream)`.
 The envelope is a type, so the choice costs nothing per message.
 A delivery finds its payload without reading the headers, and reads them the first time a handler asks.
@@ -39,7 +40,8 @@ A payload that only looks like an envelope is written so that it reads back unch
 A subscription and the publishers that write its name use one envelope.
 Two subscriptions that read one name through different envelopes stop the service at startup.
 
-`NoOp` has no room for headers.
+`NoOp` has no room for headers, so a delivery read through it carries none of the message's.
+The headers a stream read itself reports, the delivery count and the idle time of a claiming read, stay.
 A publish through it that carries a header fails, and the error names the header and the destination.
 A retry copy the runtime publishes carries its retry count in a header, so a retry through `NoOp` fails the same way.
 

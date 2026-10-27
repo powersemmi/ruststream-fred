@@ -172,9 +172,9 @@ fn app() -> impl App {
                 RedisListPublish::new().envelope(Framed::new(JsonCodec)),
             )
             .build();
-        let jobs = RedisList::<Framed<JsonCodec>>::new_in("jobs");
+        let jobs = RedisList::new("jobs").envelope(Framed::new(JsonCodec));
         b.include(subscriber(jobs, Run).build());
-        let prices = RedisPubSub::<NoOp>::new_in("prices");
+        let prices = RedisPubSub::new("prices").envelope(NoOp);
         b.include(subscriber(prices, OnPrice).build());
     })
 }
@@ -248,7 +248,7 @@ fn legacy_app() -> impl App {
     RustStream::new(AppInfo::new("legacy", "0.1.0")).with_broker(
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
-            let jobs = RedisList::<MetaLine>::new_in("legacy.jobs");
+            let jobs = RedisList::new("legacy.jobs").envelope(MetaLine);
             b.include(subscriber(jobs, Legacy).build());
         },
     )
