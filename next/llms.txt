@@ -1,0 +1,124 @@
+# ruststream-fred
+
+> `ruststream-fred` is the Redis and Valkey broker crate for RustStream, a Rust framework for services that subscribe to message brokers and publish to them. Over the `fred` client it serves three transports: Redis Streams read through a consumer group, lists as a competing-consumers work queue, and Pub/Sub channels and patterns, on standalone, cluster and sentinel topologies.
+
+A subscription is a descriptor: `RedisStream`, `RedisList` (or `RedisList::reliable`), `RedisPubSub` or `RedisPubSubPattern`; a bare `#[subscriber("key")]` opens a consumer group over that stream key. A service on one transport imports that form's prelude (`ruststream_fred::stream::prelude::*`, `list::prelude` or `pubsub::prelude`), which offers its policy as `Publish` (`RedisPublish`, `RedisListPublish`, `RedisPubSubPublish`); a file mixing forms imports `ruststream_fred::prelude::*`. The partition key of one publish is its per-message setting. Three `cargo generate` templates (`redis-stream`, `redis-pubsub`, `redis-list`) scaffold a service.
+
+This site holds the guides, one page per component and the architecture of the crate; the API reference is on docs.rs, whose crate overview maps each module to its pages here, and the framework itself is documented on the RustStream site.
+
+## Guides
+
+- [Guides](https://powersemmi.github.io/ruststream-fred/latest/): building a Redis or Valkey service with the crate, from a first subscriber to production
+- [Getting started](https://powersemmi.github.io/ruststream-fred/latest/guides/getting-started/): installation, a local Redis, a first stream subscriber against it and its test without a server
+- [Choosing a transport](https://powersemmi.github.io/ruststream-fred/latest/guides/choosing-a-transport/): streams, lists and Pub/Sub side by side: durability, sharing, settlement and a service that mixes them
+- [Consumer groups and crash recovery](https://powersemmi.github.io/ruststream-fred/latest/guides/consumer-groups/): groups and consumers, the pending entries list, `reclaim` and `claiming`, and per-key order
+- [Work queues on lists](https://powersemmi.github.io/ruststream-fred/latest/guides/work-queues/): the simple and the reliable list, recovering a dead consumer's entry, hash tags and expiry
+- [Retries, delays and dead letters](https://powersemmi.github.io/ruststream-fred/latest/guides/retries/): a retry now or later, the three ways to serve a delay, the attempt cap and the dead-letter destination
+- [Fan-out with Pub/Sub](https://powersemmi.github.io/ruststream-fred/latest/guides/fan-out/): channels and patterns, slow subscribers and the buffer, sharded channels on a cluster
+- [Side effects with the acknowledgement](https://powersemmi.github.io/ruststream-fred/latest/guides/pipelining/): `.pipeline()` sends a handler's Redis commands with its settle in one round trip, `.atomic()` in one transaction
+- [Transactions](https://powersemmi.github.io/ruststream-fred/latest/guides/transactions/): publishes sent as one `MULTI` / `EXEC` block, borrowed for a batch's replies and owned in a hook
+- [Replay and seeking](https://powersemmi.github.io/ruststream-fred/latest/guides/replay/): reading a stream again from the start, skipping to the tail, and seeking from a handler
+- [Redis Cluster](https://powersemmi.github.io/ruststream-fred/latest/guides/cluster/): hash slots and hash tags, the three transports on a cluster, and atomic windows
+- [Running in production](https://powersemmi.github.io/ruststream-fred/latest/guides/production/): ACL users, TLS, rotating credentials, sentinel, the pool, reconnection and what the document shows
+- [Testing a Redis service](https://powersemmi.github.io/ruststream-fred/latest/guides/testing/): `TestApp` on the production app with an in-process Redis, the test clock, and the same test against a server
+- [Interoperating with other clients](https://powersemmi.github.io/ruststream-fred/latest/guides/interop/): the entry layout, the frames other producers and consumers read and write, and faststream's frame
+
+## Components
+
+- [Components](https://powersemmi.github.io/ruststream-fred/latest/components/): the parts of the crate a Redis service uses, one page each
+- [RedisBroker](https://powersemmi.github.io/ruststream-fred/latest/components/broker/): RedisBroker connects a service to Redis or Valkey; standalone only records the URL, and the runtime connects it at startup
+- [Cluster](https://powersemmi.github.io/ruststream-fred/latest/components/broker/cluster/): RedisBroker::cluster takes seed nodes, of which one reachable node is enough; the client discovers the rest of the cluster
+- [Sentinel](https://powersemmi.github.io/ruststream-fred/latest/components/broker/sentinel/): RedisBroker::sentinel names the monitored primary and the sentinels that watch it; the client finds the primary through them
+- [from_pool](https://powersemmi.github.io/ruststream-fred/latest/components/broker/from-pool/): from_pool wraps a fred Pool the service built itself, for client settings the broker's own builders do not reach
+- [Pool](https://powersemmi.github.io/ruststream-fred/latest/components/broker/pool/): pool sets how many connections publishes, settlements and handler commands share; each subscription reads on a connection of its own
+- [default_group](https://powersemmi.github.io/ruststream-fred/latest/components/broker/default-group/): default_group names the consumer group a bare #[subscriber("key")] reads through; without it such a subscription refuses to start
+- [Authentication](https://powersemmi.github.io/ruststream-fred/latest/components/broker/authentication/): credentials sets an ACL user and its password on every topology; password is the legacy AUTH with a password and no user
+- [TLS](https://powersemmi.github.io/ruststream-fred/latest/components/broker/tls/): tls takes a TlsConnector or TlsConfig on any topology; a rediss or valkeys URL switches TLS on for a standalone server
+- [sentinel_credentials](https://powersemmi.github.io/ruststream-fred/latest/components/broker/sentinel-credentials/): sentinel_credentials and sentinel_password log in to the sentinels with a pair of their own, apart from the data nodes
+- [credential_provider](https://powersemmi.github.io/ruststream-fred/latest/components/broker/credential-provider/): credential_provider supplies the user and password on each AUTH or HELLO, so a rotated password reaches a running service
+- [Shutdown](https://powersemmi.github.io/ruststream-fred/latest/components/broker/shutdown/): shutdown unblocks every read and closes every connection; a publisher used afterwards gets RedisError::ShutDown at once
+- [Errors](https://powersemmi.github.io/ruststream-fred/latest/components/broker/errors/): RedisError is the one error type of the crate: connect, publish, subscribe, stream reads, shutdown, transactions and refused options
+- [Prelude](https://powersemmi.github.io/ruststream-fred/latest/components/broker/prelude/): each form has a prelude with its policy under the name Publish; ruststream_fred::prelude serves a file that mixes forms
+- [Subscriptions](https://powersemmi.github.io/ruststream-fred/latest/components/subscriptions/): a key in #[subscriber] reads that stream through the broker's default group; a descriptor names the form and its settings
+- [block](https://powersemmi.github.io/ruststream-fred/latest/components/subscriptions/block/): block sets how long one read waits on the server: the XREADGROUP BLOCK on a stream, the BRPOP or BLMOVE timeout on a list
+- [Batches](https://powersemmi.github.io/ruststream-fred/latest/components/subscriptions/batches/): a slice handler reads one XREADGROUP COUNT on a stream; a list or a channel builds its batch on the client up to the same size
+- [Envelopes](https://powersemmi.github.io/ruststream-fred/latest/components/subscriptions/envelopes/): an envelope is how a message's headers travel beside its payload; the broker names one, and a descriptor or a publish policy names its own
+- [RedisStream](https://powersemmi.github.io/ruststream-fred/latest/components/streams/): RedisStream::new reads fresh entries off a stream through a consumer group, and each ack is an XACK
+- [reclaim](https://powersemmi.github.io/ruststream-fred/latest/components/streams/reclaim/): reclaim reads only entries another consumer of the group fetched and never acked, idle at least min_idle, with XAUTOCLAIM
+- [claiming](https://powersemmi.github.io/ruststream-fred/latest/components/streams/claiming/): claiming reads pending entries idle at least min_idle and the fresh tail in one XREADGROUP CLAIM call; it needs Redis 8.4
+- [StreamStart](https://powersemmi.github.io/ruststream-fred/latest/components/streams/stream-start/): StreamStart says where a consumer group starts when the subscription creates it: the beginning, the end, or after an id
+- [RedisGroupPosition](https://powersemmi.github.io/ruststream-fred/latest/components/positions/): RedisGroupPosition names where a consumer group resumes: the oldest retained entry, the tail, or the entry after an id
+- [start_at](https://powersemmi.github.io/ruststream-fred/latest/components/positions/start-at/): start_at moves the group to a position before the first delivery, on every startup; the whole group moves, not one consumer
+- [Seek](https://powersemmi.github.io/ruststream-fred/latest/components/positions/seek/): a handler moves its group's cursor through the SeekHandle key; a delivery's Position key seeks back to that delivery
+- [EntryId](https://powersemmi.github.io/ruststream-fred/latest/components/positions/entry-id/): EntryId is a stream entry's milliseconds-sequence id; the EntryId key binds the id a delivery was read at
+- [Lists](https://powersemmi.github.io/ruststream-fred/latest/components/lists/): RedisList is a work queue: each entry goes to one consumer, and the simple form pops it with BRPOP and settles nothing
+- [reliable](https://powersemmi.github.io/ruststream-fred/latest/components/lists/reliable/): reliable moves each entry to a processing list and removes it on ack, which makes the queue at-least-once
+- [Recovery](https://powersemmi.github.io/ruststream-fred/latest/components/lists/recovery/): recovery_zset starts a watchdog that returns entries a dead consumer left on its processing list, once idle min_idle
+- [processing](https://powersemmi.github.io/ruststream-fred/latest/components/lists/processing/): processing names the list an entry waits on while handled; on a cluster both keys share one hash tag, or the subscription refuses to start
+- [PubSub](https://powersemmi.github.io/ruststream-fred/latest/components/pubsub/): RedisPubSub reads one channel; a message reaches only the subscribers connected when it is published, and nothing is settled
+- [RedisPubSubPattern](https://powersemmi.github.io/ruststream-fred/latest/components/pubsub/pattern/): RedisPubSubPattern reads every channel a glob matches; a retry copy needs a destination named at the mount site
+- [PubSubMode](https://powersemmi.github.io/ruststream-fred/latest/components/pubsub/pubsub-mode/): PubSubMode picks classic SUBSCRIBE and PUBLISH, broadcast to every node, or sharded SSUBSCRIBE and SPUBLISH, local to a slot
+- [buffer](https://powersemmi.github.io/ruststream-fred/latest/components/pubsub/buffer/): buffer sets how many messages a channel subscription holds while its handler is busy; past it the oldest is lost with a warning
+- [Acknowledgement](https://powersemmi.github.io/ruststream-fred/latest/components/acknowledgement/): what ack and nack do on each form: XACK on a stream, LREM on a reliable list, nothing on a simple list or a channel
+- [retry_after](https://powersemmi.github.io/ruststream-fred/latest/components/acknowledgement/retry-after/): retry_after on a plain stream makes the runtime republish a copy after the delay, which a crash before the timer loses
+- [DelayedRetry](https://powersemmi.github.io/ruststream-fred/latest/components/acknowledgement/delayed-retry/): DelayedRetry::DurableZset parks a delayed delivery in a sorted set, so the retry survives a crash and fires at its due time
+- [dead_letter](https://powersemmi.github.io/ruststream-fred/latest/components/acknowledgement/dead-letter/): max_attempts caps deliveries and dead_letter names where a spent message goes, written with its own form's command
+- [Counts](https://powersemmi.github.io/ruststream-fred/latest/components/acknowledgement/counts/): the claiming modes report Redis's delivery count and idle time as headers, and a cap reads that count
+- [out_retry](https://powersemmi.github.io/ruststream-fred/latest/components/acknowledgement/out-retry/): each descriptor names where a retry copy goes; a pattern names none, so its registration names the channel with out_retry
+- [StreamContext](https://powersemmi.github.io/ruststream-fred/latest/components/context/): StreamContext gives a stream handler the entry id, the position that redelivers it, the consumer group and the group's seek handle
+- [ConsumerGroup](https://powersemmi.github.io/ruststream-fred/latest/components/context/consumer-group/): Ctx<keys::ConsumerGroup> binds the consumer group a stream subscription reads through, on a single delivery or a batch
+- [FredPool](https://powersemmi.github.io/ruststream-fred/latest/components/context/fred-pool/): Ctx<keys::FredPool> hands a handler the broker's fred connection pool on every form, for a command whose answer it needs now
+- [StreamBatchContext](https://powersemmi.github.io/ruststream-fred/latest/components/context/batch-context/): a stream batch handler's context carries only the consumer group and the seek handle, which belong to the whole subscription
+- [PubSubContext](https://powersemmi.github.io/ruststream-fred/latest/components/context/pubsub-context/): PubSubContext gives a channel handler the channel a message arrived on and whether a pattern matched it
+- [pipeline](https://powersemmi.github.io/ruststream-fred/latest/components/pipelining/): .pipeline() settles a subscription in a window, and a handler queues its own Redis commands to leave with its acknowledgement
+- [atomic](https://powersemmi.github.io/ruststream-fred/latest/components/pipelining/atomic/): .atomic() after .pipeline() wraps each delivery's commands and settle in MULTI and EXEC, so they apply together or not at all
+- [Commands](https://powersemmi.github.io/ruststream-fred/latest/components/pipelining/commands/): RedisPipeline queues fred's commands, Lua through eval and evalsha, and any other command through custom; a reply is not read back
+- [bind](https://powersemmi.github.io/ruststream-fred/latest/components/pipelining/bind/): pipeline.bind(out) makes a slot's publishes join the delivery's round, so they leave only if the delivery is acknowledged
+- [InRound](https://powersemmi.github.io/ruststream-fred/latest/components/pipelining/in-round/): the InRound transform on the reply position puts a handler's reply into its delivery's round, after the commands it queued
+- [Flush](https://powersemmi.github.io/ruststream-fred/latest/components/pipelining/flush/): a window flushes when the read's COUNT has settled, when nothing is outstanding, or when the subscription stops
+- [RedisPublish](https://powersemmi.github.io/ruststream-fred/latest/components/publishing/): RedisPublish, Publish in the stream prelude, appends each message to a stream with XADD
+- [RedisDefaultPublish](https://powersemmi.github.io/ruststream-fred/latest/components/publishing/default/): a reply with no named policy writes each name the way this service reads it, and XADDs a name it does not read
+- [RedisPubSubPublish](https://powersemmi.github.io/ruststream-fred/latest/components/publishing/pubsub-publish/): RedisPubSubPublish, Publish in the Pub/Sub prelude, sends with PUBLISH or SPUBLISH in the envelope it names
+- [RedisListPublish](https://powersemmi.github.io/ruststream-fred/latest/components/publishing/list-publish/): RedisListPublish, Publish in the list prelude, pushes with LPUSH and can re-arm a key expiry at every publish
+- [partition_key](https://powersemmi.github.io/ruststream-fred/latest/components/publishing/partition-key/): partition_key keys one message, so workers(n, by_key) on the consuming side keeps the order of messages sharing that key
+- [Transactions](https://powersemmi.github.io/ruststream-fred/latest/components/transactions/): a stream publisher sends a group of publishes as one MULTI and EXEC block; a batch's replies commit together with .transactional()
+- [transaction](https://powersemmi.github.io/ruststream-fred/latest/components/transactions/transaction/): transaction hands back a value that owns its buffer, so several can be open at once and a double commit does not compile
+- [owned_transaction](https://powersemmi.github.io/ruststream-fred/latest/components/transactions/owned-transaction/): owned_transaction is the same buffer over values, encoding each one with the default codec
+- [AsyncAPI](https://powersemmi.github.io/ruststream-fred/latest/components/asyncapi/): with asyncapi the generated document carries an x-ruststream-redis extension that says which structure carries a channel and how
+- [Server](https://powersemmi.github.io/ruststream-fred/latest/components/asyncapi/server/): the server reports the host and port a client dials, with the scheme, credentials, database and query stripped
+- [Channels](https://powersemmi.github.io/ruststream-fred/latest/components/asyncapi/channels/): a stream channel reports its group, consumer, read mode and idle threshold; a list its acknowledgement; a channel its mode
+- [Operations](https://powersemmi.github.io/ruststream-fred/latest/components/asyncapi/operations/): a channel a service publishes to reports where the publish lands, a key or a channel, with its delivery mode, expiry and envelope
+- [Testing](https://powersemmi.github.io/ruststream-fred/latest/components/testing/): TestApp::start runs the service's app on RedisBroker connected to a Redis modelled in process, groups, lists and channels included
+- [Live](https://powersemmi.github.io/ruststream-fred/latest/components/testing/live/): TestApp::start_live runs the same test body against a Redis server, for scripts, failover, authentication and TLS
+
+## Architecture
+
+- [Architecture](https://powersemmi.github.io/ruststream-fred/latest/architecture/): how Redis delivers messages, where the crate sits between Redis and the RustStream runtime, and what that costs
+- [Transports](https://powersemmi.github.io/ruststream-fred/latest/architecture/redis/): Redis carries messages three ways: a stream keeps entries for consumer groups, a list hands each entry to one consumer, a channel keeps nothing
+- [Groups](https://powersemmi.github.io/ruststream-fred/latest/architecture/redis/groups/): a consumer group reads a stream with one cursor and keeps every entry it delivered and nobody acknowledged in its pending entries list
+- [Queues](https://powersemmi.github.io/ruststream-fred/latest/architecture/redis/queues/): a reliable list moves each entry to a processing list before the handler runs, and removes it from there when the handler settles
+- [Broadcast](https://powersemmi.github.io/ruststream-fred/latest/architecture/redis/broadcast/): Redis Pub/Sub pushes a message to the subscriptions connected when it is published, and keeps nothing for anyone else
+- [Design](https://powersemmi.github.io/ruststream-fred/latest/architecture/design/): where ruststream-fred sits: between the RustStream runtime and the fred client, a client of its own per subscription, one shared pool
+- [Path](https://powersemmi.github.io/ruststream-fred/latest/architecture/path/): the way of one stream entry through a RustStream service: the append, the group read, the delivery, the handler, the reply and the XACK
+- [Lifecycle](https://powersemmi.github.io/ruststream-fred/latest/architecture/lifecycle/): RedisBroker records configuration, connect opens the pool, each subscription opens a client of its own, and shutdown unblocks and closes them
+- [Settlement](https://powersemmi.github.io/ruststream-fred/latest/architecture/settlement/): what ack, retry, drop and retry_after become on a Redis stream, a reliable list, a simple list and Pub/Sub
+- [Window](https://powersemmi.github.io/ruststream-fred/latest/architecture/window/): a pipelined subscription settles in a window: the deliveries of a read queue their side effects, and one flush sends them with the settles
+- [Benchmarks](https://powersemmi.github.io/ruststream-fred/latest/architecture/benchmarks/): what ruststream-fred costs on every message: throughput against the raw fred client, and instructions and allocations of its code
+- [Benchmarks: Numbers](https://powersemmi.github.io/ruststream-fred/latest/architecture/benchmarks/numbers/): what the benchmark numbers of ruststream-fred measure, and what they do not allow you to conclude
+- [Benchmarks: Methodology](https://powersemmi.github.io/ruststream-fred/latest/architecture/benchmarks/methodology/): how ruststream-fred measures itself: the three loops, the run on a real Redis server, the broker-bound arithmetic and the code count
+
+## Module overviews on docs.rs
+
+- [Crate overview](https://docs.rs/ruststream-fred/latest/ruststream_fred/index.html): a service, the reading order, and every component of the crate linked to its page here
+- [stream](https://docs.rs/ruststream-fred/latest/ruststream_fred/stream/index.html): Redis Streams: the `RedisStream` descriptor, its read modes and the stream prelude
+- [list](https://docs.rs/ruststream-fred/latest/ruststream_fred/list/index.html): lists: the `RedisList` descriptor, the reliable form, recovery and the list prelude
+- [pubsub](https://docs.rs/ruststream-fred/latest/ruststream_fred/pubsub/index.html): Pub/Sub: channels, patterns, delivery modes and the Pub/Sub prelude
+- [pipeline](https://docs.rs/ruststream-fred/latest/ruststream_fred/pipeline/index.html): the consumer window: `.pipeline()`, `.atomic()`, queued commands and replies in the round
+- [context](https://docs.rs/ruststream-fred/latest/ruststream_fred/context/index.html): the per-delivery and per-batch context types and their keys
+- [prelude](https://docs.rs/ruststream-fred/latest/ruststream_fred/prelude/index.html): the prelude of a file that mixes the three forms
+
+## Optional
+
+- [API reference](https://docs.rs/ruststream-fred): the full rustdoc of the crate
+- [RustStream llms.txt](https://powersemmi.github.io/ruststream/llms.txt): the index of the framework's own documentation
+- [Source](https://github.com/powersemmi/ruststream-fred): the crate's repository and its templates
