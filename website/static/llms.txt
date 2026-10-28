@@ -21,7 +21,7 @@ This site holds the guides, one page per component and the architecture of the c
 - [Redis Cluster](https://powersemmi.github.io/ruststream-fred/latest/guides/cluster/): hash slots and hash tags, the three transports on a cluster, and atomic windows
 - [Running in production](https://powersemmi.github.io/ruststream-fred/latest/guides/production/): ACL users, TLS, rotating credentials, sentinel, the pool, reconnection and what the document shows
 - [Testing a Redis service](https://powersemmi.github.io/ruststream-fred/latest/guides/testing/): `TestApp` on the production app with an in-process Redis, the test clock, and the same test against a server
-- [Interoperating with other clients](https://powersemmi.github.io/ruststream-fred/latest/guides/interop/): the entry layout and the frame other producers and consumers read and write
+- [Interoperating with other clients](https://powersemmi.github.io/ruststream-fred/latest/guides/interop/): the entry layout, the frames other producers and consumers read and write, and faststream's frame
 
 ## Components
 
@@ -42,7 +42,7 @@ This site holds the guides, one page per component and the architecture of the c
 - [Subscriptions](https://powersemmi.github.io/ruststream-fred/latest/components/subscriptions/): a key in #[subscriber] reads that stream through the broker's default group; a descriptor names the form and its settings
 - [block](https://powersemmi.github.io/ruststream-fred/latest/components/subscriptions/block/): block sets how long one read waits on the server: the XREADGROUP BLOCK on a stream, the BRPOP or BLMOVE timeout on a list
 - [Batches](https://powersemmi.github.io/ruststream-fred/latest/components/subscriptions/batches/): a slice handler reads one XREADGROUP COUNT on a stream; a list or a channel builds its batch on the client up to the same size
-- [Framing](https://powersemmi.github.io/ruststream-fred/latest/components/subscriptions/framing/): a list entry or a channel message carries its headers in a binary frame, or in a readable envelope when both ends set one codec
+- [Envelopes](https://powersemmi.github.io/ruststream-fred/latest/components/subscriptions/envelopes/): an envelope is how a message's headers travel beside its payload; the broker names one, and a descriptor or a publish policy names its own
 - [RedisStream](https://powersemmi.github.io/ruststream-fred/latest/components/streams/): RedisStream::new reads fresh entries off a stream through a consumer group, and each ack is an XACK
 - [reclaim](https://powersemmi.github.io/ruststream-fred/latest/components/streams/reclaim/): reclaim reads only entries another consumer of the group fetched and never acked, idle at least min_idle, with XAUTOCLAIM
 - [claiming](https://powersemmi.github.io/ruststream-fred/latest/components/streams/claiming/): claiming reads pending entries idle at least min_idle and the fresh tail in one XREADGROUP CLAIM call; it needs Redis 8.4
@@ -78,7 +78,7 @@ This site holds the guides, one page per component and the architecture of the c
 - [Flush](https://powersemmi.github.io/ruststream-fred/latest/components/pipelining/flush/): a window flushes when the read's COUNT has settled, when nothing is outstanding, or when the subscription stops
 - [RedisPublish](https://powersemmi.github.io/ruststream-fred/latest/components/publishing/): RedisPublish, Publish in the stream prelude, appends each message to a stream with XADD
 - [RedisDefaultPublish](https://powersemmi.github.io/ruststream-fred/latest/components/publishing/default/): a reply with no named policy writes each name the way this service reads it, and XADDs a name it does not read
-- [RedisPubSubPublish](https://powersemmi.github.io/ruststream-fred/latest/components/publishing/pubsub-publish/): RedisPubSubPublish, Publish in the Pub/Sub prelude, sends with PUBLISH or SPUBLISH in the framing its codec sets
+- [RedisPubSubPublish](https://powersemmi.github.io/ruststream-fred/latest/components/publishing/pubsub-publish/): RedisPubSubPublish, Publish in the Pub/Sub prelude, sends with PUBLISH or SPUBLISH in the envelope it names
 - [RedisListPublish](https://powersemmi.github.io/ruststream-fred/latest/components/publishing/list-publish/): RedisListPublish, Publish in the list prelude, pushes with LPUSH and can re-arm a key expiry at every publish
 - [partition_key](https://powersemmi.github.io/ruststream-fred/latest/components/publishing/partition-key/): partition_key keys one message, so workers(n, by_key) on the consuming side keeps the order of messages sharing that key
 - [Transactions](https://powersemmi.github.io/ruststream-fred/latest/components/transactions/): a stream publisher sends a group of publishes as one MULTI and EXEC block; a batch's replies commit together with .transactional()
@@ -87,7 +87,7 @@ This site holds the guides, one page per component and the architecture of the c
 - [AsyncAPI](https://powersemmi.github.io/ruststream-fred/latest/components/asyncapi/): with asyncapi the generated document carries an x-ruststream-redis extension that says which structure carries a channel and how
 - [Server](https://powersemmi.github.io/ruststream-fred/latest/components/asyncapi/server/): the server reports the host and port a client dials, with the scheme, credentials, database and query stripped
 - [Channels](https://powersemmi.github.io/ruststream-fred/latest/components/asyncapi/channels/): a stream channel reports its group, consumer, read mode and idle threshold; a list its acknowledgement; a channel its mode
-- [Operations](https://powersemmi.github.io/ruststream-fred/latest/components/asyncapi/operations/): a channel a service publishes to reports where the publish lands, a key or a channel, with its delivery mode, expiry and framing
+- [Operations](https://powersemmi.github.io/ruststream-fred/latest/components/asyncapi/operations/): a channel a service publishes to reports where the publish lands, a key or a channel, with its delivery mode, expiry and envelope
 - [Testing](https://powersemmi.github.io/ruststream-fred/latest/components/testing/): TestApp::start runs the service's app on RedisBroker connected to a Redis modelled in process, groups, lists and channels included
 - [Live](https://powersemmi.github.io/ruststream-fred/latest/components/testing/live/): TestApp::start_live runs the same test body against a Redis server, for scripts, failover, authentication and TLS
 

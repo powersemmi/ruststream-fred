@@ -50,7 +50,7 @@ fn service(broker: RedisBroker) -> impl App<State = ()> {
     RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(broker, |b| {
         // The envelope in JSON: a value the mailer reads with any JSON parser.
         b.include(take_order)
-            .out_reply(list::Publish::default().codec(JsonCodec));
+            .out_reply(list::Publish::default().envelope(Framed::new(JsonCodec)));
     })
 }
 // --8<-- [end:write]
@@ -72,9 +72,9 @@ mod tests {
 
     use super::{Order, app, live, service};
 
-    /// The mailer's value: the envelope, with the email as JSON text in `payload`.
+    /// The mailer's value: the document, with the email embedded as the JSON value in `payload`.
     const EMAIL: &[u8] =
-        br#"{"headers":{},"payload":"{\"to\":\"ann@example.com\",\"subject\":\"Order 1 received\"}"}"#;
+        br#"{"headers":{},"payload":{"to":"ann@example.com","subject":"Order 1 received"}}"#;
 
     fn order() -> Order {
         Order {

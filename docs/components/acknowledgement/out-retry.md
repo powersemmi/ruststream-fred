@@ -14,7 +14,7 @@ Each descriptor names where a retry copy goes; a pattern names none, so its regi
 The runtime publishes a copy for a [`retry_after`](./retry-after.md), for a retry under a [cap](./dead-letter.md), and for a dead letter.
 A stream, a list and a channel subscription each answer with their own key or channel, so the copy reaches the same subscription again.
 A copy leaves through [`RedisDefaultPublish`](api:ruststream_fred::RedisDefaultPublish) unless the registration names another policy.
-That publisher writes a name the way the service reads it: `XADD` to a stream, `LPUSH` to a list in its framing, `PUBLISH` to a channel in its mode and framing.
+That publisher writes a name the way the service reads it: `XADD` to a stream, `LPUSH` to a list, `PUBLISH` to a channel in its mode, each in the envelope the subscription reads.
 `.out_retry(policy)` replaces the policy, and `.transform(..)` after it changes each copy on its way out.
 A [pattern](../pubsub/pattern.md) reads many channels and names none a `PUBLISH` can reach.
 Its registration names the channel with `.out_retry(policy).to(channel)`, or mounts a publish transform that declares `Destination = Names` and names one per delivery.

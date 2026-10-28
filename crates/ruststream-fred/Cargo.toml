@@ -19,6 +19,10 @@ workspace = true
 
 [features]
 default = []
+# The framework's codecs as codecs `Framed` writes its document in.
+json = ["ruststream/json", "dep:base64"]
+cbor = ["ruststream/cbor"]
+msgpack = ["ruststream/msgpack"]
 # The in-process mode `TestApp` runs an app on: an in-process Redis under `fred`'s own mock layer.
 # The conformance harness is broker-author tooling and stays a dev-dependency of this crate.
 testing = ["ruststream/testing", "fred/mocks"]
@@ -58,6 +62,8 @@ ruststream = { workspace = true, features = [
     "msgpack",
 ] }
 serde = { version = "1", features = ["derive"] }
+# Reads a CBOR document back in the envelope tests, to see the payload as the byte string it is.
+ciborium = "0.2"
 # Builds the examples' tests into one test binary (`tests/examples.rs`) instead of a test binary
 # per example. It lives in the core repository and is not published: a dev-dependency without a
 # version is dropped on publish.
@@ -78,7 +84,10 @@ futures.workspace = true
 serde = { version = "1", features = ["derive"] }
 # A stream entry another producer wrote, one without this crate's body field, is delivered as the
 # JSON object of its fields (the document tests read the generated AsyncAPI back with it too).
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
+# `Framed`'s JSON document carries a payload that is not a JSON text in base64, as CloudEvents'
+# JSON format does.
+base64 = { version = "0.22", optional = true }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -273,13 +282,13 @@ path = "examples/manual/redis_subscriptions_batches.rs"
 required-features = ["testing"]
 
 [[example]]
-name = "redis_subscriptions_framing"
-required-features = ["testing"]
+name = "redis_subscriptions_envelopes"
+required-features = ["testing", "json"]
 
 [[example]]
-name = "manual_redis_subscriptions_framing"
-path = "examples/manual/redis_subscriptions_framing.rs"
-required-features = ["testing"]
+name = "manual_redis_subscriptions_envelopes"
+path = "examples/manual/redis_subscriptions_envelopes.rs"
+required-features = ["testing", "json"]
 
 [[example]]
 name = "redis_streams_new"
@@ -731,11 +740,11 @@ required-features = ["testing"]
 [[example]]
 name = "guide_interop"
 path = "examples/guide/interop.rs"
-required-features = ["testing"]
+required-features = ["testing", "json"]
 
 [[example]]
 name = "manual_guide_interop"
 path = "examples/manual/guide/interop.rs"
-required-features = ["testing"]
+required-features = ["testing", "json"]
 
 # --- examples: end ---

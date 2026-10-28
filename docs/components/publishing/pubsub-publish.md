@@ -1,7 +1,7 @@
 ---
 sidebar_position: 2
 title: RedisPubSubPublish
-description: "RedisPubSubPublish, Publish in the Pub/Sub prelude, sends with PUBLISH or SPUBLISH in the framing its codec sets."
+description: "RedisPubSubPublish, Publish in the Pub/Sub prelude, sends with PUBLISH or SPUBLISH in the envelope it names."
 ---
 
 import Tabs from '@theme/Tabs';
@@ -9,13 +9,13 @@ import TabItem from '@theme/TabItem';
 
 # RedisPubSubPublish
 
-[`RedisPubSubPublish`](api:ruststream_fred::pubsub::RedisPubSubPublish), `Publish` in the Pub/Sub prelude, sends with `PUBLISH` or `SPUBLISH` in the framing its codec sets.
+[`RedisPubSubPublish`](api:ruststream_fred::pubsub::RedisPubSubPublish), `Publish` in the Pub/Sub prelude, sends with `PUBLISH` or `SPUBLISH` in the envelope it names.
 
 The message's name is the channel.
 [`mode`](api:ruststream_fred::pubsub::RedisPubSubPublish::mode) picks the command: [`PubSubMode::Classic`](api:ruststream_fred::pubsub::PubSubMode), the default, sends `PUBLISH`, and `PubSubMode::Sharded` sends `SPUBLISH` to the channel's slot.
 The mode matches the subscribers': a sharded message reaches only [`SSUBSCRIBE` subscriptions](../pubsub/pubsub-mode.md).
-Headers travel beside the payload in a [binary frame](../subscriptions/framing.md) by default.
-[`codec`](api:ruststream_fred::pubsub::RedisPubSubPublish::codec) frames them with a codec instead, which makes the value readable when the data is text; the subscribers set the same codec.
+Headers travel beside the payload in the broker's [envelope](../subscriptions/envelopes.md).
+[`envelope`](api:ruststream_fred::pubsub::RedisPubSubPublish::envelope) names another, such as a JSON document readable as text; the subscribers read the same envelope.
 A payload that is not text is published byte for byte either way.
 
 The policy pairs into a [`RedisPubSubPublisher`](api:ruststream_fred::pubsub::RedisPubSubPublisher) at startup.

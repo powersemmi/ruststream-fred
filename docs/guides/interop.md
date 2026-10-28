@@ -1,6 +1,6 @@
 ---
 sidebar_position: 13
-description: "Exchange messages with Redis clients in other languages: the stream entry layout, the list and channel frames, and the JSON envelope."
+description: "Exchange messages with Redis clients in other languages: the stream entry layout, the list and channel frames, the JSON document, and faststream's frame."
 ---
 
 import Tabs from '@theme/Tabs';
@@ -82,38 +82,55 @@ By default the frame is binary, and it opens with a marker header named `ruststr
 
 A body without headers that carries the marker at the place a frame carries it is written in a frame, so it reads back unchanged.
 
-A [codec](../components/subscriptions/framing.md) on the publish policy writes an envelope in that codec instead.
-With `JsonCodec` the mailer pops a JSON object:
+An [envelope](../components/subscriptions/envelopes.md) named on the publish policy writes another layout.
+[`Framed`](api:ruststream_fred::envelope::Framed) with `JsonCodec` writes a JSON document, and the mailer pops a JSON object:
 
 ```bash
 redis-cli RPOP emails
-# {"headers":{},"payload":"{\"to\":\"ann@example.com\",\"subject\":\"Order 1 received\"}"}
+# {"headers":{},"payload":{"to":"ann@example.com","subject":"Order 1 received"}}
 ```
 
-`payload` is the body, here the email as JSON text, so the mailer parses the envelope and then its `payload`.
-A body or a header that is valid UTF-8 is written as a string, and any other bytes as an array of numbers.
-The same envelope shows readable values in a tool like RedisInsight.
+`payload` is the body, here the email embedded as the JSON value it is, so one parse reads the whole document.
+A body that is not a JSON text travels as base64 in `payload_base64` instead, the convention of CloudEvents' JSON format, and a header is a string.
+The same document shows readable values in a tool like RedisInsight.
 
 ## Reading a list value or a channel message
 
-A subscription reads the frame its publisher writes: [`RedisList::codec`](api:ruststream_fred::list::RedisList::codec) and [`RedisPubSub::codec`](api:ruststream_fred::pubsub::RedisPubSub::codec) set the envelope's codec, and without one the subscription reads the binary frame.
-A subscription with a codec also reads binary frames, which a service leaves behind when it switches.
-The envelope is read only in its exact shape: an object with `headers` and `payload` and no other field.
+A subscription reads the envelope its publisher writes: the mount site names it with [`RedisEnvelopeExt::envelope`](api:ruststream_fred::envelope::RedisEnvelopeExt::envelope), as `b.include(handler.envelope(Framed::new(JsonCodec)))`, and without one the subscription reads the broker's.
+The JSON document is read only in its exact shape: an object with `headers` and `payload` and no other field.
 
-A value that is neither, such as one another client pushes or publishes as plain JSON, arrives as the body with no headers, whatever its first bytes are:
+A value that is not the envelope's own, such as one another client pushes or publishes as plain JSON, arrives as the body with no headers, whatever its first bytes are:
 
 ```bash
 redis-cli LPUSH jobs '{"id":7}'
 redis-cli PUBLISH prices '{"sku":"tea","cents":450}'
 ```
 
-So a producer in another language writes plain values unless it needs headers, and then it writes the JSON envelope.
+So a producer in another language writes plain values unless it needs headers, and then it writes the JSON document.
 
 A binary frame written by 0.7.1 or an earlier release has no marker, so a current subscription reads it as the body, frame bytes included.
 All services that share a list or a channel upgrade together, and a list is drained of the old values first.
 A subscription of an earlier release reads the new frame, and sees the marker as one more header.
 
+## Sharing with a faststream service
+
+A broker built with [`envelope(FastStream)`](api:ruststream_fred::RedisBroker::envelope) reads and writes [faststream](https://faststream.ag2.ai)'s `BinaryMessageFormatV1`, the frame a faststream service writes to Redis:
+
+| Bytes | Meaning |
+| --- | --- |
+| 8 | the identity header `\x89BIN\r\n\x1a\n` |
+| 2 | the version, 1 |
+| 4, 4 | where the header block starts and where the body starts, big-endian `u32`s |
+| 2 | at the header block: the number of headers, a big-endian `u16` |
+| 2, then the name; 2, then the value | for each header: the name's length and the name, the value's length and the value |
+| the rest | at the body's start: the body |
+
+A list element and a channel message are the frame, and a stream entry holds it in the field `__data__`.
+Every message is framed, headers or none, as faststream frames it.
+The header names travel as they are: faststream's own headers arrive as `correlation_id` and `reply_to`, and a header this service sets reaches a faststream handler under the name it was given.
+A value without the identity header arrives as the body with no headers.
+
 ## Testing
 
-The test in the example files runs in process: the order arrives as the shop writes it, and the value on `emails` is the JSON envelope, byte for byte.
-A live test reads both from a server with a second `fred` client, as another program would: the newest entry of `orders` holds the order under `_payload`, and the newest value of `emails` is the envelope.
+The test in the example files runs in process: the order arrives as the shop writes it, and the value on `emails` is the JSON document, byte for byte.
+A live test reads both from a server with a second `fred` client, as another program would: the newest entry of `orders` holds the order under `_payload`, and the newest value of `emails` is the document.

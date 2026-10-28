@@ -204,10 +204,10 @@ mod windowable {
                 attribute names"
     )]
     pub trait Base {}
-    impl Base for crate::RedisStream {}
-    impl Base for crate::RedisList {}
-    impl Base for crate::RedisPubSub {}
-    impl Base for crate::RedisPubSubPattern {}
+    impl<Env> Base for crate::RedisStream<Env> {}
+    impl<Env> Base for crate::RedisList<Env> {}
+    impl<Env> Base for crate::RedisPubSub<Env> {}
+    impl<Env> Base for crate::RedisPubSubPattern<Env> {}
 }
 
 /// A subscription source a window can open on: a descriptor of this crate, possibly under the

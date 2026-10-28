@@ -1,9 +1,11 @@
 //! How each subscription form settles inside a window.
 
 use std::future::{Future, ready};
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
 use fred::clients::{Client, Pipeline, Pool};
 use fred::error::Error;
 use fred::interfaces::{KeysInterface, ListInterface, SortedSetsInterface, StreamsInterface};
@@ -11,8 +13,9 @@ use fred::types::Value;
 use ruststream::AckError;
 
 use super::window::{Form, Segment, Sent};
-use crate::convert::fields_for_publish;
 use crate::delay::DelayConfig;
+use crate::envelope::Envelope;
+use crate::error::RedisError;
 use crate::list::RedisListMessage;
 #[cfg(feature = "testing")]
 use crate::loopback::InFlight;
@@ -31,14 +34,15 @@ pub enum StreamOp {
 
 /// The settle side of a [`RedisStream`](crate::RedisStream) subscription.
 #[derive(Debug)]
-pub struct StreamForm {
+pub struct StreamForm<Env> {
     key: Arc<str>,
     group: Arc<str>,
     delay: Option<DelayConfig>,
     requeue: RequeueMode,
+    envelope: PhantomData<Env>,
 }
 
-impl StreamForm {
+impl<Env: Envelope> StreamForm<Env> {
     pub(crate) fn new(
         key: impl Into<Arc<str>>,
         group: impl Into<Arc<str>>,
@@ -50,6 +54,7 @@ impl StreamForm {
             group: group.into(),
             delay,
             requeue,
+            envelope: PhantomData,
         }
     }
 
@@ -97,28 +102,28 @@ impl StreamForm {
     }
 }
 
-impl Form for StreamForm {
-    type Message = RedisMessage;
+impl<Env: Envelope> Form for StreamForm<Env> {
+    type Message = RedisMessage<Env>;
     type Op = StreamOp;
 
-    fn pool(msg: &RedisMessage) -> &Pool {
+    fn pool(msg: &RedisMessage<Env>) -> &Pool {
         msg.seeker().pool()
     }
 
     #[cfg(feature = "testing")]
-    fn take_flight(msg: &mut RedisMessage) -> InFlight {
+    fn take_flight(msg: &mut RedisMessage<Env>) -> InFlight {
         msg.take_flight()
     }
 
-    fn ack(&self, msg: RedisMessage, ops: &mut Vec<StreamOp>) -> Result<(), AckError> {
-        let (id, _, _) = msg.into_settle();
+    fn ack(&self, msg: RedisMessage<Env>, ops: &mut Vec<StreamOp>) -> Result<(), AckError> {
+        let (id, _) = msg.into_settle();
         ops.push(StreamOp::Ack(id));
         Ok(())
     }
 
     fn nack(
         &self,
-        msg: RedisMessage,
+        msg: RedisMessage<Env>,
         requeue: bool,
         ops: &mut Vec<StreamOp>,
     ) -> Result<(), AckError> {
@@ -128,12 +133,13 @@ impl Form for StreamForm {
             drop(msg.into_settle());
             return Ok(());
         }
-        let (id, payload, headers) = msg.into_settle();
+        let (id, body) = msg.into_settle();
         if requeue {
-            ops.push(StreamOp::Republish(fields_for_publish(
-                payload.to_vec(),
-                &headers,
-            )));
+            let fields = body
+                .envelope()
+                .seal_entry(body.payload().to_vec(), body.headers(&self.key))
+                .map_err(|err| AckError::Broker(Box::new(RedisError::seal(&self.key, err))))?;
+            ops.push(StreamOp::Republish(fields));
         }
         ops.push(StreamOp::Ack(id));
         Ok(())
@@ -141,7 +147,7 @@ impl Form for StreamForm {
 
     fn nack_after(
         &self,
-        msg: RedisMessage,
+        msg: RedisMessage<Env>,
         delay_by: Duration,
         ops: &mut Vec<StreamOp>,
     ) -> Result<(), AckError> {
@@ -152,10 +158,18 @@ impl Form for StreamForm {
             }
             return Err(AckError::Unsupported);
         };
-        let (id, payload, headers) = msg.into_settle();
+        let (id, body) = msg.into_settle();
         // Scheduled before the `XACK` of the original, in the same order the direct path takes,
         // so a failure between the two leaves a duplicate rather than a loss.
-        let (score, member) = cfg.scheduled(&id, &payload, &headers, delay_by);
+        let (score, member) = cfg
+            .scheduled(
+                &id,
+                body.payload(),
+                body.headers(&self.key),
+                delay_by,
+                body.envelope(),
+            )
+            .map_err(|err| AckError::Broker(Box::new(RedisError::seal(&self.key, err))))?;
         ops.push(StreamOp::Schedule { score, member });
         ops.push(StreamOp::Ack(id));
         Ok(())
@@ -214,20 +228,21 @@ impl Form for StreamForm {
 /// tracking, and on a requeue the `LPUSH` back onto the queue before them.
 #[derive(Debug)]
 pub struct ListOp {
-    value: Vec<u8>,
+    value: Bytes,
     member: Option<Vec<u8>>,
     requeue: bool,
 }
 
 /// The settle side of a [`RedisList`](crate::RedisList) subscription.
 #[derive(Debug)]
-pub struct ListForm {
+pub struct ListForm<Env> {
     main: Arc<str>,
     processing: Arc<str>,
     recovery_zset: Option<Arc<str>>,
+    envelope: PhantomData<Env>,
 }
 
-impl ListForm {
+impl<Env: Envelope> ListForm<Env> {
     pub(crate) fn new(
         main: impl Into<Arc<str>>,
         processing: impl Into<Arc<str>>,
@@ -237,10 +252,15 @@ impl ListForm {
             main: main.into(),
             processing: processing.into(),
             recovery_zset: recovery_zset.map(Arc::from),
+            envelope: PhantomData,
         }
     }
 
-    fn settle(msg: RedisListMessage, requeue: bool, ops: &mut Vec<ListOp>) -> Result<(), AckError> {
+    fn settle(
+        msg: RedisListMessage<Env>,
+        requeue: bool,
+        ops: &mut Vec<ListOp>,
+    ) -> Result<(), AckError> {
         let Some((value, member)) = msg.into_settle() else {
             return Err(AckError::Unsupported);
         };
@@ -286,26 +306,26 @@ impl ListForm {
     }
 }
 
-impl Form for ListForm {
-    type Message = RedisListMessage;
+impl<Env: Envelope> Form for ListForm<Env> {
+    type Message = RedisListMessage<Env>;
     type Op = ListOp;
 
-    fn pool(msg: &RedisListMessage) -> &Pool {
+    fn pool(msg: &RedisListMessage<Env>) -> &Pool {
         msg.pool()
     }
 
     #[cfg(feature = "testing")]
-    fn take_flight(msg: &mut RedisListMessage) -> InFlight {
+    fn take_flight(msg: &mut RedisListMessage<Env>) -> InFlight {
         msg.take_flight()
     }
 
-    fn ack(&self, msg: RedisListMessage, ops: &mut Vec<ListOp>) -> Result<(), AckError> {
+    fn ack(&self, msg: RedisListMessage<Env>, ops: &mut Vec<ListOp>) -> Result<(), AckError> {
         Self::settle(msg, false, ops)
     }
 
     fn nack(
         &self,
-        msg: RedisListMessage,
+        msg: RedisListMessage<Env>,
         requeue: bool,
         ops: &mut Vec<ListOp>,
     ) -> Result<(), AckError> {
@@ -314,7 +334,7 @@ impl Form for ListForm {
 
     fn nack_after(
         &self,
-        msg: RedisListMessage,
+        msg: RedisListMessage<Env>,
         _delay: Duration,
         _ops: &mut Vec<ListOp>,
     ) -> Result<(), AckError> {
@@ -456,29 +476,35 @@ impl<Settle> Writes<Settle> {
 
 /// The settle side of a [`RedisPubSub`](crate::RedisPubSub) subscription, which settles nothing:
 /// its window carries the handlers' commands alone.
-#[derive(Debug, Default)]
-pub struct PubSubForm;
+#[derive(Debug)]
+pub struct PubSubForm<Env>(PhantomData<Env>);
 
-impl Form for PubSubForm {
-    type Message = RedisPubSubMessage;
+impl<Env> Default for PubSubForm<Env> {
+    fn default() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<Env: Envelope> Form for PubSubForm<Env> {
+    type Message = RedisPubSubMessage<Env>;
     type Op = std::convert::Infallible;
 
-    fn pool(msg: &RedisPubSubMessage) -> &Pool {
+    fn pool(msg: &RedisPubSubMessage<Env>) -> &Pool {
         msg.pool()
     }
 
     #[cfg(feature = "testing")]
-    fn take_flight(msg: &mut RedisPubSubMessage) -> InFlight {
+    fn take_flight(msg: &mut RedisPubSubMessage<Env>) -> InFlight {
         msg.take_flight()
     }
 
-    fn ack(&self, _msg: RedisPubSubMessage, _ops: &mut Vec<Self::Op>) -> Result<(), AckError> {
+    fn ack(&self, _msg: RedisPubSubMessage<Env>, _ops: &mut Vec<Self::Op>) -> Result<(), AckError> {
         Err(AckError::Unsupported)
     }
 
     fn nack(
         &self,
-        _msg: RedisPubSubMessage,
+        _msg: RedisPubSubMessage<Env>,
         _requeue: bool,
         _ops: &mut Vec<Self::Op>,
     ) -> Result<(), AckError> {
@@ -487,7 +513,7 @@ impl Form for PubSubForm {
 
     fn nack_after(
         &self,
-        _msg: RedisPubSubMessage,
+        _msg: RedisPubSubMessage<Env>,
         _delay: Duration,
         _ops: &mut Vec<Self::Op>,
     ) -> Result<(), AckError> {

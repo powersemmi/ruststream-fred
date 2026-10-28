@@ -7,8 +7,8 @@
 //! - [claiming][claiming]: [`RedisStream::claiming`], pending and fresh entries in one read
 //!   (Redis 8.4 and later).
 //! - [StreamStart][stream-start]: [`StreamStart`], where a group starts when it is created.
-//! - [RedisPublish][publish]: [`Publish`], `XADD` to a stream.
-//! - [Transactions][transactions]: [`TransactionalPublish`], the same publisher for replies
+//! - [RedisPublish][publish]: [`Publish`](struct@Publish), `XADD` to a stream.
+//! - [Transactions][transactions]: [`TransactionalPublish`](struct@TransactionalPublish), the same publisher for replies
 //!   committed in one `MULTI` / `EXEC` block; a cluster refuses it at startup.
 //! - [Prelude][prelude]: [`prelude`], everything a Redis Streams service imports.
 //!
@@ -35,22 +35,23 @@ use ruststream::{
 use crate::asyncapi;
 use crate::broker::ConnectedRedisBroker;
 use crate::delay::{DelayConfig, DelayedRetry};
+use crate::envelope::{Envelope, EnvelopeChoice, Inherited};
 use crate::{error::RedisError, subscriber::RedisSubscriber};
 
-/// This form's publish policy, [`RedisPublish`](crate::RedisPublish), under the mount-site name
-/// every form gives its own.
+/// This form's publish policy, [`RedisPublish`](struct@crate::RedisPublish), under the mount-site
+/// name every form gives its own.
 pub use crate::publisher::RedisPublish as Publish;
 
 /// This form's transactional publish policy,
-/// [`RedisTransactionalPublish`](crate::RedisTransactionalPublish), under the mount-site name: the
-/// same live publisher as [`Publish`], refused at startup on a cluster.
+/// [`RedisTransactionalPublish`](struct@crate::RedisTransactionalPublish), under the mount-site
+/// name: the same live publisher as [`Publish`](struct@Publish), refused at startup on a cluster.
 pub use crate::publisher::RedisTransactionalPublish as TransactionalPublish;
 
 /// The core prelude plus everything a Redis Streams service writes.
 ///
 /// The broker, the [`RedisStream`] descriptor and its options, the group seek types with the
-/// delivery and batch contexts that carry them, this form's [`Publish`] policy, and the
-/// transaction, position and seek capabilities.
+/// delivery and batch contexts that carry them, this form's [`Publish`](struct@Publish) policy, and
+/// the transaction, position and seek capabilities.
 ///
 /// # Examples
 ///
@@ -112,8 +113,9 @@ pub mod prelude {
     };
     pub use crate::pipeline::{Bindable, InRound, RedisPipelineSteps};
     pub use crate::{
-        DelayedRetry, PARTITION_KEY_HEADER, RedisBroker, RedisGroupPosition, RedisGroupSeeker,
-        RedisPublishOptions, RedisPublishSteps, RedisSubscribeExt,
+        DelayedRetry, FastStream, Framed, NoOp, PARTITION_KEY_HEADER, RedisBroker,
+        RedisEnvelopeExt, RedisGroupPosition, RedisGroupSeeker, RedisPublishOptions,
+        RedisPublishSteps, RedisSubscribeExt, envelope,
     };
 
     #[cfg(any(
@@ -237,7 +239,7 @@ pub(crate) enum RequeueMode {
 /// ```
 #[derive(Debug, Clone)]
 #[must_use]
-pub struct RedisStream {
+pub struct RedisStream<Env = Inherited> {
     key: String,
     group: Option<String>,
     consumer: Option<String>,
@@ -248,6 +250,7 @@ pub struct RedisStream {
     /// Where the mount site sends a spent delivery, taken from its retry declaration when the
     /// subscription opens, so the broker writes that name as the stream it is.
     dead_letter: Option<String>,
+    envelope: Env,
 }
 
 impl RedisStream {
@@ -305,6 +308,7 @@ impl RedisStream {
             mode: ReadMode::Fresh,
             delayed_retry: None,
             dead_letter: None,
+            envelope: Inherited,
         }
     }
 
@@ -366,6 +370,7 @@ impl RedisStream {
             mode: ReadMode::Reclaim { min_idle },
             delayed_retry: None,
             dead_letter: None,
+            envelope: Inherited,
         }
     }
 
@@ -447,7 +452,80 @@ impl RedisStream {
             mode: ReadMode::Claiming { min_idle },
             delayed_retry: None,
             dead_letter: None,
+            envelope: Inherited,
         }
+    }
+}
+
+impl<Env> RedisStream<Env> {
+    /// Reads through `envelope` instead of the broker's: how a message's headers sit beside its
+    /// payload. The publishers that write the same name use the same envelope.
+    ///
+    /// The manual path names the envelope here. Under `#[subscriber(..)]` the descriptor's type is
+    /// fixed by its constructor, so the mount site names it instead, with
+    /// [`RedisEnvelopeExt::envelope`](crate::RedisEnvelopeExt::envelope).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # mod demo {
+    /// use std::future::{Future, ready};
+    ///
+    /// use ruststream::schemars::{self, JsonSchema};
+    /// use ruststream_fred::prelude::*;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize, JsonSchema)]
+    /// struct Audit {
+    ///     id: u64,
+    /// }
+    ///
+    /// /// Logs every audit record.
+    /// struct Log;
+    ///
+    /// impl Handle<Audit> for Log {
+    ///     fn handle(
+    ///         &self,
+    ///         audit: &Audit,
+    ///         _outs: &(),
+    ///         _ctx: &mut Context<'_>,
+    ///     ) -> impl Future<Output = Result<(), HandlerOutcome>> {
+    ///         tracing::info!(audit.id, "audit");
+    ///         ready(Ok(()))
+    ///     }
+    /// }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     RustStream::new(AppInfo::new("audit", "0.1.0")).with_broker(
+    ///         RedisBroker::standalone("redis://localhost:6379"),
+    ///         |b| {
+    ///             // A faststream service writes these.
+    ///             let source = RedisStream::new("audit").group("audit").envelope(FastStream);
+    ///             b.include(subscriber(source, Log).build());
+    ///         },
+    ///     )
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
+    pub fn envelope<Other: Envelope>(self, envelope: Other) -> RedisStream<Other> {
+        RedisStream {
+            key: self.key,
+            group: self.group,
+            consumer: self.consumer,
+            block: self.block,
+            start: self.start,
+            mode: self.mode,
+            delayed_retry: self.delayed_retry,
+            dead_letter: self.dead_letter,
+            envelope,
+        }
+    }
+
+    /// The envelope this descriptor names, resolved against the broker's when it subscribes.
+    pub(crate) const fn envelope_choice(&self) -> &Env {
+        &self.envelope
     }
 
     /// Sets the consumer group. Required for every subscription.
@@ -553,7 +631,7 @@ impl RedisStream {
     /// both broker forms: the group and consumer it reads through, its read mode and, on the two
     /// modes that claim, the idle threshold they claim at.
     #[cfg(feature = "asyncapi")]
-    fn describe(&self) -> Bindings {
+    fn describe(&self, envelope: asyncapi::Envelope) -> Bindings {
         let (mode, min_idle) = match self.mode {
             ReadMode::Fresh => (asyncapi::ReadMode::Fresh, None),
             ReadMode::Reclaim { min_idle } => (asyncapi::ReadMode::Reclaim, Some(min_idle)),
@@ -564,13 +642,14 @@ impl RedisStream {
             self.consumer.as_deref(),
             mode,
             min_idle.map(|idle| u64::try_from(idle.as_millis()).unwrap_or(u64::MAX)),
+            envelope,
         ))
     }
 }
 
 // The manual path binds a `Handle` body to its source with `subscriber(source, body)`, which
 // takes the descriptor as it is, the way the `#[subscriber(..)]` attribute does.
-impl IntoSource for RedisStream {
+impl<Env> IntoSource for RedisStream<Env> {
     type Source = Self;
 
     fn into_source(self) -> Self {
@@ -578,8 +657,12 @@ impl IntoSource for RedisStream {
     }
 }
 
-impl SubscriptionSource<ConnectedRedisBroker> for RedisStream {
-    type Subscriber = RedisSubscriber;
+impl<BrokerEnv, Env> SubscriptionSource<ConnectedRedisBroker<BrokerEnv>> for RedisStream<Env>
+where
+    BrokerEnv: Envelope,
+    Env: EnvelopeChoice<BrokerEnv>,
+{
+    type Subscriber = RedisSubscriber<Env::Envelope>;
     /// A retry copy is an `XADD` this process makes, and the stream key is where it goes.
     type Copies = AddressedCopies;
 
@@ -593,14 +676,14 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisStream {
 
     async fn subscribe(
         self,
-        connected: &ConnectedRedisBroker,
+        connected: &ConnectedRedisBroker<BrokerEnv>,
     ) -> Result<Self::Subscriber, RedisError> {
         connected.subscribe(self).await
     }
 
     #[cfg(feature = "asyncapi")]
     fn channel_bindings(&self) -> Bindings {
-        self.describe()
+        self.describe(asyncapi::Envelope::of::<Env::Envelope>())
     }
 }
 
@@ -611,10 +694,14 @@ impl SubscriptionSource<ConnectedRedisBroker> for RedisStream {
 /// than by this subscription, which only ever takes entries already pending on another consumer.
 /// That is the topology the mode is written for - a `reclaim` subscriber runs beside a
 /// [`new`](RedisStream::new) one on the same group - so the copy reaches the handler either way.
-impl RedeliveryAddressed<ConnectedRedisBroker> for RedisStream {
+impl<BrokerEnv, Env> RedeliveryAddressed<ConnectedRedisBroker<BrokerEnv>> for RedisStream<Env>
+where
+    BrokerEnv: Envelope,
+    Env: EnvelopeChoice<BrokerEnv>,
+{
     fn redelivery_address(
         &self,
-        _connected: &ConnectedRedisBroker,
+        _connected: &ConnectedRedisBroker<BrokerEnv>,
     ) -> impl Future<Output = Result<RedeliveryAddress, RedisError>> {
         ready(Ok(self.redelivery_key()))
     }

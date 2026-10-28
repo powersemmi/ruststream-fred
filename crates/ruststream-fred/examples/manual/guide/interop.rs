@@ -65,7 +65,7 @@ fn service(broker: RedisBroker) -> impl App<State = ()> {
         let orders = RedisStream::new("orders").group("mail");
         // The envelope in JSON: a value the mailer reads with any JSON parser.
         b.include(subscriber(orders, TakeOrder).reply().build())
-            .out_reply(list::Publish::default().codec(JsonCodec));
+            .out_reply(list::Publish::default().envelope(Framed::new(JsonCodec)));
     })
 }
 
@@ -91,9 +91,9 @@ mod tests {
 
     use super::{Order, app, live, service};
 
-    /// The mailer's value: the envelope, with the email as JSON text in `payload`.
+    /// The mailer's value: the document, with the email embedded as the JSON value in `payload`.
     const EMAIL: &[u8] =
-        br#"{"headers":{},"payload":"{\"to\":\"ann@example.com\",\"subject\":\"Order 1 received\"}"}"#;
+        br#"{"headers":{},"payload":{"to":"ann@example.com","subject":"Order 1 received"}}"#;
 
     fn order() -> Order {
         Order {

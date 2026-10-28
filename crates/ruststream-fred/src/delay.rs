@@ -27,9 +27,9 @@ use fred::clients::Pool;
 use fred::interfaces::{KeysInterface, SortedSetsInterface, StreamsInterface};
 use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::{AckError, HeaderMap};
+use tracing::warn;
 
-use crate::convert::fields_for_publish;
-use crate::envelope::{frame, unframe_own};
+use crate::envelope::{Envelope, RustStream, SealError, unframe_own};
 use crate::error::RedisError;
 use crate::loopback::Loopback;
 
@@ -178,7 +178,12 @@ fn ttl_millis(ttl: Duration) -> i64 {
 /// byte-identical payloads do not collide into one member) followed by the lossless header/payload
 /// frame. The id is not reused on redelivery; the sweep re-`XADD`s under a fresh id.
 fn encode_member(id: &str, payload: &[u8], headers: &HeaderMap) -> Vec<u8> {
-    let body = frame(None, payload, headers);
+    let mut body = Vec::with_capacity(payload.len());
+    // The member is this crate's own storage and no other client reads it, so it keeps this
+    // crate's frame whatever envelope the stream is read through.
+    RustStream
+        .seal(payload, headers, &mut body)
+        .expect("the crate's own frame carries any message");
     let id = id.as_bytes();
     let id_len = u32::try_from(id.len()).unwrap_or(u32::MAX);
     let mut buf = Vec::with_capacity(4 + id.len() + body.len());
@@ -224,31 +229,46 @@ impl DelayConfig {
 
     /// The `ZADD` a delayed redelivery owes: the score it is due at and the member that carries
     /// it, with the retry-count header raised.
-    pub(crate) fn scheduled(
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SealError`] when the stream's `envelope` cannot carry the copy the sweep writes
+    /// back, so the delivery stays pending instead of being queued for a write that would fail.
+    pub(crate) fn scheduled<Env: Envelope>(
         &self,
         id: &str,
         payload: &[u8],
         headers: &HeaderMap,
         delay: Duration,
-    ) -> (f64, Vec<u8>) {
+        envelope: &Env,
+    ) -> Result<(f64, Vec<u8>), SealError> {
         let fire_at = self.now_ms().saturating_add(delay_millis(delay));
         let mut next = headers.clone();
         next.insert(RETRY_COUNT_HEADER, next_retry_count(headers).to_string());
-        (as_score(fire_at), encode_member(id, payload, &next))
+        envelope.seal_entry(payload.to_vec(), &next)?;
+        Ok((as_score(fire_at), encode_member(id, payload, &next)))
     }
 
     /// `ZADD`s a delayed copy of the message (retry count incremented) at `now + delay`,
     /// refreshing the optional key TTL. The caller `XACK`s the original afterwards, so a crash in
     /// between leaves the scheduled copy (a duplicate) rather than losing the message.
-    pub(crate) async fn schedule(
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the delivery's parts, the delay and where it goes back"
+    )]
+    pub(crate) async fn schedule<Env: Envelope>(
         &self,
         pool: &Pool,
+        stream_key: &str,
         id: &str,
         payload: &[u8],
         headers: &HeaderMap,
         delay: Duration,
+        envelope: &Env,
     ) -> Result<(), AckError> {
-        let (score, member) = self.scheduled(id, payload, headers, delay);
+        let (score, member) = self
+            .scheduled(id, payload, headers, delay, envelope)
+            .map_err(|err| AckError::Broker(Box::new(RedisError::seal(stream_key, err))))?;
         let _: i64 = pool
             .zadd(
                 self.zset_key.as_str(),
@@ -269,12 +289,18 @@ impl DelayConfig {
         Ok(())
     }
 
-    /// Moves entries whose `fire_at` has passed from the delay ZSET back onto `stream_key`.
+    /// Moves entries whose `fire_at` has passed from the delay ZSET back onto `stream_key`,
+    /// written in the stream's `envelope`.
     ///
     /// Each due member is claimed with `ZREM`: only the consumer whose `ZREM` removes it re-`XADD`s
     /// it, so concurrent sweepers never double-publish. Bounded to [`SWEEP_BATCH`] entries per
     /// pass.
-    pub(crate) async fn sweep_due(&self, pool: &Pool, stream_key: &str) -> Result<(), RedisError> {
+    pub(crate) async fn sweep_due<Env: Envelope>(
+        &self,
+        pool: &Pool,
+        stream_key: &str,
+        envelope: &Env,
+    ) -> Result<(), RedisError> {
         let now = as_score(self.now_ms());
         let due: Vec<Bytes> = pool
             .zrangebyscore(
@@ -288,6 +314,25 @@ impl DelayConfig {
             .map_err(RedisError::stream)?;
 
         for member in due {
+            let Some((payload, headers)) = decode_member(&member) else {
+                continue;
+            };
+            // Written before the claim, so a copy the envelope refuses stays queued instead of
+            // being taken out and lost. `schedule` refuses such a copy, so only a member queued
+            // under another envelope gets here.
+            let fields = match envelope.seal_entry(payload.to_vec(), &headers) {
+                Ok(fields) => fields,
+                Err(error) => {
+                    warn!(
+                        subscription = stream_key,
+                        queue = self.zset_key.as_str(),
+                        %error,
+                        "a delayed retry in the queue does not fit the stream's envelope; it \
+                         stays queued"
+                    );
+                    continue;
+                }
+            };
             let removed: i64 = pool
                 .zrem(self.zset_key.as_str(), member.clone())
                 .await
@@ -296,10 +341,6 @@ impl DelayConfig {
             if removed != 1 {
                 continue;
             }
-            let Some((payload, headers)) = decode_member(&member) else {
-                continue;
-            };
-            let fields = fields_for_publish(payload.to_vec(), &headers);
             let _: String = pool
                 .xadd(stream_key, false, None::<()>, "*", fields)
                 .await

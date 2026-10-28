@@ -4,13 +4,13 @@ use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use std::time::Duration;
 
-use bytes::Bytes;
 use fred::clients::Pool;
 use fred::interfaces::StreamsInterface;
 use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned, Positioned};
 
-use crate::convert::fields_for_publish;
 use crate::delay::DelayConfig;
+use crate::envelope::{EntryBody, Envelope, RustStream};
+use crate::error::RedisError;
 use crate::loopback::InFlight;
 use crate::seek::{EntryId, RedisGroupPosition, RedisGroupSeeker};
 use crate::stream::RequeueMode;
@@ -58,9 +58,9 @@ struct AckHandle {
 /// On a [`claiming`](crate::RedisStream::claiming) subscription the retry is the read mode's own:
 /// the entry stays in the pending entries list, and the subscription's next read claims it back
 /// with the server's delivery count one higher, which is the count this delivery reports.
-pub struct RedisMessage {
-    payload: Bytes,
-    headers: HeaderMap,
+pub struct RedisMessage<Env = RustStream> {
+    /// The entry as it arrived: its payload located, its headers read when first asked for.
+    body: EntryBody<Env>,
     ack: Option<AckHandle>,
     /// The parsed form of the entry id, kept beside the wire form so
     /// [`Positioned::position`] cannot fail. Both are derived from the same server-issued id.
@@ -85,10 +85,10 @@ pub struct RedisMessage {
     flight: InFlight,
 }
 
-impl Debug for RedisMessage {
+impl<Env: Envelope> Debug for RedisMessage<Env> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("RedisMessage");
-        s.field("payload_len", &self.payload.len());
+        s.field("payload_len", &self.body.len());
         if let Some(ack) = &self.ack {
             s.field("key", &ack.key).field("id", &ack.id);
         }
@@ -96,7 +96,7 @@ impl Debug for RedisMessage {
     }
 }
 
-impl RedisMessage {
+impl<Env: Envelope> RedisMessage<Env> {
     #[allow(
         clippy::too_many_arguments,
         reason = "internal constructor mirroring the descriptor"
@@ -107,8 +107,7 @@ impl RedisMessage {
         group: String,
         id: String,
         entry: EntryId,
-        payload: Bytes,
-        headers: HeaderMap,
+        body: EntryBody<Env>,
         delay: Option<DelayConfig>,
         delivered: Option<u64>,
         seeker: Arc<RedisGroupSeeker>,
@@ -116,8 +115,7 @@ impl RedisMessage {
         flight: InFlight,
     ) -> Self {
         Self {
-            payload,
-            headers,
+            body,
             ack: Some(AckHandle {
                 pool,
                 key,
@@ -162,19 +160,15 @@ impl RedisMessage {
         std::mem::take(&mut self.flight)
     }
 
-    /// Takes what a window settles this delivery with: its entry id, and the body and headers a
-    /// retry republishes or schedules.
-    pub(crate) fn into_settle(mut self) -> (String, Bytes, HeaderMap) {
+    /// Takes what a window settles this delivery with: its entry id, and the entry a retry
+    /// republishes or schedules.
+    pub(crate) fn into_settle(mut self) -> (String, EntryBody<Env>) {
         let handle = self.ack.take().expect("RedisMessage settled twice");
-        (
-            handle.id,
-            std::mem::take(&mut self.payload),
-            std::mem::take(&mut self.headers),
-        )
+        (handle.id, self.body)
     }
 }
 
-impl Partitioned for RedisMessage {
+impl<Env: Envelope> Partitioned for RedisMessage<Env> {
     fn partition_key(&self) -> Option<&[u8]> {
         self.headers().get(PARTITION_KEY_HEADER)
     }
@@ -186,7 +180,7 @@ impl Partitioned for RedisMessage {
 /// the id immediately below this entry's - seeking to it delivers this message again, followed by
 /// the entries after it. Repositioning is group-wide; see
 /// [`RedisGroupSeeker`](crate::RedisGroupSeeker).
-impl Positioned for RedisMessage {
+impl<Env: Envelope> Positioned for RedisMessage<Env> {
     type Position = RedisGroupPosition;
 
     fn position(&self) -> RedisGroupPosition {
@@ -194,13 +188,15 @@ impl Positioned for RedisMessage {
     }
 }
 
-impl IncomingMessage for RedisMessage {
+impl<Env: Envelope> IncomingMessage for RedisMessage<Env> {
     fn payload(&self) -> &[u8] {
-        &self.payload
+        self.body.payload()
     }
 
     fn headers(&self) -> &HeaderMap {
-        &self.headers
+        // The handle goes only when the delivery settles, which consumes it.
+        self.body
+            .headers(self.ack.as_ref().map_or("", |handle| handle.key.as_str()))
     }
 
     // The runtime's keyed worker lanes read the key from here, not from `Partitioned`, so the
@@ -237,7 +233,7 @@ impl IncomingMessage for RedisMessage {
             return Ok(());
         }
         if requeue {
-            republish(&handle, &self.payload, &self.headers).await?;
+            republish(&handle, &self.body).await?;
         }
         xack(&handle).await
     }
@@ -279,10 +275,12 @@ impl IncomingMessage for RedisMessage {
         // duplicate (the scheduled copy plus the still-pending original) rather than a loss.
         cfg.schedule(
             &handle.pool,
+            &handle.key,
             &handle.id,
-            &self.payload,
-            &self.headers,
+            self.body.payload(),
+            self.body.headers(&handle.key),
             delay,
+            self.body.envelope(),
         )
         .await?;
         xack(&handle).await
@@ -295,12 +293,14 @@ fn broker_err(err: fred::error::Error) -> AckError {
 
 /// Re-appends a copy of the message to the tail of its stream (the at-least-once retry). Runs before
 /// the caller's `XACK` so a crash leaves a duplicate rather than a loss.
-async fn republish(
+async fn republish<Env: Envelope>(
     handle: &AckHandle,
-    payload: &[u8],
-    headers: &HeaderMap,
+    body: &EntryBody<Env>,
 ) -> Result<(), AckError> {
-    let fields = fields_for_publish(payload.to_vec(), headers);
+    let fields = body
+        .envelope()
+        .seal_entry(body.payload().to_vec(), body.headers(&handle.key))
+        .map_err(|err| AckError::Broker(Box::new(RedisError::seal(&handle.key, err))))?;
     let _: String = handle
         .pool
         .xadd(handle.key.as_str(), false, None::<()>, "*", fields)
@@ -340,6 +340,8 @@ mod tests {
     }
 
     fn delivery(id: &str) -> RedisMessage {
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("_payload".to_owned(), b"{}".to_vec());
         let pool = offline_pool();
         let seeker = Arc::new(RedisGroupSeeker::new(
             Connection::new(pool.clone()),
@@ -353,8 +355,7 @@ mod tests {
             "workers".to_owned(),
             id.to_owned(),
             id.parse().expect("valid entry id"),
-            Bytes::from_static(b"{}"),
-            HeaderMap::new(),
+            EntryBody::open(RustStream, fields, None),
             None,
             None,
             seeker,

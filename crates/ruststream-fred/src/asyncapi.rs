@@ -16,7 +16,7 @@
 use ruststream::asyncapi::{Binding, Bindings};
 use serde::Serialize;
 
-use crate::envelope::SharedEnvelope;
+use crate::envelope::Envelope as Layout;
 
 /// The extension key the crate's own vocabulary travels under, at the level a `redis` binding
 /// would sit at if the specification gave it any fields.
@@ -60,6 +60,7 @@ pub(crate) struct StreamSubscription<'a> {
     /// modes that claim.
     #[serde(skip_serializing_if = "Option::is_none")]
     min_idle_ms: Option<u64>,
+    envelope: Envelope,
 }
 
 /// A list subscription's own settings.
@@ -115,24 +116,23 @@ pub(crate) struct Publish<'a> {
     /// The expiry re-armed on the list key by every push.
     #[serde(skip_serializing_if = "Option::is_none")]
     ttl_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    envelope: Option<Envelope>,
+    envelope: Envelope,
 }
 
-/// How headers travel beside the payload on the two forms that frame them.
+/// How headers travel beside the payload: the envelope's media type.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Envelope {
-    /// The media type of the framing: `application/octet-stream` for the default binary frame,
-    /// the codec's own media type for a codec-serialized envelope.
+    /// The media type of the value the envelope writes: `application/octet-stream` for a binary
+    /// frame, the codec's own media type for a codec document.
     content_type: &'static str,
 }
 
 impl Envelope {
-    /// The framing a descriptor or a policy carrying `codec` writes.
-    pub(crate) fn of(codec: Option<&SharedEnvelope>) -> Self {
+    /// What a descriptor or a policy reading and writing through `Env` reports.
+    pub(crate) const fn of<Env: Layout>() -> Self {
         Self {
-            content_type: codec.map_or("application/octet-stream", |codec| codec.content_type()),
+            content_type: Env::CONTENT_TYPE,
         }
     }
 }
@@ -143,6 +143,7 @@ impl<'a> StreamSubscription<'a> {
         consumer: Option<&'a str>,
         read_mode: ReadMode,
         min_idle_ms: Option<u64>,
+        envelope: Envelope,
     ) -> Self {
         Self {
             form: Form::Stream,
@@ -150,6 +151,7 @@ impl<'a> StreamSubscription<'a> {
             consumer,
             read_mode,
             min_idle_ms,
+            envelope,
         }
     }
 }
@@ -181,15 +183,15 @@ impl PubSubSubscription {
 }
 
 impl<'a> Publish<'a> {
-    /// An `XADD` publisher, which carries no settings beyond the key it appends to: a stream entry
-    /// holds its headers as fields, so there is no envelope either.
-    pub(crate) const fn stream(key: &'a str) -> Self {
+    /// An `XADD` publisher, which carries no settings beyond the key it appends to and the
+    /// envelope its entries are written in.
+    pub(crate) const fn stream(key: &'a str, envelope: Envelope) -> Self {
         Self {
             form: Form::Stream,
             target: Target::Key { key },
             mode: None,
             ttl_ms: None,
-            envelope: None,
+            envelope,
         }
     }
 
@@ -199,7 +201,7 @@ impl<'a> Publish<'a> {
             target: Target::Key { key },
             mode: None,
             ttl_ms,
-            envelope: Some(envelope),
+            envelope,
         }
     }
 
@@ -209,7 +211,7 @@ impl<'a> Publish<'a> {
             target: Target::Channel { channel },
             mode: Some(mode),
             ttl_ms: None,
-            envelope: Some(envelope),
+            envelope,
         }
     }
 }

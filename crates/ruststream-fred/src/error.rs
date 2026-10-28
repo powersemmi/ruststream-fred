@@ -4,6 +4,8 @@ use std::error::Error as StdError;
 
 use thiserror::Error;
 
+use crate::envelope::SealError;
+
 /// Errors surfaced by the Redis broker implementation.
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -66,6 +68,34 @@ pub enum RedisError {
     /// settle, the entries whose settles failed stay pending and are delivered again.
     #[error("{0}")]
     Flush(String),
+
+    /// A message to `destination` does not fit the envelope it is published through: a header on
+    /// [`NoOp`](crate::NoOp), a header longer than [`FastStream`](crate::FastStream)'s frame holds,
+    /// or a document its codec cannot write.
+    #[error("a message to `{destination}` cannot be published: {source}")]
+    Seal {
+        /// The stream, list or channel the message was published to.
+        destination: String,
+        /// What the envelope refused.
+        #[source]
+        source: SealError,
+    },
+
+    /// The broker's default publisher was asked to write `destination`, which a subscription reads
+    /// through `envelope`, a service's own envelope beside a broker with another one. The default
+    /// publisher writes only the broker's envelope and the built-in ones; a publish to such a
+    /// name, a retry copy of its subscription included, names a policy with the envelope.
+    #[error(
+        "a message to `{destination}` cannot be published through the broker's default \
+         publisher: its subscription reads through `{envelope}`, so name a publish policy with \
+         that envelope (`out_retry(..)` for a retry copy)"
+    )]
+    Unrouted {
+        /// The stream, list or channel the message was published to.
+        destination: String,
+        /// The type of the envelope the subscription reads through.
+        envelope: &'static str,
+    },
 }
 
 impl RedisError {
@@ -77,6 +107,14 @@ impl RedisError {
     /// Wraps a `fred` error as a [`RedisError::Subscribe`].
     pub(crate) fn subscribe(err: fred::error::Error) -> Self {
         Self::Subscribe(Box::new(err))
+    }
+
+    /// The refusal of the envelope a message to `destination` was published through.
+    pub(crate) fn seal(destination: &str, source: SealError) -> Self {
+        Self::Seal {
+            destination: destination.to_owned(),
+            source,
+        }
     }
 
     /// Wraps a `fred` error as a [`RedisError::Publish`].

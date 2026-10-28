@@ -21,10 +21,10 @@ use tracing::warn;
 use crate::broker::ensure_group;
 use crate::claim::{self, ClaimedEntry};
 use crate::connection::{Connection, ReadConnection};
-use crate::convert::{HEADER_PREFIX, parts_from_fields};
 use crate::delay::DelayConfig;
+use crate::envelope::{EntryBody, Envelope, Meta, RustStream};
 use crate::loopback::Tap;
-use crate::message::{DELIVERY_COUNT_HEADER, IDLE_MS_HEADER, RedisMessage};
+use crate::message::RedisMessage;
 use crate::pipeline::{RoundMessage, StreamForm, Window};
 use crate::seek::{EntryId, RedisGroupSeeker};
 use crate::{error::RedisError, stream::ReadMode};
@@ -40,6 +40,8 @@ struct Entry {
     /// Deliveries of this entry counting this one, on the two modes that claim. `None` on the
     /// fresh tail, which claims nothing.
     delivered: Option<u64>,
+    /// What a claim reported about the entry, which reaches a handler as headers.
+    meta: Option<Meta>,
 }
 
 /// `XREADGROUP` reply shape parsed as nested arrays rather than maps: the RESP2 reply is an array of
@@ -80,7 +82,7 @@ fn duration_to_millis(d: Duration) -> u64 {
 ///
 /// Constructed by [`crate::ConnectedRedisBroker::subscribe`] from a [`crate::RedisStream`]
 /// descriptor. The read mode (fresh tail, reclaim, or claim-and-read) is fixed at construction.
-pub struct RedisSubscriber {
+pub struct RedisSubscriber<Env = RustStream> {
     connection: Arc<Connection>,
     /// The connection every read goes out on, apart from the pool: a blocking read holds its
     /// connection until it returns.
@@ -108,9 +110,11 @@ pub struct RedisSubscriber {
     seeker: Arc<RedisGroupSeeker>,
     /// The subscription's registration with the in-process server; empty on a real connection.
     tap: Tap,
+    /// What each entry is read through, and what the delay queue's sweep writes back.
+    envelope: Env,
 }
 
-impl Debug for RedisSubscriber {
+impl<Env> Debug for RedisSubscriber<Env> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RedisSubscriber")
             .field("key", &self.key)
@@ -121,7 +125,7 @@ impl Debug for RedisSubscriber {
     }
 }
 
-impl RedisSubscriber {
+impl<Env: Envelope> RedisSubscriber<Env> {
     #[allow(
         clippy::too_many_arguments,
         reason = "internal constructor mirroring the descriptor"
@@ -136,6 +140,7 @@ impl RedisSubscriber {
         mode: ReadMode,
         delay: Option<DelayConfig>,
         tap: Tap,
+        envelope: Env,
     ) -> Self {
         let generation = Arc::new(AtomicU64::new(0));
         let seeker = Arc::new(RedisGroupSeeker::new(
@@ -159,6 +164,7 @@ impl RedisSubscriber {
             buffer_generation: 0,
             seeker,
             tap,
+            envelope,
         }
     }
 
@@ -169,18 +175,17 @@ impl RedisSubscriber {
     /// Returns [`RedisError::Stream`] when the server sent an id that is not a well-formed
     /// `<milliseconds>-<sequence>` pair, which would leave the delivery unable to report its
     /// position.
-    fn message(&self, entry: Entry) -> Result<RedisMessage, RedisError> {
+    fn message(&self, entry: Entry) -> Result<RedisMessage<Env>, RedisError> {
         let id = entry.id;
         let parsed: EntryId = id.parse()?;
-        let (payload, headers) = parts_from_fields(entry.fields);
+        let body = EntryBody::open(self.envelope.clone(), entry.fields, entry.meta);
         Ok(RedisMessage::new(
             self.connection.pool().clone(),
             self.key.clone(),
             self.group.clone(),
             id,
             parsed,
-            payload,
-            headers,
+            body,
             self.delay.clone(),
             entry.delivered,
             Arc::clone(&self.seeker),
@@ -211,7 +216,7 @@ impl RedisSubscriber {
     }
 
     /// The settle side of this subscription inside a window.
-    pub(crate) fn round_form(&self) -> StreamForm {
+    pub(crate) fn round_form(&self) -> StreamForm<Env> {
         StreamForm::new(
             self.key.as_str(),
             self.group.as_str(),
@@ -229,8 +234,8 @@ impl RedisSubscriber {
     /// the window once.
     pub(crate) fn round_stream<'a>(
         &'a mut self,
-        window: &'a Arc<Window<StreamForm>>,
-    ) -> impl Stream<Item = Result<RoundMessage<StreamForm>, RedisError>> + Send + 'a {
+        window: &'a Arc<Window<StreamForm<Env>>>,
+    ) -> impl Stream<Item = Result<RoundMessage<StreamForm<Env>>, RedisError>> + Send + 'a {
         unfold(self, move |s| async move {
             loop {
                 if let Some(failure) = window.take_failure() {
@@ -272,7 +277,8 @@ impl RedisSubscriber {
         // Replay any due delayed-retry entries before reading, so they re-enter the stream and get
         // delivered through the normal read path. Granularity is the read block interval.
         if let Some(cfg) = &self.delay {
-            cfg.sweep_due(self.connection.pool(), &self.key).await?;
+            cfg.sweep_due(self.connection.pool(), &self.key, &self.envelope)
+                .await?;
         }
         // Captured before the read, not after: a blocking read selects its entries against the
         // cursor as it stood when the read started, so a seek that lands mid-read invalidates
@@ -351,6 +357,7 @@ impl RedisSubscriber {
                 id,
                 fields: fields.into_iter().collect(),
                 delivered: None,
+                meta: None,
             })
             .collect())
     }
@@ -411,15 +418,14 @@ impl RedisSubscriber {
     fn annotate_claimed(claimed: Vec<ClaimedEntry>) -> Vec<Entry> {
         claimed
             .into_iter()
-            .map(|entry| {
-                let mut fields = entry.fields;
-                insert_meta_header(&mut fields, DELIVERY_COUNT_HEADER, entry.delivery_count);
-                insert_meta_header(&mut fields, IDLE_MS_HEADER, entry.idle_ms);
-                Entry {
-                    id: entry.id,
-                    fields,
-                    delivered: Some(entry.delivery_count + 1),
-                }
+            .map(|entry| Entry {
+                id: entry.id,
+                fields: entry.fields,
+                delivered: Some(entry.delivery_count + 1),
+                meta: Some(Meta {
+                    delivery_count: entry.delivery_count,
+                    idle_ms: entry.idle_ms,
+                }),
             })
             .collect()
     }
@@ -469,14 +475,16 @@ impl RedisSubscriber {
     ) -> Result<Vec<Entry>, RedisError> {
         let meta = self.pending_meta(limit).await?;
         let mut out = Vec::with_capacity(entries.len());
-        for (id, mut fields) in entries {
+        for (id, fields) in entries {
             let (idle, count) = meta.get(&id).copied().unwrap_or((0, 0));
-            insert_meta_header(&mut fields, DELIVERY_COUNT_HEADER, count);
-            insert_meta_header(&mut fields, IDLE_MS_HEADER, idle);
             out.push(Entry {
                 id,
                 fields,
                 delivered: Some(count),
+                meta: Some(Meta {
+                    delivery_count: count,
+                    idle_ms: idle,
+                }),
             });
         }
         Ok(out)
@@ -502,15 +510,16 @@ impl RedisSubscriber {
     }
 }
 
-impl RedisSubscriber {
+impl<Env: Envelope> RedisSubscriber<Env> {
     /// Yields one batch per read, native all the way down as the batches without a window are:
     /// `size` is the read's `COUNT`, and the batch shares one slot of `window`, so what the batch
     /// handler queued commits with the settles of every entry.
     pub(crate) fn round_batches<'a>(
         &'a mut self,
-        window: &'a Arc<Window<StreamForm>>,
+        window: &'a Arc<Window<StreamForm<Env>>>,
         size: NonZeroUsize,
-    ) -> impl Stream<Item = Result<Vec<RoundMessage<StreamForm>>, RedisError>> + Send + 'a {
+    ) -> impl Stream<Item = Result<Vec<RoundMessage<StreamForm<Env>>>, RedisError>> + Send + 'a
+    {
         let count = u64::try_from(size.get()).unwrap_or(u64::MAX);
         window.fill_at(size.get());
         unfold(self, move |s| async move {
@@ -546,17 +555,8 @@ impl RedisSubscriber {
     }
 }
 
-/// Injects a `u64`-valued well-known header into an entry's raw field map (under the `h:` prefix),
-/// so it surfaces as a [`HeaderMap`](ruststream::HeaderMap) entry on the delivered message.
-fn insert_meta_header(fields: &mut HashMap<String, Vec<u8>>, name: &str, value: u64) {
-    fields.insert(
-        format!("{HEADER_PREFIX}{name}"),
-        value.to_string().into_bytes(),
-    );
-}
-
-impl Subscriber for RedisSubscriber {
-    type Message = RedisMessage;
+impl<Env: Envelope> Subscriber for RedisSubscriber<Env> {
+    type Message = RedisMessage<Env>;
     type Error = RedisError;
 
     /// Yields one message per entry, refilling from Redis when the local buffer drains.
@@ -584,7 +584,7 @@ impl Subscriber for RedisSubscriber {
 
 /// Repositioning the subscription moves its consumer group's cursor, which is shared by every
 /// consumer of that group; see [`RedisGroupSeeker`] for the full contract.
-impl Seekable for RedisSubscriber {
+impl<Env: Envelope> Seekable for RedisSubscriber<Env> {
     type Seeker = RedisGroupSeeker;
 
     fn seeker(&self) -> RedisGroupSeeker {
@@ -592,8 +592,8 @@ impl Seekable for RedisSubscriber {
     }
 }
 
-impl BatchSubscriber for RedisSubscriber {
-    type Batch = Vec<RedisMessage>;
+impl<Env: Envelope> BatchSubscriber for RedisSubscriber<Env> {
+    type Batch = Vec<RedisMessage<Env>>;
 
     /// Yields one batch per non-empty read, native all the way down: `size` is the `COUNT` of the
     /// `XREADGROUP` (or `XAUTOCLAIM`) that fetches it, so the server never sends more than the

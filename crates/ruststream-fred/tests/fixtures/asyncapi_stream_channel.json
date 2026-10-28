@@ -3,5 +3,8 @@
   "group": "workers",
   "consumer": "worker-1",
   "readMode": "claiming",
-  "minIdleMs": 30000
+  "minIdleMs": 30000,
+  "envelope": {
+    "contentType": "application/octet-stream"
+  }
 }

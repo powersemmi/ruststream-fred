@@ -17,6 +17,7 @@ use super::forms::{ListForm, PubSubForm, StreamForm};
 use super::window::{Form, Window};
 use super::{Pipelined, RoundMessage, WindowMode};
 use crate::broker::ConnectedRedisBroker;
+use crate::envelope::{Envelope, EnvelopeChoice};
 use crate::error::RedisError;
 use crate::list::{ListReader, RedisList};
 use crate::pubsub::{PubSubWire, RedisPubSub, RedisPubSubPattern};
@@ -63,8 +64,8 @@ impl<Inner, F: Form> Drop for PipelinedSubscriber<Inner, F> {
     }
 }
 
-impl Subscriber for PipelinedSubscriber<RedisSubscriber, StreamForm> {
-    type Message = RoundMessage<StreamForm>;
+impl<Env: Envelope> Subscriber for PipelinedSubscriber<RedisSubscriber<Env>, StreamForm<Env>> {
+    type Message = RoundMessage<StreamForm<Env>>;
     type Error = RedisError;
 
     /// Yields one delivery per entry, each with a slot in the window.
@@ -77,8 +78,8 @@ impl Subscriber for PipelinedSubscriber<RedisSubscriber, StreamForm> {
     }
 }
 
-impl BatchSubscriber for PipelinedSubscriber<RedisSubscriber, StreamForm> {
-    type Batch = Vec<RoundMessage<StreamForm>>;
+impl<Env: Envelope> BatchSubscriber for PipelinedSubscriber<RedisSubscriber<Env>, StreamForm<Env>> {
+    type Batch = Vec<RoundMessage<StreamForm<Env>>>;
 
     /// Yields one batch per read, `size` being the read's `COUNT`; the batch is one segment of the
     /// window, so its settles leave as one `XACK`.
@@ -96,7 +97,7 @@ impl BatchSubscriber for PipelinedSubscriber<RedisSubscriber, StreamForm> {
 
 /// Repositions the consumer group as the subscription without a window does, which is what a
 /// mount site's `start_at(..)` seeks through.
-impl Seekable for PipelinedSubscriber<RedisSubscriber, StreamForm> {
+impl<Env: Envelope> Seekable for PipelinedSubscriber<RedisSubscriber<Env>, StreamForm<Env>> {
     type Seeker = RedisGroupSeeker;
 
     fn seeker(&self) -> RedisGroupSeeker {
@@ -105,16 +106,16 @@ impl Seekable for PipelinedSubscriber<RedisSubscriber, StreamForm> {
 }
 
 /// A Pub/Sub subscription's dedicated reader, as a pipelined subscription holds it.
-pub struct ChannelReader(PubSubWire);
+pub struct ChannelReader<Env>(PubSubWire<Env>);
 
-impl Debug for ChannelReader {
+impl<Env> Debug for ChannelReader<Env> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChannelReader").finish_non_exhaustive()
     }
 }
 
-impl Subscriber for PipelinedSubscriber<ChannelReader, PubSubForm> {
-    type Message = RoundMessage<PubSubForm>;
+impl<Env: Envelope> Subscriber for PipelinedSubscriber<ChannelReader<Env>, PubSubForm<Env>> {
+    type Message = RoundMessage<PubSubForm<Env>>;
     type Error = RedisError;
 
     /// Yields one delivery per message, each with a slot in the window.
@@ -127,8 +128,8 @@ impl Subscriber for PipelinedSubscriber<ChannelReader, PubSubForm> {
     }
 }
 
-impl Subscriber for PipelinedSubscriber<ListReader, ListForm> {
-    type Message = RoundMessage<ListForm>;
+impl<Env: Envelope> Subscriber for PipelinedSubscriber<ListReader<Env>, ListForm<Env>> {
+    type Message = RoundMessage<ListForm<Env>>;
     type Error = RedisError;
 
     /// Yields one delivery per entry, each with a slot in the window, claiming the read's `COUNT`
@@ -143,8 +144,8 @@ impl Subscriber for PipelinedSubscriber<ListReader, ListForm> {
     }
 }
 
-impl BatchSubscriber for PipelinedSubscriber<ChannelReader, PubSubForm> {
-    type Batch = Vec<RoundMessage<PubSubForm>>;
+impl<Env: Envelope> BatchSubscriber for PipelinedSubscriber<ChannelReader<Env>, PubSubForm<Env>> {
+    type Batch = Vec<RoundMessage<PubSubForm<Env>>>;
 
     /// Yields a batch of the messages already arrived, up to `size`; the batch is one segment of
     /// the window.
@@ -160,8 +161,8 @@ impl BatchSubscriber for PipelinedSubscriber<ChannelReader, PubSubForm> {
     }
 }
 
-impl BatchSubscriber for PipelinedSubscriber<ListReader, ListForm> {
-    type Batch = Vec<RoundMessage<ListForm>>;
+impl<Env: Envelope> BatchSubscriber for PipelinedSubscriber<ListReader<Env>, ListForm<Env>> {
+    type Batch = Vec<RoundMessage<ListForm<Env>>>;
 
     /// Yields one batch per read of up to `size` entries; the batch is one segment of the window.
     ///
@@ -201,11 +202,17 @@ macro_rules! delegates {
 
 /// Where a pipelined descriptor's copies go: where the descriptor's go.
 macro_rules! addressed {
-    ($broker:ty, $descriptor:ty) => {
-        impl<Mode: WindowMode> RedeliveryAddressed<$broker> for Pipelined<$descriptor, Mode> {
+    ($descriptor:ident) => {
+        impl<BrokerEnv, Env, Mode> RedeliveryAddressed<ConnectedRedisBroker<BrokerEnv>>
+            for Pipelined<$descriptor<Env>, Mode>
+        where
+            BrokerEnv: Envelope,
+            Env: EnvelopeChoice<BrokerEnv>,
+            Mode: WindowMode,
+        {
             fn redelivery_address(
                 &self,
-                connected: &$broker,
+                connected: &ConnectedRedisBroker<BrokerEnv>,
             ) -> impl Future<Output = Result<RedeliveryAddress, RedisError>> {
                 self.descriptor().redelivery_address(connected)
             }
@@ -213,15 +220,22 @@ macro_rules! addressed {
     };
 }
 
-impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker> for Pipelined<RedisStream, Mode> {
-    type Subscriber = PipelinedSubscriber<RedisSubscriber, StreamForm>;
+impl<BrokerEnv, Env, Mode> SubscriptionSource<ConnectedRedisBroker<BrokerEnv>>
+    for Pipelined<RedisStream<Env>, Mode>
+where
+    BrokerEnv: Envelope,
+    Env: EnvelopeChoice<BrokerEnv>,
+    Mode: WindowMode,
+{
+    type Subscriber =
+        PipelinedSubscriber<RedisSubscriber<Env::Envelope>, StreamForm<Env::Envelope>>;
     type Copies = AddressedCopies;
 
-    delegates!(ConnectedRedisBroker, key);
+    delegates!(ConnectedRedisBroker<BrokerEnv>, key);
 
     async fn subscribe(
         self,
-        connected: &ConnectedRedisBroker,
+        connected: &ConnectedRedisBroker<BrokerEnv>,
     ) -> Result<Self::Subscriber, RedisError> {
         let inner = connected.subscribe(self.into_descriptor()).await?;
         let window = Window::new(
@@ -236,22 +250,28 @@ impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker> for Pipelined<Re
     }
 }
 
-impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker> for Pipelined<RedisPubSub, Mode> {
-    type Subscriber = PipelinedSubscriber<ChannelReader, PubSubForm>;
+impl<BrokerEnv, Env, Mode> SubscriptionSource<ConnectedRedisBroker<BrokerEnv>>
+    for Pipelined<RedisPubSub<Env>, Mode>
+where
+    BrokerEnv: Envelope,
+    Env: EnvelopeChoice<BrokerEnv>,
+    Mode: WindowMode,
+{
+    type Subscriber = PipelinedSubscriber<ChannelReader<Env::Envelope>, PubSubForm<Env::Envelope>>;
     type Copies = AddressedCopies;
 
-    delegates!(ConnectedRedisBroker, channel);
+    delegates!(ConnectedRedisBroker<BrokerEnv>, channel);
 
     async fn subscribe(
         self,
-        connected: &ConnectedRedisBroker,
+        connected: &ConnectedRedisBroker<BrokerEnv>,
     ) -> Result<Self::Subscriber, RedisError> {
         let channel = self.descriptor().channel().to_owned();
         let inner = connected.open_pubsub(self.into_descriptor()).await?;
         // Pub/Sub reads one message at a time, so the window leaves when nothing is in flight;
         // the capacity only caps a window that never drains.
         let window = Window::new(
-            PubSubForm,
+            PubSubForm::default(),
             inner.round_client(),
             Mode::ATOMIC,
             channel,
@@ -264,10 +284,14 @@ impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker> for Pipelined<Re
 
 /// A pattern reads every channel its glob matches and names none a publish could reach, so the
 /// mount site names where a retry copy goes, as on the pattern subscription without a window.
-impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker>
-    for Pipelined<RedisPubSubPattern, Mode>
+impl<BrokerEnv, Env, Mode> SubscriptionSource<ConnectedRedisBroker<BrokerEnv>>
+    for Pipelined<RedisPubSubPattern<Env>, Mode>
+where
+    BrokerEnv: Envelope,
+    Env: EnvelopeChoice<BrokerEnv>,
+    Mode: WindowMode,
 {
-    type Subscriber = PipelinedSubscriber<ChannelReader, PubSubForm>;
+    type Subscriber = PipelinedSubscriber<ChannelReader<Env::Envelope>, PubSubForm<Env::Envelope>>;
     type Copies = NamedCopies;
 
     fn name(&self) -> &str {
@@ -276,7 +300,7 @@ impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker>
 
     async fn subscribe(
         self,
-        connected: &ConnectedRedisBroker,
+        connected: &ConnectedRedisBroker<BrokerEnv>,
     ) -> Result<Self::Subscriber, RedisError> {
         let pattern = self.descriptor().pattern().to_owned();
         let inner = connected
@@ -285,7 +309,7 @@ impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker>
         // Pub/Sub reads one message at a time, as on a channel: the window leaves when nothing
         // is in flight.
         let window = Window::new(
-            PubSubForm,
+            PubSubForm::default(),
             inner.round_client(),
             Mode::ATOMIC,
             pattern,
@@ -297,19 +321,25 @@ impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker>
 
     #[cfg(feature = "asyncapi")]
     fn channel_bindings(&self) -> Bindings {
-        SubscriptionSource::<ConnectedRedisBroker>::channel_bindings(self.descriptor())
+        SubscriptionSource::<ConnectedRedisBroker<BrokerEnv>>::channel_bindings(self.descriptor())
     }
 }
 
-impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker> for Pipelined<RedisList, Mode> {
-    type Subscriber = PipelinedSubscriber<ListReader, ListForm>;
+impl<BrokerEnv, Env, Mode> SubscriptionSource<ConnectedRedisBroker<BrokerEnv>>
+    for Pipelined<RedisList<Env>, Mode>
+where
+    BrokerEnv: Envelope,
+    Env: EnvelopeChoice<BrokerEnv>,
+    Mode: WindowMode,
+{
+    type Subscriber = PipelinedSubscriber<ListReader<Env::Envelope>, ListForm<Env::Envelope>>;
     type Copies = AddressedCopies;
 
-    delegates!(ConnectedRedisBroker, key);
+    delegates!(ConnectedRedisBroker<BrokerEnv>, key);
 
     async fn subscribe(
         self,
-        connected: &ConnectedRedisBroker,
+        connected: &ConnectedRedisBroker<BrokerEnv>,
     ) -> Result<Self::Subscriber, RedisError> {
         let wire = connected.open_list(self.into_descriptor()).await?;
         let window = Window::new(
@@ -324,6 +354,6 @@ impl<Mode: WindowMode> SubscriptionSource<ConnectedRedisBroker> for Pipelined<Re
     }
 }
 
-addressed!(ConnectedRedisBroker, RedisStream);
-addressed!(ConnectedRedisBroker, RedisList);
-addressed!(ConnectedRedisBroker, RedisPubSub);
+addressed!(RedisStream);
+addressed!(RedisList);
+addressed!(RedisPubSub);

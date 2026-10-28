@@ -51,7 +51,8 @@ Publishes, settlements and the commands a handler sends share the pool.
 [Lifecycle](lifecycle.md) draws when each client opens and closes, and [Path](path.md) the way of
 one entry.
 
-A stream entry carries the payload in a field named `_payload` and each header in a field
-`h:<name>`, so `XADD` and `XREADGROUP` keep both. A list entry and a channel message carry the
-headers in a frame around the payload: a binary frame, or a codec envelope when the descriptor
-names a codec.
+The headers travel beside the payload in an envelope, a type the broker names and a descriptor or
+a publish policy overrides. By default a stream entry carries the payload in a field named
+`_payload` and each header in a field `h:<name>`, and a list entry and a channel message carry the
+headers in a binary frame around the payload. A delivery finds its payload without reading the
+headers and reads them when a handler first asks.
