@@ -87,7 +87,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 # `Framed`'s JSON document carries a payload that is not a JSON text in base64, as CloudEvents'
 # JSON format does.
-base64 = { version = "0.22", optional = true }
+base64 = { version = "0.23", optional = true }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
