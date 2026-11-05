@@ -32,9 +32,8 @@ async fn project(entry: &AuditEntry) -> HandlerOutcome {
 // --8<-- [end:start-at]
 
 fn app(url: &str) -> impl App {
-    RustStream::new(AppInfo::new("audit", "0.1.0")).with_broker(RedisBroker::standalone(url), |b| {
-        b.include(project);
-    })
+    RustStream::new(AppInfo::new("audit", "0.1.0"))
+        .with_broker(RedisBroker::standalone(url), |b| b.include(project))
 }
 
 // The scenarios are the tests below; the command in the header runs them.

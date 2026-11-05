@@ -100,8 +100,8 @@ fn app() -> impl App {
             // The receipt joins the delivery's round and leaves after the picks.
             b.include(accept.pipeline())
                 .out_reply(Publish)
-                .transform(InRound);
-            b.include(capture.pipeline().atomic());
+                .transform(InRound)
+                .include(capture.pipeline().atomic())
         },
     )
 }

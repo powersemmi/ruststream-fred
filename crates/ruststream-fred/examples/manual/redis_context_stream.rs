@@ -59,7 +59,7 @@ fn app() -> impl App {
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
             let trace = subscriber(RedisStream::new("orders").group("audit"), Trace);
-            b.include(trace.reply().build()).out_reply(Publish);
+            b.include(trace.reply().build()).out_reply(Publish)
         },
     )
 }

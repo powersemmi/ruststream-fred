@@ -34,10 +34,8 @@ async fn ship(order: &Order) -> HandlerOutcome {
 
 fn app() -> impl App {
     let broker = RedisBroker::standalone("redis://localhost:6379");
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(bill);
-        b.include(ship);
-    })
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(broker, |b| b.include(bill).include(ship))
 }
 // --8<-- [end:groups]
 

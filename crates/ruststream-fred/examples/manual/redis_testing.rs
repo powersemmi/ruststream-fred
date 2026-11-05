@@ -124,14 +124,14 @@ fn app() -> impl App<State = ()> {
     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
-            b.include(subscriber(RedisStream::new("payments").group("workers"), Accept).build());
-            b.include(
-                subscriber(RedisList::new("settlements").reliable(), Settle)
-                    .reply()
-                    .build(),
-            )
-            .out_reply(stream::Publish);
-            b.include(subscriber(invoices, Bill).build());
+            b.include(subscriber(RedisStream::new("payments").group("workers"), Accept).build())
+                .include(
+                    subscriber(RedisList::new("settlements").reliable(), Settle)
+                        .reply()
+                        .build(),
+                )
+                .out_reply(stream::Publish)
+                .include(subscriber(invoices, Bill).build())
         },
     )
 }

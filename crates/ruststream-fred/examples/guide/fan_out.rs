@@ -67,14 +67,14 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("storefront", "0.1.0")).with_broker(
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
-            b.include(refresh_price);
-            b.include(reindex_price);
-            // A glob is no channel a publish can reach, so the registration names one for copies.
-            b.include(track_order)
+            b.include(refresh_price)
+                .include(reindex_price)
+                // A glob is no channel a publish can reach, so the registration names one for copies.
+                .include(track_order)
                 .out_retry(pubsub::Publish::default())
-                .to("orders.events.retry");
-            b.include(announce_shipment)
-                .out_reply(pubsub::Publish::default());
+                .to("orders.events.retry")
+                .include(announce_shipment)
+                .out_reply(pubsub::Publish::default())
         },
     )
 }

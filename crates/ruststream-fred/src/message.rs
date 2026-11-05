@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use fred::clients::Pool;
 use fred::interfaces::StreamsInterface;
-use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned, Positioned};
+use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned, Positioned, Settle};
 
 use crate::delay::DelayConfig;
 use crate::envelope::{EntryBody, Envelope, RustStream};
@@ -205,12 +205,6 @@ impl<Env: Envelope> IncomingMessage for RedisMessage<Env> {
         Partitioned::partition_key(self)
     }
 
-    async fn ack(mut self) -> Result<(), AckError> {
-        let handle = self.ack.take().expect("RedisMessage settled twice");
-        self.seeker.ensure_open_to_settle()?;
-        xack(&handle).await
-    }
-
     /// How many times the server has delivered this entry, counting this delivery.
     ///
     /// Answered on the two read modes that claim, from the count Redis keeps in the pending
@@ -220,6 +214,14 @@ impl<Env: Envelope> IncomingMessage for RedisMessage<Env> {
     /// claims nothing and has no count of its own, so a cap on it is the runtime's header instead.
     fn redelivery_count(&self) -> Option<u64> {
         self.delivered
+    }
+}
+
+impl<Env: Envelope> Settle for RedisMessage<Env> {
+    async fn ack(mut self) -> Result<(), AckError> {
+        let handle = self.ack.take().expect("RedisMessage settled twice");
+        self.seeker.ensure_open_to_settle()?;
+        xack(&handle).await
     }
 
     async fn nack(mut self, requeue: bool) -> Result<(), AckError> {

@@ -6,13 +6,14 @@ use std::future::{Future, ready};
 use std::sync::{Arc, Mutex};
 
 use bytes::BytesMut;
+use fred::clients::Pool;
 use fred::interfaces::{StreamsInterface, TransactionInterface};
 use fred::types::Value;
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::Bindings;
 use ruststream::{
-    DefaultPublish, HeaderMap, OutgoingMessage, OwnedTransactions, PairError, PublishPolicy,
-    Publisher, Take, Transaction, TransactionalPublisher,
+    DefaultPublish, HeaderMap, OutgoingMessage, OwnedTransactions, PairError, PublishMessageError,
+    PublishOutcome, PublishPolicy, Publisher, Take, Transaction, TransactionalPublisher,
 };
 use tracing::warn;
 
@@ -21,6 +22,7 @@ use crate::envelope::{Envelope, EnvelopeChoice, Inherited, RustStream};
 use crate::error::RedisError;
 use crate::list::push;
 use crate::partition::{RedisPublishOptions, resolved_headers};
+use crate::pipeline::Round;
 use crate::pubsub::PubSubMode;
 use crate::pubsub::send;
 use crate::route::Route;
@@ -95,7 +97,7 @@ async fn flush_block(core: &RedisCore, buffered: Vec<Buffered>) -> Result<(), Re
 ///         |b| {
 ///             // `Publish` is this policy under the stream prelude's name. No connection exists
 ///             // yet; the runtime pairs it with the connected broker at startup.
-///             b.include(accept).out_reply(Publish);
+///             b.include(accept).out_reply(Publish)
 ///         },
 ///     )
 /// }
@@ -152,7 +154,7 @@ impl<Env> RedisPublish<Env> {
     ///         RedisBroker::standalone("redis://localhost:6379"),
     ///         |b| {
     ///             // A faststream service reads `orders.accepted`.
-    ///             b.include(accept).out_reply(Publish.envelope(FastStream));
+    ///             b.include(accept).out_reply(Publish.envelope(FastStream))
     ///         },
     ///     )
     /// }
@@ -230,7 +232,7 @@ where
 ///             // batch's replies land together, as one MULTI / EXEC block.
 ///             b.include(price.batch(nonzero!(32)))
 ///                 .out_reply(TransactionalPublish)
-///                 .transactional();
+///                 .transactional()
 ///         },
 ///     )
 /// }
@@ -283,7 +285,7 @@ impl<Env> RedisTransactionalPublish<Env> {
     ///             // A faststream service reads `orders.priced`, one batch at a time.
     ///             b.include(price.batch(nonzero!(32)))
     ///                 .out_reply(TransactionalPublish.envelope(FastStream))
-    ///                 .transactional();
+    ///                 .transactional()
     ///         },
     ///     )
     /// }
@@ -380,8 +382,8 @@ where
 ///         |b| {
 ///             // The reply names no policy, so it leaves through the default one: `jobs` is
 ///             // read as a list here, so the reply is an `LPUSH`.
-///             b.include(plan);
-///             b.include(work);
+///             b.include(plan)
+///                 .include(work)
 ///         },
 ///     )
 /// }
@@ -468,11 +470,25 @@ impl<Env: Envelope> Publisher for RedisDefaultPublisher<Env> {
     /// whichever family the name is written in.
     type Options = RedisPublishOptions;
 
-    async fn publish(
+    async fn publish<'msg>(
         &self,
-        msg: OutgoingMessage<'_, BytesMut>,
+        msg: OutgoingMessage<'msg, BytesMut>,
         options: Option<&Self::Options>,
-    ) -> Result<(), Self::Error> {
+    ) -> PublishOutcome<'msg, Self::Error, Take> {
+        let round = self
+            .core
+            .rounds()
+            .joined(self.round_name, joins_round(options));
+        // The connection is asked for before the body is sealed, while the message is still
+        // whole: a refusal from a closed connection hands it back, and the sealed body is the
+        // client's from here on.
+        let via = match round {
+            Some(round) => Via::Round(round),
+            None => match self.core.pool() {
+                Ok(pool) => Via::Direct(pool),
+                Err(error) => return Err(PublishMessageError::with_message(error, msg)),
+            },
+        };
         let (key, payload, headers) = msg.into_parts();
         let headers = resolved_headers(headers, options);
         let own = &self.envelope;
@@ -485,26 +501,29 @@ impl<Env: Envelope> Publisher for RedisDefaultPublisher<Env> {
                 .seal(own, key, &payload, &headers)
                 .map(|body| Sealed::Channel(mode, body)),
         }?;
-        if let Some(round) = self
-            .core
-            .rounds()
-            .joined(self.round_name, joins_round(options))
-        {
-            let joined = match sealed {
+        let sent = match via {
+            Via::Round(round) => match sealed {
                 Sealed::Entry(fields) => round.xadd(key, fields).await,
                 Sealed::List(body) => round.lpush(key, body, None).await,
                 Sealed::Channel(mode, body) => {
                     round.publish(key, body, mode == PubSubMode::Sharded).await
                 }
-            };
-            return joined.map_err(RedisError::publish);
-        }
-        match sealed {
-            Sealed::Entry(fields) => append(&self.core, key, fields).await,
-            Sealed::List(body) => push(&self.core, None, key, body).await,
-            Sealed::Channel(mode, body) => send(&self.core, mode, key, body).await,
-        }
+            }
+            .map_err(RedisError::publish),
+            Via::Direct(pool) => match sealed {
+                Sealed::Entry(fields) => append(&pool, key, fields).await,
+                Sealed::List(body) => push(&pool, None, key, body).await,
+                Sealed::Channel(mode, body) => send(&pool, mode, key, body).await,
+            },
+        };
+        Ok(sent?)
     }
+}
+
+/// Where a publish goes: into the round of the delivery being handled, or straight to the server.
+enum Via {
+    Round(Round),
+    Direct(Pool),
 }
 
 /// A message the default publisher wrote in the envelope of the name's route, ready for the
@@ -522,12 +541,7 @@ pub(crate) fn joins_round(options: Option<&RedisPublishOptions>) -> bool {
 
 /// `XADD`s one entry onto the stream `key`: the stream publish, shared by [`RedisPublisher`] and
 /// [`RedisDefaultPublisher`].
-async fn append(
-    core: &RedisCore,
-    key: &str,
-    fields: Vec<(String, Vec<u8>)>,
-) -> Result<(), RedisError> {
-    let pool = core.pool()?;
+async fn append(pool: &Pool, key: &str, fields: Vec<(String, Vec<u8>)>) -> Result<(), RedisError> {
     let _: String = pool
         .xadd(key, false, None::<()>, "*", fields)
         .await
@@ -574,7 +588,9 @@ async fn append(
 ///
 /// ```
 /// # mod demo {
-/// use ruststream::OutgoingMessage;
+/// use std::error::Error;
+/// use std::io;
+///
 /// use ruststream_fred::stream::prelude::*;
 /// use serde::{Deserialize, Serialize};
 ///
@@ -588,25 +604,26 @@ async fn append(
 ///     Ok(orders.iter().map(|order| Order { id: order.id }).collect())
 /// }
 ///
+/// /// The owned kind: a value the service holds, committed as one MULTI / EXEC.
+/// async fn seed(publisher: impl OwnedTransactions) -> Result<(), Box<dyn Error + Send + Sync>> {
+///     let mut seed = publisher.owned_transaction().await?;
+///     seed.publish("processed", &Order { id: 0 }).await?;
+///     seed.commit().await?;
+///     Ok(())
+/// }
+///
 /// #[ruststream::app]
 /// fn app() -> impl App {
 ///     let broker = RedisBroker::standalone("redis://localhost:6379").default_group("workers");
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-///         // The borrowed kind: one batch's replies, buffered and committed as one MULTI / EXEC.
-///         b.include(process.batch(nonzero!(32)))
-///             .out_reply(TransactionalPublish)
-///             .transactional();
-///
-///         // The owned kind, in the hook where a service makes its first publishes.
+///         // The hook where a service makes its first publishes.
 ///         b.after_startup(TransactionalPublish, async move |publisher| {
-///             let mut seed = publisher.transaction().await?;
-///             seed.publish(
-///                 OutgoingMessage::new("processed", br#"{"id":0}"#.as_slice()),
-///                 None,
-///             )
-///             .await?;
-///             seed.commit().await
-///         });
+///             seed(publisher).await.map_err(io::Error::other)
+///         })
+///         // The borrowed kind: one batch's replies, buffered and committed as one MULTI / EXEC.
+///         .include(process.batch(nonzero!(32)))
+///         .out_reply(TransactionalPublish)
+///         .transactional()
 ///     })
 /// }
 /// # }
@@ -692,11 +709,11 @@ impl<Env: Envelope> Publisher for RedisPublisher<Env> {
     /// to a call site is the partition key, which leaves as an entry field like any other header.
     type Options = RedisPublishOptions;
 
-    async fn publish(
+    async fn publish<'msg>(
         &self,
-        msg: OutgoingMessage<'_, BytesMut>,
+        msg: OutgoingMessage<'msg, BytesMut>,
         options: Option<&Self::Options>,
-    ) -> Result<(), Self::Error> {
+    ) -> PublishOutcome<'msg, Self::Error, Take> {
         if let Some(round) = self
             .core
             .rounds()
@@ -704,8 +721,14 @@ impl<Env: Envelope> Publisher for RedisPublisher<Env> {
         {
             let (key, payload, headers) = msg.into_parts();
             let fields = self.entry(key, payload, &resolved_headers(headers, options))?;
-            return round.xadd(key, fields).await.map_err(RedisError::publish);
+            return Ok(round.xadd(key, fields).await.map_err(RedisError::publish)?);
         }
+        // The connection is asked for while the message is still whole, so a refusal from a
+        // closed connection hands it back; the entry fields are the client's from here on.
+        let pool = match self.core.pool() {
+            Ok(pool) => pool,
+            Err(error) => return Err(PublishMessageError::with_message(error, msg)),
+        };
         let (key, payload, headers) = msg.into_parts();
         let entry: Buffered = (
             key.to_owned(),
@@ -714,7 +737,6 @@ impl<Env: Envelope> Publisher for RedisPublisher<Env> {
         if self.buffer_if_in_txn(&entry) {
             return Ok(());
         }
-        let pool = self.core.pool()?;
         let (key, fields) = entry;
         let _: String = pool
             .xadd(key, false, None::<()>, "*", fields)
@@ -824,13 +846,21 @@ impl<Env: Envelope> OwnedTransactions for RedisPublisher<Env> {
 ///
 /// ```
 /// # mod demo {
-/// use ruststream::OutgoingMessage;
+/// use std::error::Error;
+/// use std::io;
+///
 /// use ruststream_fred::stream::prelude::*;
-/// # use serde::Deserialize;
-/// # #[derive(Deserialize)]
-/// # struct Order {
-/// #     id: u64,
-/// # }
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Deserialize, Serialize, Outgoing)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[derive(Serialize, Outgoing)]
+/// struct Seeded {
+///     count: u32,
+/// }
 /// #
 /// # #[subscriber(RedisStream::new("orders").group("workers"))]
 /// # async fn handle(order: &Order) -> HandlerOutcome {
@@ -838,23 +868,26 @@ impl<Env: Envelope> OwnedTransactions for RedisPublisher<Env> {
 /// #     HandlerOutcome::ack()
 /// # }
 ///
+/// /// Two buffers open at once on one handle; each commits as its own MULTI / EXEC.
+/// async fn seed(publisher: impl OwnedTransactions) -> Result<(), Box<dyn Error + Send + Sync>> {
+///     let mut orders = publisher.owned_transaction().await?;
+///     let mut audit = publisher.owned_transaction().await?;
+///     orders.publish("orders", &Order { id: 0 }).await?;
+///     audit.publish("audit", &Seeded { count: 1 }).await?;
+///     orders.commit().await?;
+///     audit.commit().await?;
+///     Ok(())
+/// }
+///
 /// #[ruststream::app]
 /// fn app() -> impl App {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(handle);
-///             // Two buffers open at once on one handle; each commits as its own MULTI / EXEC.
 ///             b.after_startup(TransactionalPublish, async move |publisher| {
-///                 let mut orders = publisher.transaction().await?;
-///                 let mut audit = publisher.transaction().await?;
-///                 let seed = OutgoingMessage::new("orders", br#"{"id":0}"#.as_slice());
-///                 orders.publish(seed, None).await?;
-///                 let note = OutgoingMessage::new("audit", br#"{"seeded":1}"#.as_slice());
-///                 audit.publish(note, None).await?;
-///                 orders.commit().await?;
-///                 audit.commit().await
-///             });
+///                 seed(publisher).await.map_err(io::Error::other)
+///             })
+///             .include(handle)
 ///         },
 ///     )
 /// }
@@ -904,16 +937,16 @@ impl<Env: Envelope> Transaction for RedisTransaction<Env> {
     type Options = RedisPublishOptions;
 
     /// Buffers the `XADD` locally; nothing reaches the server before [`commit`](Self::commit).
-    fn publish(
+    fn publish<'msg>(
         &mut self,
-        msg: OutgoingMessage<'_, BytesMut>,
+        msg: OutgoingMessage<'msg, BytesMut>,
         options: Option<&Self::Options>,
-    ) -> impl Future<Output = Result<(), Self::Error>> {
+    ) -> impl Future<Output = PublishOutcome<'msg, Self::Error, Take>> {
         let (key, payload, headers) = msg.into_parts();
         let fields = self
             .envelope
             .seal_entry(Vec::from(payload), &resolved_headers(headers, options))
-            .map_err(|err| RedisError::seal(key, err));
+            .map_err(|err| RedisError::seal(key, err).into());
         ready(fields.map(|fields| self.buffered.push((key.to_owned(), fields))))
     }
 

@@ -26,9 +26,7 @@ async fn by_name(order: &Order) -> HandlerOutcome {
 
 /// The service's app, on the broker `main` builds.
 fn app(broker: RedisBroker) -> RustStream {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(by_name);
-    })
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| b.include(by_name))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

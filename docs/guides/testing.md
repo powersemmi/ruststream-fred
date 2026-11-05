@@ -23,7 +23,7 @@ The tests need the `testing` feature of `ruststream-fred` and a Tokio runtime:
 
 ```toml title="Cargo.toml"
 [dev-dependencies]
-ruststream-fred = { version = "0.7", features = ["testing"] }
+ruststream-fred = { version = "0.8", features = ["testing"] }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
 ```
 

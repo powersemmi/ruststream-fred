@@ -25,7 +25,7 @@ A [`TestApp`](../testing/index.md) test runs no handshake, so the provider is no
 The dependency lines:
 
 ```toml
-ruststream-fred = { version = "0.7", features = ["credential-provider"] }
+ruststream-fred = { version = "0.8", features = ["credential-provider"] }
 async-trait = "0.1"
 ```
 

@@ -78,9 +78,11 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
-            b.include(bill).out_reply(stream::Publish);
-            b.include(render).out_reply(pubsub::Publish::default());
-            b.include(refresh_price);
+            b.include(bill)
+                .out_reply(stream::Publish)
+                .include(render)
+                .out_reply(pubsub::Publish::default())
+                .include(refresh_price)
         },
     )
 }

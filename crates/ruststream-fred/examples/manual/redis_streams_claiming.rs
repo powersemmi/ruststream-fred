@@ -60,7 +60,7 @@ fn app(url: &str) -> impl App {
         |b| {
             let orders =
                 RedisStream::claiming("orders", Duration::from_secs(30)).group("fulfilment");
-            b.include(subscriber(orders, Fulfil).build());
+            b.include(subscriber(orders, Fulfil).build())
         },
     )
 }

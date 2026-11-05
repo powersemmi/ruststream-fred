@@ -62,12 +62,10 @@ async fn ship(
 
 #[ruststream::app]
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("shipping", "0.1.0")).with_broker(
-        RedisBroker::standalone("redis://localhost:6379"),
-        |b| {
-            b.include(ship).out(Shipments, TransactionalPublish).build();
-        },
-    )
+    RustStream::new(AppInfo::new("shipping", "0.1.0"))
+        .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
+            b.include(ship).out(Shipments, TransactionalPublish)
+        })
 }
 // --8<-- [end:transaction]
 

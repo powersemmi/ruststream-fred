@@ -91,12 +91,12 @@ fn app() -> impl App<State = AppState> {
             // `payments.dlq` stream with `XADD`, payload and headers as they arrived.
             b.include(charge)
                 .max_attempts(nonzero!(5u32))
-                .dead_letter("payments.dlq");
-            // Three deliveries per refund; the third failure is `LPUSH`ed onto `refunds.failed`.
-            b.include(refund)
+                .dead_letter("payments.dlq")
+                // Three deliveries per refund; the third failure is `LPUSH`ed onto `refunds.failed`.
+                .include(refund)
                 .max_attempts(nonzero!(3u32))
-                .dead_letter("refunds.failed");
-            b.include(on_dead_letter);
+                .dead_letter("refunds.failed")
+                .include(on_dead_letter)
         })
 }
 // --8<-- [end:declaration]

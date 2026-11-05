@@ -38,12 +38,10 @@ async fn accept(order: &Order, Ctx(pipeline): Ctx<keys::Pipeline>) -> HandlerOut
 
 #[ruststream::app]
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        RedisBroker::standalone("redis://localhost:6379"),
-        |b| {
-            b.include(accept.pipeline());
-        },
-    )
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
+            b.include(accept.pipeline())
+        })
 }
 // --8<-- [end:pipeline]
 

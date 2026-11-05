@@ -7,6 +7,9 @@
 //! REDIS_CLUSTER_TEST_URL=127.0.0.1:7000 cargo test --example guide_cluster --features testing
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
+
 use ruststream_fred::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -64,9 +67,9 @@ async fn on_event(event: &Event) -> HandlerOutcome {
 // --8<-- [start:app]
 fn service(broker: RedisBroker) -> impl App<State = ()> {
     RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(broker, |b| {
-        b.include(run_job);
-        b.include(invoice.pipeline().atomic());
-        b.include(on_event);
+        b.include(run_job)
+            .include(invoice.pipeline().atomic())
+            .include(on_event)
     })
 }
 
@@ -171,12 +174,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_reliable_list_across_two_slots_does_not_start() {
-        let app = RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(
-            RedisBroker::cluster(["redis-1.internal:6379"]),
-            |b| {
-                b.include(untagged);
-            },
-        );
+        let app = RustStream::new(AppInfo::new("shop", "0.1.0"))
+            .with_broker(RedisBroker::cluster(["redis-1.internal:6379"]), |b| {
+                b.include(untagged)
+            });
 
         let err = TestApp::start(app)
             .await
@@ -202,12 +203,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_block_across_two_slots_commits_nothing() -> Result<(), Box<dyn Error>> {
-        let app = RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(
-            RedisBroker::cluster(["redis-1.internal:6379"]),
-            |b| {
-                b.include(cross_slot.pipeline().atomic());
-            },
-        );
+        let app = RustStream::new(AppInfo::new("shop", "0.1.0"))
+            .with_broker(RedisBroker::cluster(["redis-1.internal:6379"]), |b| {
+                b.include(cross_slot.pipeline().atomic())
+            });
         let tb = TestApp::start(app).await?;
 
         tb.broker::<RedisBroker>()

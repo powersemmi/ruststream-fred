@@ -25,8 +25,8 @@ use ruststream::testing::{InProcess, TestApp, TestableBroker, expect_published};
 use ruststream::{
     AckError, AddressedCopies, BatchSubscriber, ConnectedBroker, HeaderMap, IncomingMessage,
     NamedCopies, Outgoing, OutgoingMessage, OwnedTransactions, Partitioned, Publisher, RawMessage,
-    RedeliveryAddressed, Serialized, Subscribe, Subscriber, SubscriptionSource, Transaction,
-    TransactionalPublisher, nonzero,
+    RedeliveryAddressed, Serialized, Settle, Subscribe, Subscriber, SubscriptionSource,
+    Transaction, TransactionalPublisher, nonzero,
 };
 use ruststream_fred::{
     ConnectedRedisBroker, PARTITION_KEY_HEADER, RedisBroker, RedisError, RedisList,
@@ -34,6 +34,8 @@ use ruststream_fred::{
     RedisPubSubPatternPipeline, RedisPubSubPublish, RedisPublishSteps, RedisStream, StreamStart,
 };
 use serde::{Deserialize, Serialize};
+
+use crate::lent::lent;
 
 const WAIT: Duration = Duration::from_secs(1);
 
@@ -54,7 +56,7 @@ async fn connected() -> ConnectedRedisBroker {
 async fn next_payload<S, M>(stream: &mut S) -> Vec<u8>
 where
     S: Stream<Item = Result<M, RedisError>> + Unpin,
-    M: IncomingMessage,
+    M: Settle,
 {
     let msg = next_message(stream).await;
     let payload = msg.payload().to_vec();
@@ -469,7 +471,7 @@ async fn batch_drains_in_publish_order() {
 
     // Opened smaller than the run, so the assertion below reads the contract rather than the
     // publish count: a batch never carries more than the size the subscription named.
-    let mut batches = Box::pin(sub.batches(nonzero!(3)));
+    let mut batches = lent(sub.batches(nonzero!(3)));
     let batch = tokio::time::timeout(WAIT, batches.next())
         .await
         .expect("batch within timeout")
@@ -501,7 +503,7 @@ async fn batches_can_be_reentered() {
         .await
         .expect("publish");
     {
-        let mut batches = Box::pin(sub.batches(nonzero!(8)));
+        let mut batches = lent(sub.batches(nonzero!(8)));
         let batch = tokio::time::timeout(WAIT, batches.next())
             .await
             .expect("batch within timeout")
@@ -520,7 +522,7 @@ async fn batches_can_be_reentered() {
         .publish(OutgoingMessage::new("batch.reenter", b"two"), None)
         .await
         .expect("publish");
-    let mut batches = Box::pin(sub.batches(nonzero!(8)));
+    let mut batches = lent(sub.batches(nonzero!(8)));
     let batch = tokio::time::timeout(WAIT, batches.next())
         .await
         .expect("batch within timeout")
@@ -1186,7 +1188,12 @@ async fn a_publisher_errors_after_shutdown() {
         .publish(OutgoingMessage::new("post.shutdown", b"after"), None)
         .await
         .expect_err("publishing through a handle aliasing a closed connection must error");
-    assert!(matches!(err, RedisError::ShutDown), "got {err}");
+    assert!(matches!(err.error(), RedisError::ShutDown), "got {err}");
+    let unsent = err
+        .into_message()
+        .expect("a refusal before the body is sealed hands it back");
+    assert_eq!(unsent.name(), "post.shutdown");
+    assert_eq!(unsent.into_payload().as_ref(), b"after");
 }
 
 /// Pub/Sub cannot acknowledge on a real server, so it does not acknowledge here either.
@@ -1439,19 +1446,20 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("svc", "0.1.0"))
         .on_startup(|()| async { Ok::<_, std::convert::Infallible>(Attempts::default()) })
         .with_broker(RedisBroker::standalone(URL), |b| {
-            b.include(ack_order);
-            b.include(retry_then_ack);
-            b.include(confirm_order);
-            b.include(receipt_for_order);
-            b.include(drain_job);
-            b.include(note_notification);
-            b.include(shared_a);
-            b.include(shared_b);
-            b.include(shared_audit);
-            b.include(announce).out_reply(RedisPubSubPublish::new());
-            b.include(glob_events)
+            b.include(ack_order)
+                .include(retry_then_ack)
+                .include(confirm_order)
+                .include(receipt_for_order)
+                .include(drain_job)
+                .include(note_notification)
+                .include(shared_a)
+                .include(shared_b)
+                .include(shared_audit)
+                .include(announce)
+                .out_reply(RedisPubSubPublish::new())
+                .include(glob_events)
                 .out_retry(RedisPubSubPublish::new())
-                .to("events.retry");
+                .to("events.retry")
         })
 }
 
@@ -1655,12 +1663,8 @@ async fn recover_orphan(order: &Order) -> HandlerOutcome {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stream_without_a_group_is_refused_in_process_too() {
-    let app = RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(
-        RedisBroker::standalone(URL),
-        |b| {
-            b.include(ungrouped);
-        },
-    );
+    let app = RustStream::new(AppInfo::new("svc", "0.1.0"))
+        .with_broker(RedisBroker::standalone(URL), |b| b.include(ungrouped));
     let err = TestApp::start(app)
         .await
         .expect_err("the subscription must be refused at startup");
@@ -1672,12 +1676,8 @@ async fn a_stream_without_a_group_is_refused_in_process_too() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_list_recovery_without_min_idle_is_refused_in_process_too() {
-    let app = RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(
-        RedisBroker::standalone(URL),
-        |b| {
-            b.include(recover_orphan);
-        },
-    );
+    let app = RustStream::new(AppInfo::new("svc", "0.1.0"))
+        .with_broker(RedisBroker::standalone(URL), |b| b.include(recover_orphan));
     let err = TestApp::start(app)
         .await
         .expect_err("the subscription must be refused at startup");
@@ -1688,12 +1688,8 @@ async fn a_list_recovery_without_min_idle_is_refused_in_process_too() {
 /// descriptor addresses none itself.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pattern_registration_without_a_destination_refuses_to_start() {
-    let app = RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(
-        RedisBroker::standalone(URL),
-        |b| {
-            b.include(glob_events);
-        },
-    );
+    let app = RustStream::new(AppInfo::new("svc", "0.1.0"))
+        .with_broker(RedisBroker::standalone(URL), |b| b.include(glob_events));
     let err = TestApp::start(app)
         .await
         .expect_err("the registration must be refused at startup");

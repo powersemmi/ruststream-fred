@@ -8,6 +8,8 @@
 //!     cargo test --example manual_redis_broker_credential_provider --features testing,credential-provider
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 // A plain build compiles the service; the tests that use it exist only in the test build.
 #![cfg_attr(not(test), allow(dead_code, unused_imports))]
 
@@ -65,7 +67,7 @@ impl Handle<Order> for Take {
 
 fn service(broker: RedisBroker) -> impl App<State = ()> {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(subscriber(RedisStream::new("rotated.orders").group("workers"), Take).build());
+        b.include(subscriber(RedisStream::new("rotated.orders").group("workers"), Take).build())
     })
 }
 

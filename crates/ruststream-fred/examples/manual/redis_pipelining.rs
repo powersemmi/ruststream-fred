@@ -54,7 +54,7 @@ fn app() -> impl App {
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
             let accept = subscriber(RedisStream::new("orders").group("workers"), Accept);
-            b.include(accept.pipeline().build());
+            b.include(accept.pipeline().build())
         },
     )
 }

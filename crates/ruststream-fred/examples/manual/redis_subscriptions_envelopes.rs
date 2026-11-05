@@ -165,17 +165,17 @@ fn app() -> impl App {
     let broker = RedisBroker::standalone("redis://localhost:6379").envelope(FastStream);
     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(broker, |b| {
         let orders = RedisStream::new("orders").group("dispatch");
+        let jobs = RedisList::new("jobs").envelope(Framed::new(JsonCodec));
+        let prices = RedisPubSub::new("prices").envelope(NoOp);
         // Both ends of `jobs` name JSON, so `redis-cli` and RedisInsight show each job as text.
         b.include(subscriber(orders, Dispatch).build())
             .out(
                 Jobs,
                 RedisListPublish::new().envelope(Framed::new(JsonCodec)),
             )
-            .build();
-        let jobs = RedisList::new("jobs").envelope(Framed::new(JsonCodec));
-        b.include(subscriber(jobs, Run).build());
-        let prices = RedisPubSub::new("prices").envelope(NoOp);
-        b.include(subscriber(prices, OnPrice).build());
+            .build()
+            .include(subscriber(jobs, Run).build())
+            .include(subscriber(prices, OnPrice).build())
     })
 }
 // --8<-- [end:envelopes]
@@ -249,7 +249,7 @@ fn legacy_app() -> impl App {
         RedisBroker::standalone("redis://localhost:6379").envelope(MetaLine),
         |b| {
             let jobs = RedisList::new("legacy.jobs");
-            b.include(subscriber(jobs, Legacy).build());
+            b.include(subscriber(jobs, Legacy).build())
         },
     )
 }

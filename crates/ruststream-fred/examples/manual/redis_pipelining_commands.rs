@@ -104,13 +104,13 @@ fn app(url: &str) -> impl App<State = ()> {
         RedisBroker::standalone(url),
         |b| {
             let ship = subscriber(RedisStream::new("orders").group("workers"), Ship);
-            b.include(ship.pipeline().build());
             let ship_first = subscriber(
                 RedisStream::new("orders.priority").group("workers"),
                 ShipFirst,
             );
-            b.include(ship_first.pipeline().build());
-            b.include(subscriber(RedisList::new("shipments"), Dispatch).build());
+            b.include(ship.pipeline().build())
+                .include(ship_first.pipeline().build())
+                .include(subscriber(RedisList::new("shipments"), Dispatch).build())
         },
     )
 }

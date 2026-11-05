@@ -362,7 +362,7 @@ impl<Env: Envelope> BuildContext<RedisPubSubMessage<Env>> for PoolContext {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(work.pipeline());
+///             b.include(work.pipeline())
 ///         },
 ///     )
 /// }
@@ -645,7 +645,7 @@ pub mod keys {
     ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
     ///         RedisBroker::standalone("redis://localhost:6379"),
     ///         |b| {
-    ///             b.include(handle);
+    ///             b.include(handle)
     ///         },
     ///     )
     /// }

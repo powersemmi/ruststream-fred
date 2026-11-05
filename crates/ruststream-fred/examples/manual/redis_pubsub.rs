@@ -88,13 +88,13 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("market", "0.1.0")).with_broker(
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
-            b.include(subscriber(prices(), OnPrice).build());
-            // A glob is not a channel a `PUBLISH` can name, so the registration names the one
-            // a retry copy goes to. The pattern matches it, so the copy comes back here.
-            b.include(subscriber(quotes(), OnQuote).build())
+            b.include(subscriber(prices(), OnPrice).build())
+                // A glob is not a channel a `PUBLISH` can name, so the registration names the one
+                // a retry copy goes to. The pattern matches it, so the copy comes back here.
+                .include(subscriber(quotes(), OnQuote).build())
                 .out_retry(Publish::default())
-                .to("quotes.retry");
-            b.include(subscriber(trades(), OnTrade).build());
+                .to("quotes.retry")
+                .include(subscriber(trades(), OnTrade).build())
         },
     )
 }

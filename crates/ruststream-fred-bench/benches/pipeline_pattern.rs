@@ -53,7 +53,7 @@ fn plain_app(messages: usize) -> Pending {
     common::pending_on(Feed::Pattern, messages, |b| {
         b.include(consume_matched.pipeline())
             .out_retry(pubsub::Publish::default())
-            .to(common::PATTERN_RETRY);
+            .to(common::PATTERN_RETRY)
     })
 }
 
@@ -69,7 +69,7 @@ fn atomic_app(messages: usize) -> Pending {
     common::pending_on(Feed::Pattern, messages, |b| {
         b.include(consume_matched.pipeline().atomic())
             .out_retry(pubsub::Publish::default())
-            .to(common::PATTERN_RETRY);
+            .to(common::PATTERN_RETRY)
     })
 }
 

@@ -27,9 +27,9 @@ async fn bill(orders: &[Order]) -> HandlerOutcome {
 fn app() -> impl App<State = ()> {
     let broker = RedisBroker::standalone("redis://localhost:6379");
     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(broker, |b| {
-        b.include(bill.batch(nonzero!(16)));
-        b.include(pack.batch(nonzero!(16)));
-        b.include(count.batch(nonzero!(16)));
+        b.include(bill.batch(nonzero!(16)))
+            .include(pack.batch(nonzero!(16)))
+            .include(count.batch(nonzero!(16)))
     })
 }
 // --8<-- [end:stream]

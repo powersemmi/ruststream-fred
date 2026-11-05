@@ -36,7 +36,7 @@ fn app() -> impl App {
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
             // A `PUBLISH` to the `audit` channel, in place of the default publisher's `XADD`.
-            b.include(on_event).out_reply(Publish::new());
+            b.include(on_event).out_reply(Publish::new())
         },
     )
 }

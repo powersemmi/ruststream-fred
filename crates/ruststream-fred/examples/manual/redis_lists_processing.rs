@@ -44,12 +44,10 @@ fn exports() -> RedisList {
 }
 
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("exports", "0.1.0")).with_broker(
-        RedisBroker::cluster(["redis://localhost:7000"]),
-        |b| {
-            b.include(subscriber(exports(), WriteExport).build());
-        },
-    )
+    RustStream::new(AppInfo::new("exports", "0.1.0"))
+        .with_broker(RedisBroker::cluster(["redis://localhost:7000"]), |b| {
+            b.include(subscriber(exports(), WriteExport).build())
+        })
 }
 // --8<-- [end:processing]
 
@@ -91,7 +89,7 @@ mod tests {
                 let descriptor = RedisList::new("exports")
                     .reliable()
                     .processing("exports.in-flight");
-                b.include(subscriber(descriptor, WriteExport).build());
+                b.include(subscriber(descriptor, WriteExport).build())
             },
         );
 

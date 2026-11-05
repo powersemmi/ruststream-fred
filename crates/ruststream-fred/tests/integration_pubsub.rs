@@ -19,7 +19,7 @@ use fred::interfaces::PubsubInterface;
 use futures::StreamExt;
 use ruststream::{
     AckError, Broker, ConnectedBroker, HeaderMap, IncomingMessage, OutgoingMessage, Publisher,
-    Subscriber,
+    Settle, Subscriber,
 };
 use ruststream_fred::{
     ConnectedRedisBroker, PubSubMode, RedisBroker, RedisPubSub, RedisPubSubPattern,

@@ -53,12 +53,8 @@ macro_rules! writes_through_the_pool {
     ($test:ident, $handler:ident, $name:literal) => {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn $test() {
-            let app = RustStream::new(AppInfo::new("pool", "0.1.0")).with_broker(
-                RedisBroker::standalone(URL),
-                |b| {
-                    b.include($handler);
-                },
-            );
+            let app = RustStream::new(AppInfo::new("pool", "0.1.0"))
+                .with_broker(RedisBroker::standalone(URL), |b| b.include($handler));
             let tb = TestApp::start(app).await.expect("start");
 
             tb.broker::<RedisBroker>()
@@ -126,12 +122,9 @@ async fn with_channel(
 /// The pool rides beside a form's own keys, so a handler reads both from one context.
 #[test]
 fn the_pool_rides_beside_a_forms_own_keys() {
-    let app = RustStream::new(AppInfo::new("pool", "0.1.0")).with_broker(
-        RedisBroker::standalone("redis://localhost:6379"),
-        |b| {
-            b.include(with_entry_id);
-            b.include(with_channel);
-        },
-    );
+    let app = RustStream::new(AppInfo::new("pool", "0.1.0"))
+        .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
+            b.include(with_entry_id).include(with_channel)
+        });
     let _ = app;
 }

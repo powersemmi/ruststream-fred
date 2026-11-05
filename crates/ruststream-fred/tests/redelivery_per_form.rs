@@ -63,12 +63,8 @@ macro_rules! comes_back_once {
     ($test:ident, $handler:expr, $name:literal) => {
         #[tokio::test(start_paused = true)]
         async fn $test() {
-            let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
-                RedisBroker::standalone(URL),
-                |b| {
-                    b.include($handler);
-                },
-            );
+            let app = RustStream::new(AppInfo::new("redelivery", "0.1.0"))
+                .with_broker(RedisBroker::standalone(URL), |b| b.include($handler));
             let tb = TestApp::start(app).await.expect("start");
 
             tb.broker::<RedisBroker>()
@@ -173,8 +169,8 @@ macro_rules! moves_at_the_cap {
                 |b| {
                     b.include($handler)
                         .max_attempts(nonzero!(2u32))
-                        .dead_letter($dead);
-                    b.include($reader);
+                        .dead_letter($dead)
+                        .include($reader)
                 },
             );
             let tb = TestApp::start(app).await.expect("start");
@@ -252,10 +248,10 @@ async fn a_dead_letter_read_as_another_type_refuses_to_start() {
     let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
         RedisBroker::standalone(URL),
         |b| {
-            b.include(order_reader);
-            b.include(job_to_orders)
+            b.include(order_reader)
+                .include(job_to_orders)
                 .max_attempts(nonzero!(2u32))
-                .dead_letter("orders");
+                .dead_letter("orders")
         },
     );
     let err = TestApp::start(app)
@@ -283,13 +279,10 @@ async fn job_reader(order: &Order) -> HandlerOutcome {
 /// name this service reads as a list with `LPUSH`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_default_reply_reaches_a_list_this_service_reads() {
-    let app = RustStream::new(AppInfo::new("redelivery", "0.1.0")).with_broker(
-        RedisBroker::standalone(URL),
-        |b| {
-            b.include(order_to_job);
-            b.include(job_reader);
-        },
-    );
+    let app = RustStream::new(AppInfo::new("redelivery", "0.1.0"))
+        .with_broker(RedisBroker::standalone(URL), |b| {
+            b.include(order_to_job).include(job_reader)
+        });
     let tb = TestApp::start(app).await.expect("start");
 
     tb.broker::<RedisBroker>()
@@ -410,7 +403,7 @@ macro_rules! pattern_comes_back_once {
                 |b| {
                     b.include($handler)
                         .out_retry(pubsub::Publish::default())
-                        .to("signals.retry");
+                        .to("signals.retry")
                 },
             );
             let tb = TestApp::start(app).await.expect("start");
@@ -471,8 +464,8 @@ async fn a_windowed_pattern_moves_at_the_cap() {
                 .max_attempts(nonzero!(2u32))
                 .dead_letter("dead.alarms")
                 .out_retry(pubsub::Publish::default())
-                .to("alarms.retry");
-            b.include(alarms_dead);
+                .to("alarms.retry")
+                .include(alarms_dead)
         },
     );
     let tb = TestApp::start(app).await.expect("start");

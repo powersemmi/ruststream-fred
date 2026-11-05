@@ -30,7 +30,7 @@ fn app(broker: RedisBroker) -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         b.include(process.batch(nonzero!(2)))
             .out_reply(TransactionalPublish)
-            .transactional();
+            .transactional()
     })
 }
 

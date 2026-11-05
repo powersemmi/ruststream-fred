@@ -64,8 +64,8 @@ fn app() -> impl App {
         |b| {
             let plan = subscriber(RedisStream::new("orders").group("planners"), Plan);
             // `jobs` is a list this service reads, so the default publisher pushes onto it.
-            b.include(plan.reply().build());
-            b.include(subscriber(RedisList::new("jobs").reliable(), Work).build());
+            b.include(plan.reply().build())
+                .include(subscriber(RedisList::new("jobs").reliable(), Work).build())
         },
     )
 }

@@ -56,7 +56,7 @@ fn app() -> impl App {
     let broker = RedisBroker::standalone("redis://localhost:6379");
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         let orders = RedisStream::new("orders").group("workers");
-        b.include(subscriber(orders, Work).build());
+        b.include(subscriber(orders, Work).build())
     })
 }
 // --8<-- [end:position]

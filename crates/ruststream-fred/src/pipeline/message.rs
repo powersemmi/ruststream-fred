@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned};
+use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned, Settle};
 
 use super::window::{Form, Round, Window};
 
@@ -35,7 +35,7 @@ use super::window::{Form, Round, Window};
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
 ///             // The subscription yields this type; the handler reads it as any delivery.
-///             b.include(work.pipeline());
+///             b.include(work.pipeline())
 ///         },
 ///     )
 /// }
@@ -155,7 +155,9 @@ impl<F: Form> IncomingMessage for RoundMessage<F> {
     fn redelivery_count(&self) -> Option<u64> {
         self.inner().redelivery_count()
     }
+}
 
+impl<F: Form> Settle for RoundMessage<F> {
     fn supports_nack_after(&self) -> bool {
         self.inner().supports_nack_after()
     }

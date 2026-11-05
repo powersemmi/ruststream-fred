@@ -90,7 +90,7 @@ fn app() -> impl App<State = AppState> {
             // too. The third failed delivery goes to `payouts.dlq`.
             b.include(subscriber(payouts(), Pay).build())
                 .max_attempts(nonzero!(3u32))
-                .dead_letter("payouts.dlq");
+                .dead_letter("payouts.dlq")
         })
 }
 // --8<-- [end:declaration]

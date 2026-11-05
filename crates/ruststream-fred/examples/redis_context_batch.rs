@@ -43,12 +43,10 @@ async fn bill_all(
 
 #[ruststream::app]
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(
-        RedisBroker::standalone("redis://localhost:6379"),
-        |b| {
-            b.include(bill_all.batch(nonzero!(32))).out_reply(Publish);
-        },
-    )
+    RustStream::new(AppInfo::new("billing", "0.1.0"))
+        .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
+            b.include(bill_all.batch(nonzero!(32))).out_reply(Publish)
+        })
 }
 // --8<-- [end:batch]
 

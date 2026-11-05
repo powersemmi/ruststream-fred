@@ -111,8 +111,8 @@ fn app() -> impl App {
                 )
                 .workers_by_key(nonzero!(8))
                 .build(),
-            );
-            b.include(
+            )
+            .include(
                 subscriber(
                     RedisStream::new("payments")
                         .group("fraud")
@@ -122,7 +122,7 @@ fn app() -> impl App {
                 .reply()
                 .build(),
             )
-            .out_reply(Publish);
+            .out_reply(Publish)
         },
     )
 }
@@ -172,15 +172,15 @@ fn app_before_8_4() -> impl App {
         |b| {
             b.include(
                 subscriber(RedisStream::new("payments").group("ledger"), PostNewPayment).build(),
-            );
-            b.include(
+            )
+            .include(
                 subscriber(
                     RedisStream::reclaim("payments", MIN_IDLE).group("ledger"),
                     RecoverPayment,
                 )
                 .build(),
-            );
-            b.include(
+            )
+            .include(
                 subscriber(
                     RedisStream::new("payments")
                         .group("fraud")
@@ -190,7 +190,7 @@ fn app_before_8_4() -> impl App {
                 .reply()
                 .build(),
             )
-            .out_reply(Publish);
+            .out_reply(Publish)
         },
     )
 }

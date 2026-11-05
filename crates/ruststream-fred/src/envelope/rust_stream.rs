@@ -66,7 +66,7 @@ const MARKED: usize = 4 + MARKER_HEADER.len();
 ///     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379").envelope(FastStream),
 ///         |b| {
-///             b.include(run_job.envelope(envelope::RustStream));
+///             b.include(run_job.envelope(envelope::RustStream))
 ///         },
 ///     )
 /// }

@@ -29,7 +29,7 @@ The core's feature alone produces a document without the extension.
 The dependency line:
 
 ```toml
-ruststream-fred = { version = "0.7", features = ["asyncapi"] }
+ruststream-fred = { version = "0.8", features = ["asyncapi"] }
 ```
 
 The service registers its broker under the label `redis`, the key of its server in the document.

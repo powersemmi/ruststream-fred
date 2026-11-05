@@ -49,13 +49,10 @@ async fn event(raw: &Raw<'_>) -> HandlerOutcome {
 }
 
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("framing", "0.1.0")).with_broker(
-        RedisBroker::standalone(URL),
-        |b| {
-            b.include(job);
-            b.include(event);
-        },
-    )
+    RustStream::new(AppInfo::new("framing", "0.1.0"))
+        .with_broker(RedisBroker::standalone(URL), |b| {
+            b.include(job).include(event)
+        })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -122,9 +119,9 @@ fn foreign_app() -> impl App {
     RustStream::new(AppInfo::new("framing-foreign", "0.1.0")).with_broker(
         RedisBroker::standalone(URL),
         |b| {
-            b.include(foreign_producer);
-            b.include(foreign_job);
-            b.include(foreign_event);
+            b.include(foreign_producer)
+                .include(foreign_job)
+                .include(foreign_event)
         },
     )
 }

@@ -47,9 +47,7 @@ async fn consume(order: &Order, ctx: &mut Context<'_, PipelineContext, Latch>) -
 }
 
 fn plain_app(messages: usize) -> Pending {
-    common::pending_on(Feed::Channel, messages, |b| {
-        b.include(consume.pipeline());
-    })
+    common::pending_on(Feed::Channel, messages, |b| b.include(consume.pipeline()))
 }
 
 #[library_benchmark(config = common::config_every(FLOOR_PLAIN, 1_000, COLD_PLAIN))]
@@ -62,7 +60,7 @@ fn plain(app: Pending) {
 
 fn atomic_app(messages: usize) -> Pending {
     common::pending_on(Feed::Channel, messages, |b| {
-        b.include(consume.pipeline().atomic());
+        b.include(consume.pipeline().atomic())
     })
 }
 

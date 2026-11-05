@@ -43,8 +43,8 @@ fn app() -> impl App {
         |b| {
             // The reply leaves with `SPUBLISH`: a sharded subscriber hears only a sharded publish.
             b.include(ship)
-                .out_reply(Publish::new().mode(PubSubMode::Sharded));
-            b.include(track);
+                .out_reply(Publish::new().mode(PubSubMode::Sharded))
+                .include(track)
         },
     )
 }

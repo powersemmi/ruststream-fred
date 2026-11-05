@@ -55,7 +55,7 @@ use crate::stream::RedisStream;
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
 ///             // The size is the core's word, the block is Redis's, and they read in that order.
-///             b.include(bill.batch(nonzero!(6)).block(Duration::from_secs(5)));
+///             b.include(bill.batch(nonzero!(6)).block(Duration::from_secs(5)))
 ///         },
 ///     )
 /// }
@@ -75,7 +75,7 @@ impl<Def, Source, State, DefCodec> RedisSubscribeExt
     for SubscriberBuilder<Def, Source, State, DefCodec>
 where
     Def: Declared,
-    Source: blocking::Blocks,
+    Source: blocking::Blocks + Clone,
 {
     fn block(self, block: Duration) -> Self {
         self.map_source(|source| source.block(block))

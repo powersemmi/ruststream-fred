@@ -23,7 +23,7 @@ A [`TestApp`](../testing/index.md) test runs no handshake, so it proves the serv
 The dependency line:
 
 ```toml
-ruststream-fred = { version = "0.7", features = ["sentinel-auth"] }
+ruststream-fred = { version = "0.8", features = ["sentinel-auth"] }
 ```
 
 The primary checks the user `worker`, and the sentinels the user `monitor`.

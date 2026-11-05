@@ -94,9 +94,9 @@ fn app() -> impl App {
                 Jobs,
                 RedisListPublish::new().envelope(Framed::new(JsonCodec)),
             )
-            .build();
-        b.include(run.envelope(Framed::new(JsonCodec)));
-        b.include(on_price.envelope(NoOp));
+            .build()
+            .include(run.envelope(Framed::new(JsonCodec)))
+            .include(on_price.envelope(NoOp))
     })
 }
 // --8<-- [end:envelopes]
@@ -160,9 +160,7 @@ fn legacy_app() -> impl App {
     // The legacy system's layout is the envelope of the whole broker.
     RustStream::new(AppInfo::new("legacy", "0.1.0")).with_broker(
         RedisBroker::standalone("redis://localhost:6379").envelope(MetaLine),
-        |b| {
-            b.include(legacy);
-        },
+        |b| b.include(legacy),
     )
 }
 // --8<-- [end:custom]

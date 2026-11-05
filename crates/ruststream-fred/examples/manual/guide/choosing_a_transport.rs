@@ -133,14 +133,14 @@ fn app() -> impl App {
                     .reply()
                     .build(),
             )
-            .out_reply(stream::Publish);
-            b.include(
+            .out_reply(stream::Publish)
+            .include(
                 subscriber(RedisList::new("thumbnails").reliable(), Render)
                     .reply()
                     .build(),
             )
-            .out_reply(pubsub::Publish::default());
-            b.include(subscriber(RedisPubSub::new("prices"), RefreshPrice).build());
+            .out_reply(pubsub::Publish::default())
+            .include(subscriber(RedisPubSub::new("prices"), RefreshPrice).build())
         },
     )
 }

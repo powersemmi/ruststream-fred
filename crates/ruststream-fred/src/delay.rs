@@ -80,7 +80,7 @@ const SWEEP_BATCH: i64 = 128;
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(handle);
+///             b.include(handle)
 ///         },
 ///     )
 /// }

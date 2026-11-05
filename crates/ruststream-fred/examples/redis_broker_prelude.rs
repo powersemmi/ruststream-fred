@@ -33,8 +33,9 @@ fn app() -> impl App<State = ()> {
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
             // Each form's policy under its module: `stream::Publish`, `list::Publish`, `pubsub::Publish`.
-            b.include(ship).out_reply(pubsub::Publish::new());
-            b.include(notify);
+            b.include(ship)
+                .out_reply(pubsub::Publish::new())
+                .include(notify)
         },
     )
 }

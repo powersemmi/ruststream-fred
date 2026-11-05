@@ -46,9 +46,7 @@ async fn consume_matched(order: &Order, ctx: &mut Context<'_, (), Latch>) -> Han
 }
 
 fn channel_app(messages: usize) -> Pending {
-    common::pending_on(Feed::Channel, messages, |b| {
-        b.include(consume);
-    })
+    common::pending_on(Feed::Channel, messages, |b| b.include(consume))
 }
 
 #[library_benchmark(config = common::config_every(FLOOR_CHANNEL, 1_000, COLD_CHANNEL))]
@@ -63,7 +61,7 @@ fn pattern_app(messages: usize) -> Pending {
     common::pending_on(Feed::Pattern, messages, |b| {
         b.include(consume_matched)
             .out_retry(pubsub::Publish::default())
-            .to(common::PATTERN_RETRY);
+            .to(common::PATTERN_RETRY)
     })
 }
 

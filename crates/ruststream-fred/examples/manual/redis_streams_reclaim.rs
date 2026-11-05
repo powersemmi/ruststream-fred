@@ -66,10 +66,10 @@ fn app() -> impl App {
     let broker = RedisBroker::standalone("redis://localhost:6379");
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         let fresh = RedisStream::new("orders").group("workers");
-        b.include(subscriber(fresh, Work).build());
         // Idle a minute: the worker that took it crashed or hung.
         let stale = RedisStream::reclaim("orders", Duration::from_secs(60)).group("workers");
-        b.include(subscriber(stale, Recover).build());
+        b.include(subscriber(fresh, Work).build())
+            .include(subscriber(stale, Recover).build())
     })
 }
 // --8<-- [end:reclaim]
@@ -114,7 +114,7 @@ mod tests {
             |b| {
                 let stale =
                     RedisStream::reclaim("orders", Duration::from_secs(60)).group("workers");
-                b.include(subscriber(stale, Recover).build());
+                b.include(subscriber(stale, Recover).build())
             },
         );
         let tb = TestApp::start(recovery_only).await?;

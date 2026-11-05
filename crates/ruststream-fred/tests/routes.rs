@@ -40,12 +40,10 @@ mod stream_routes {
 
     /// The service's app: what `main` runs, and what the case hands the harness.
     fn app() -> impl App<State = ()> {
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-            RedisBroker::standalone(URL),
-            |b| {
-                b.include(confirm).out_reply(Publish);
-            },
-        )
+        RustStream::new(AppInfo::new("orders", "0.1.0"))
+            .with_broker(RedisBroker::standalone(URL), |b| {
+                b.include(confirm).out_reply(Publish)
+            })
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -92,12 +90,10 @@ mod list_routes {
 
     /// The service's app: what `main` runs, and what the case hands the harness.
     fn app() -> impl App<State = ()> {
-        RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
-            RedisBroker::standalone(URL),
-            |b| {
-                b.include(run_job).out_reply(Publish::default());
-            },
-        )
+        RustStream::new(AppInfo::new("jobs", "0.1.0"))
+            .with_broker(RedisBroker::standalone(URL), |b| {
+                b.include(run_job).out_reply(Publish::default())
+            })
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -141,12 +137,10 @@ mod pubsub_routes {
 
     /// The service's app: what `main` runs, and what the case hands the harness.
     fn app() -> impl App<State = ()> {
-        RustStream::new(AppInfo::new("events", "0.1.0")).with_broker(
-            RedisBroker::standalone(URL),
-            |b| {
-                b.include(on_event).out_reply(Publish::default());
-            },
-        )
+        RustStream::new(AppInfo::new("events", "0.1.0"))
+            .with_broker(RedisBroker::standalone(URL), |b| {
+                b.include(on_event).out_reply(Publish::default())
+            })
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -192,12 +186,8 @@ mod default_reply {
 
     /// The service's app: what `main` runs, and what the case hands the harness.
     fn app() -> impl App<State = ()> {
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-            RedisBroker::standalone(URL),
-            |b| {
-                b.include(confirm);
-            },
-        )
+        RustStream::new(AppInfo::new("orders", "0.1.0"))
+            .with_broker(RedisBroker::standalone(URL), |b| b.include(confirm))
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

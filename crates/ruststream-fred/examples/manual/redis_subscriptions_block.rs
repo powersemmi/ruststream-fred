@@ -67,14 +67,13 @@ fn app() -> impl App {
         let orders = RedisStream::new("orders")
             .group("workers")
             .block(Duration::from_secs(1));
-        b.include(subscriber(orders, Place).build());
         let invoices = RedisStream::new("invoices").group("billing");
-        b.include(
+        b.include(subscriber(orders, Place).build()).include(
             subscriber(invoices, Bill)
                 .batch(nonzero!(16))
                 .build()
                 .block(Duration::from_secs(2)),
-        );
+        )
     })
 }
 // --8<-- [end:block]

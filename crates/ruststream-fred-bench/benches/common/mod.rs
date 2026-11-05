@@ -69,7 +69,9 @@ use fred::types::Value;
 use fred::types::config::Config;
 use gungraun::{Callgrind, Dhat, DhatMetric, EntryPoint, LibraryBenchmarkConfig};
 use ruststream::nonzero;
-use ruststream::runtime::{AppInfo, BrokerScope, Identity, RunningApp, RustStream};
+use ruststream::runtime::{
+    AppInfo, BrokerScope, Identity, MountChain, MountRoutes, RunningApp, RustStream,
+};
 use ruststream_fred::RedisBroker;
 use serde::Deserialize;
 use tokio::runtime::{Builder, Runtime};
@@ -294,12 +296,16 @@ pub struct Pending {
     feed: Feed,
 }
 
-/// The mount a scenario passes in: what `with_broker` does with the scope.
-pub type Mount<'a> = &'a mut BrokerScope<RedisBroker, Identity, (), Latch>;
+/// The scope a scenario's mount takes: what `with_broker` hands the closure, by value.
+pub type Mount = BrokerScope<RedisBroker, Identity, (), Latch>;
 
 /// Builds a one-handler service on the production broker reading a stream, ready to be started
 /// by the body.
-pub fn pending(messages: usize, mount: impl FnOnce(Mount<'_>)) -> Pending {
+pub fn pending<Chain, Routes>(messages: usize, mount: impl FnOnce(Mount) -> Chain) -> Pending
+where
+    Chain: MountChain<Routes = Routes>,
+    Routes: MountRoutes<RedisBroker, Identity, Latch>,
+{
     pending_on(Feed::Stream, messages, mount)
 }
 
@@ -307,7 +313,15 @@ pub fn pending(messages: usize, mount: impl FnOnce(Mount<'_>)) -> Pending {
 /// the body.
 ///
 /// The server is cleaned first, so a run never reads what the one before it left behind.
-pub fn pending_on(feed: Feed, messages: usize, mount: impl FnOnce(Mount<'_>)) -> Pending {
+pub fn pending_on<Chain, Routes>(
+    feed: Feed,
+    messages: usize,
+    mount: impl FnOnce(Mount) -> Chain,
+) -> Pending
+where
+    Chain: MountChain<Routes = Routes>,
+    Routes: MountRoutes<RedisBroker, Identity, Latch>,
+{
     aside(async move |client: Client| {
         for key in [INPUT, REPLIES, PROCESSING, SEEN] {
             let _: i64 = client.unlink(key).await.expect("the key is unlinked");

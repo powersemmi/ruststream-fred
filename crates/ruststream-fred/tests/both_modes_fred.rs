@@ -6,6 +6,8 @@
 //! hears what another handler announces. The live run needs `REDIS_TEST_URL`; under
 //! `RUSTSTREAM_REQUIRE_LIVE` a missing address fails it instead of skipping.
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 #![cfg(feature = "testing")]
 
 use std::error::Error;
@@ -80,12 +82,13 @@ async fn hear(event: &Announced) -> HandlerOutcome {
 /// The service's app, on the broker `main` builds from its address.
 fn app(url: &str) -> impl App<State = ()> {
     RustStream::new(AppInfo::new("both", "0.1.0")).with_broker(RedisBroker::standalone(url), |b| {
-        b.include(confirm);
-        b.include(invoice);
-        b.include(announce).out_reply(pubsub::Publish::new());
-        b.include(hear)
+        b.include(confirm)
+            .include(invoice)
+            .include(announce)
+            .out_reply(pubsub::Publish::new())
+            .include(hear)
             .out_retry(pubsub::Publish::new())
-            .to("both.events.retry");
+            .to("both.events.retry")
     })
 }
 

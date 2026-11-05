@@ -138,13 +138,13 @@ fn app() -> impl App {
                     RefreshPrice,
                 )
                 .build(),
-            );
-            b.include(subscriber(RedisPubSub::new("prices.changed"), ReindexPrice).build());
+            )
+            .include(subscriber(RedisPubSub::new("prices.changed"), ReindexPrice).build())
             // A glob is no channel a publish can reach, so the registration names one for copies.
-            b.include(subscriber(RedisPubSubPattern::new("orders.events.*"), TrackOrder).build())
-                .out_retry(pubsub::Publish::default())
-                .to("orders.events.retry");
-            b.include(
+            .include(subscriber(RedisPubSubPattern::new("orders.events.*"), TrackOrder).build())
+            .out_retry(pubsub::Publish::default())
+            .to("orders.events.retry")
+            .include(
                 subscriber(
                     RedisStream::new("shipments").group("notifier"),
                     AnnounceShipment,
@@ -153,7 +153,7 @@ fn app() -> impl App {
                 .to("orders.events.shipped")
                 .build(),
             )
-            .out_reply(pubsub::Publish::default());
+            .out_reply(pubsub::Publish::default())
         },
     )
 }

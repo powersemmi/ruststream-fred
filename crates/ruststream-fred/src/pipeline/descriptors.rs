@@ -32,7 +32,7 @@ use crate::{RedisList, RedisStream};
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
 ///             // The source of this registration is a `RedisStreamPipeline`.
-///             b.include(record.pipeline());
+///             b.include(record.pipeline())
 ///         },
 ///     )
 /// }
@@ -63,7 +63,7 @@ pub type RedisStreamPipeline<Env = Inherited> = Pipelined<RedisStream<Env>, Plai
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
 ///             // The source of this registration is a `RedisStreamAtomic`.
-///             b.include(record.pipeline().atomic());
+///             b.include(record.pipeline().atomic())
 ///         },
 ///     )
 /// }
@@ -94,7 +94,7 @@ pub type RedisStreamAtomic<Env = Inherited> = Pipelined<RedisStream<Env>, Atomic
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
 ///             // The source of this registration is a `RedisListPipeline`.
-///             b.include(record.pipeline());
+///             b.include(record.pipeline())
 ///         },
 ///     )
 /// }
@@ -125,7 +125,7 @@ pub type RedisListPipeline<Env = Inherited> = Pipelined<RedisList<Env>, Plain>;
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
 ///             // The source of this registration is a `RedisListAtomic`.
-///             b.include(record.pipeline().atomic());
+///             b.include(record.pipeline().atomic())
 ///         },
 ///     )
 /// }
@@ -156,7 +156,7 @@ pub type RedisListAtomic<Env = Inherited> = Pipelined<RedisList<Env>, Atomic>;
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
 ///             // The source of this registration is a `RedisPubSubPipeline`.
-///             b.include(record.pipeline());
+///             b.include(record.pipeline())
 ///         },
 ///     )
 /// }
@@ -187,7 +187,7 @@ pub type RedisPubSubPipeline<Env = Inherited> = Pipelined<RedisPubSub<Env>, Plai
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
 ///             // The source of this registration is a `RedisPubSubAtomic`.
-///             b.include(record.pipeline().atomic());
+///             b.include(record.pipeline().atomic())
 ///         },
 ///     )
 /// }
@@ -218,7 +218,7 @@ pub type RedisPubSubAtomic<Env = Inherited> = Pipelined<RedisPubSub<Env>, Atomic
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
 ///             // The source of this registration is a `RedisPubSubPatternPipeline`.
-///             b.include(record.pipeline());
+///             b.include(record.pipeline())
 ///         },
 ///     )
 /// }
@@ -249,7 +249,7 @@ pub type RedisPubSubPatternPipeline<Env = Inherited> = Pipelined<RedisPubSubPatt
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
 ///             // The source of this registration is a `RedisPubSubPatternAtomic`.
-///             b.include(record.pipeline().atomic());
+///             b.include(record.pipeline().atomic())
 ///         },
 ///     )
 /// }

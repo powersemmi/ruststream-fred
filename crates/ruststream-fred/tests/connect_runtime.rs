@@ -23,7 +23,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use futures::{Stream, StreamExt};
 use ruststream::testing::InProcess;
 use ruststream::{
-    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
+    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, Settle, Subscriber,
 };
 use ruststream_fred::{
     ConnectedRedisBroker, RedisBroker, RedisError, RedisPubSub, RedisPubSubPublish, RedisStream,

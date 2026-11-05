@@ -34,9 +34,7 @@ async fn consume(order: &Order, ctx: &mut Context<'_, (), Latch>) -> HandlerOutc
 }
 
 fn service_app(messages: usize) -> Pending {
-    common::pending_on(Feed::List, messages, |b| {
-        b.include(consume);
-    })
+    common::pending_on(Feed::List, messages, |b| b.include(consume))
 }
 
 #[library_benchmark(config = common::config_every(FLOOR_SERVICE, 1_000, COLD_SERVICE))]

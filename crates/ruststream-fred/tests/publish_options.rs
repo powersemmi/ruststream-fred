@@ -104,10 +104,16 @@ fn app() -> impl App<State = ()> {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         RedisBroker::standalone(URL),
         |b| {
-            b.include(forward).out(Ledger, Publish).build();
-            b.include(watch_keyed).out_reply(Publish);
-            b.include(forward_unkeyed).out(Notes, Publish).build();
-            b.include(watch_unkeyed).out_reply(Publish);
+            b.include(forward)
+                .out(Ledger, Publish)
+                .build()
+                .include(watch_keyed)
+                .out_reply(Publish)
+                .include(forward_unkeyed)
+                .out(Notes, Publish)
+                .build()
+                .include(watch_unkeyed)
+                .out_reply(Publish)
         },
     )
 }
@@ -120,7 +126,7 @@ fn cbor_app() -> impl App<State = ()> {
             b.include(forward)
                 .out(Ledger, Publish)
                 .codec(CborCodec)
-                .build();
+                .build()
         },
     )
 }

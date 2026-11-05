@@ -43,12 +43,10 @@ mod stream_prelude {
             let _ = (id, pipeline);
             HandlerOutcome::ack()
         }
-        let _ = RustStream::new(AppInfo::new("probe", "0.1.0")).with_broker(
-            RedisBroker::standalone("redis://localhost:6379"),
-            |b| {
-                b.include(windowed.pipeline().atomic());
-            },
-        );
+        let _ = RustStream::new(AppInfo::new("probe", "0.1.0"))
+            .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
+                b.include(windowed.pipeline().atomic())
+            });
         let _: InRound = InRound;
         bindable::<ruststream_fred::RedisPublisher>();
     }
@@ -78,12 +76,10 @@ mod list_prelude {
             let _ = (id, pipeline);
             HandlerOutcome::ack()
         }
-        let _ = RustStream::new(AppInfo::new("probe", "0.1.0")).with_broker(
-            RedisBroker::standalone("redis://localhost:6379"),
-            |b| {
-                b.include(windowed.pipeline().atomic());
-            },
-        );
+        let _ = RustStream::new(AppInfo::new("probe", "0.1.0"))
+            .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
+                b.include(windowed.pipeline().atomic())
+            });
         let _: InRound = InRound;
         bindable::<ruststream_fred::RedisListPublisher>();
     }
@@ -121,10 +117,10 @@ mod pubsub_prelude {
         let _ = RustStream::new(AppInfo::new("probe", "0.1.0")).with_broker(
             RedisBroker::standalone("redis://localhost:6379"),
             |b| {
-                b.include(windowed.pipeline().atomic());
-                b.include(matched.pipeline().atomic())
+                b.include(windowed.pipeline().atomic())
+                    .include(matched.pipeline().atomic())
                     .out_retry(Publish::default())
-                    .to("{jobs}.retry");
+                    .to("{jobs}.retry")
             },
         );
         let _: InRound = InRound;
@@ -164,12 +160,10 @@ mod crate_prelude {
             let _ = (id, pipeline);
             HandlerOutcome::ack()
         }
-        let _ = RustStream::new(AppInfo::new("probe", "0.1.0")).with_broker(
-            RedisBroker::standalone("redis://localhost:6379"),
-            |b| {
-                b.include(windowed.pipeline().atomic());
-            },
-        );
+        let _ = RustStream::new(AppInfo::new("probe", "0.1.0"))
+            .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
+                b.include(windowed.pipeline().atomic())
+            });
         let _: InRound = InRound;
         bindable::<ruststream_fred::RedisPublisher>();
     }

@@ -46,12 +46,10 @@ async fn assign_number(
 
 #[ruststream::app]
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("numbering", "0.1.0")).with_broker(
-        RedisBroker::standalone("redis://localhost:6379"),
-        |b| {
-            b.include(assign_number).out_reply(Publish);
-        },
-    )
+    RustStream::new(AppInfo::new("numbering", "0.1.0"))
+        .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
+            b.include(assign_number).out_reply(Publish)
+        })
 }
 
 #[cfg(test)]

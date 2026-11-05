@@ -110,8 +110,8 @@ fn app() -> impl App<State = AppState> {
             Ok::<_, Infallible>(AppState { gateway })
         })
         .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
-            b.include(subscriber(card_payments(), ChargeCard).build());
-            b.include(subscriber(bank_payments(), ChargeBank).build());
+            b.include(subscriber(card_payments(), ChargeCard).build())
+                .include(subscriber(bank_payments(), ChargeBank).build())
         })
 }
 

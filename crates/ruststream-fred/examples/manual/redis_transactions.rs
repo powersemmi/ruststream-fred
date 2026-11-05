@@ -53,7 +53,7 @@ fn app() -> impl App {
         let process = subscriber(RedisStream::new("orders").group("workers"), Process);
         b.include(process.batch(nonzero!(32)).reply().build())
             .out_reply(TransactionalPublish)
-            .transactional();
+            .transactional()
     })
 }
 // --8<-- [end:transactional]

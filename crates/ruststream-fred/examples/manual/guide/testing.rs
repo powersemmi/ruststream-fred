@@ -7,6 +7,9 @@
 //! REDIS_TEST_URL=redis://127.0.0.1:6379 cargo test --example manual_guide_testing --features testing
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
+
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -134,8 +137,8 @@ fn service(url: &str) -> impl App<State = ()> {
                     .build(),
             )
             .max_attempts(nonzero!(3u32))
-            .dead_letter("card-payments.review");
-            b.include(subscriber(RedisList::new("card-refunds").reliable(), GiveBack).build());
+            .dead_letter("card-payments.review")
+            .include(subscriber(RedisList::new("card-refunds").reliable(), GiveBack).build())
         },
     )
 }

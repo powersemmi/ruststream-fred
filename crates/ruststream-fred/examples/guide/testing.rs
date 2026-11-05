@@ -6,6 +6,9 @@
 //! REDIS_TEST_URL=redis://127.0.0.1:6379 cargo test --example guide_testing --features testing
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
+
 use std::time::Duration;
 
 use fred::interfaces::KeysInterface;
@@ -90,8 +93,8 @@ fn service(url: &str) -> impl App<State = ()> {
         |b| {
             b.include(charge)
                 .max_attempts(nonzero!(3u32))
-                .dead_letter("card-payments.review");
-            b.include(give_back);
+                .dead_letter("card-payments.review")
+                .include(give_back)
         },
     )
 }

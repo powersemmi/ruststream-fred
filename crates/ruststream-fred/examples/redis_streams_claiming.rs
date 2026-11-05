@@ -36,12 +36,8 @@ async fn fulfil(order: &Order) -> HandlerOutcome {
 // --8<-- [end:claiming]
 
 fn app(url: &str) -> impl App {
-    RustStream::new(AppInfo::new("fulfilment", "0.1.0")).with_broker(
-        RedisBroker::standalone(url),
-        |b| {
-            b.include(fulfil);
-        },
-    )
+    RustStream::new(AppInfo::new("fulfilment", "0.1.0"))
+        .with_broker(RedisBroker::standalone(url), |b| b.include(fulfil))
 }
 
 // The scenarios are the tests below; the command in the header runs them.

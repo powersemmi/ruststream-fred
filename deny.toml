@@ -25,6 +25,9 @@ allow = [
     # unicode-ident is (MIT OR Apache-2.0) AND Unicode-3.0; the Unicode license
     # only covers the embedded character tables and is permissive.
     "Unicode-3.0",
+    # assert_no_alloc, the failing allocator of the core's no-heap test leg, reached through the
+    # framework's `testing` feature; permissive.
+    "BSD-1-Clause",
 ]
 
 [bans]

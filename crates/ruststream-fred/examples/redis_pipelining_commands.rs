@@ -74,9 +74,9 @@ fn app(url: &str) -> impl App<State = ()> {
     RustStream::new(AppInfo::new("shipping", "0.1.0")).with_broker(
         RedisBroker::standalone(url),
         |b| {
-            b.include(ship.pipeline());
-            b.include(ship_first.pipeline());
-            b.include(dispatch);
+            b.include(ship.pipeline())
+                .include(ship_first.pipeline())
+                .include(dispatch)
         },
     )
 }
