@@ -4,6 +4,7 @@
 mod address;
 #[cfg(feature = "asyncapi")]
 mod asyncapi;
+mod batch;
 mod broker;
 mod claim;
 mod connection;

@@ -15,9 +15,10 @@ use fred::types::streams::XReadValue;
 use fred::types::{CustomCommand, Value};
 use futures::Stream;
 use futures::stream::unfold;
-use ruststream::{BatchSubscriber, Seekable, Subscriber};
+use ruststream::{BatchStream, BatchSubscriber, Seekable, Subscriber};
 use tracing::warn;
 
+use crate::batch::{Member, ReadBatches};
 use crate::broker::ensure_group;
 use crate::claim::{self, ClaimedEntry};
 use crate::connection::{Connection, ReadConnection};
@@ -25,7 +26,7 @@ use crate::delay::DelayConfig;
 use crate::envelope::{EntryBody, Envelope, Meta, RustStream};
 use crate::loopback::Tap;
 use crate::message::RedisMessage;
-use crate::pipeline::{RoundMessage, StreamForm, Window};
+use crate::pipeline::{Round, RoundMessage, StreamForm, Window};
 use crate::seek::{EntryId, RedisGroupSeeker};
 use crate::{error::RedisError, stream::ReadMode};
 
@@ -518,40 +519,49 @@ impl<Env: Envelope> RedisSubscriber<Env> {
         &'a mut self,
         window: &'a Arc<Window<StreamForm<Env>>>,
         size: NonZeroUsize,
-    ) -> impl Stream<Item = Result<Vec<RoundMessage<StreamForm<Env>>>, RedisError>> + Send + 'a
-    {
+    ) -> impl BatchStream<Vec<RoundMessage<StreamForm<Env>>>, Error = RedisError> + Send + 'a {
         let count = u64::try_from(size.get()).unwrap_or(u64::MAX);
         window.fill_at(size.get());
-        unfold(self, move |s| async move {
+        let state = (self, 0_usize, None::<Round>);
+        ReadBatches::new(unfold(state, move |(s, mut left, mut round)| async move {
             loop {
+                if left > 0
+                    && let (Some(entry), Some(open)) = (s.buffer.pop_front(), round.as_ref())
+                {
+                    left -= 1;
+                    let member = s.message(entry).map(|delivery| {
+                        Member::new(
+                            RoundMessage::new(delivery, Arc::clone(window), open.clone()),
+                            left,
+                        )
+                    });
+                    if member.is_err() {
+                        // The rest of a read that failed goes with it, as it always did: the
+                        // entries stay pending and the claiming modes pick them up again.
+                        s.buffer.drain(..left.min(s.buffer.len()));
+                        left = 0;
+                    }
+                    return Some((member, (s, left, round)));
+                }
                 if let Some(failure) = window.take_failure() {
-                    return Some((Err(failure), s));
+                    return Some((Err(failure), (s, 0, None)));
                 }
                 window.discarded(s.discard_stale());
                 if !s.buffer.is_empty() {
-                    let tail = s.buffer.split_off(size.get().min(s.buffer.len()));
-                    let entries = std::mem::replace(&mut s.buffer, tail);
-                    let members = u32::try_from(entries.len()).unwrap_or(u32::MAX);
-                    let round = window.open_batch(members);
-                    let mut batch = Vec::with_capacity(entries.len());
-                    for entry in entries {
-                        match s.message(entry) {
-                            Ok(delivery) => batch.push(RoundMessage::new(
-                                delivery,
-                                Arc::clone(window),
-                                round.clone(),
-                            )),
-                            Err(err) => return Some((Err(err), s)),
-                        }
-                    }
-                    return Some((Ok(batch), s));
+                    // The read already capped itself at `count`; the cap here is what keeps a batch
+                    // within `size` when a re-entered subscription asks for a smaller one than the
+                    // buffered read used.
+                    left = size.get().min(s.buffer.len());
+                    let members = u32::try_from(left).unwrap_or(u32::MAX);
+                    round = Some(window.open_batch(members));
+                    continue;
                 }
                 if let Err(err) = s.fetch(count).await {
-                    return Some((Err(err), s));
+                    return Some((Err(err), (s, 0, None)));
                 }
                 window.fetched(s.buffer.len());
             }
-        })
+        }))
     }
 }
 
@@ -606,28 +616,35 @@ impl<Env: Envelope> BatchSubscriber for RedisSubscriber<Env> {
     fn batches(
         &mut self,
         size: NonZeroUsize,
-    ) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
+    ) -> impl BatchStream<Self::Batch, Error = Self::Error> + Send + '_ {
         let count = u64::try_from(size.get()).unwrap_or(u64::MAX);
-        unfold(self, move |s| async move {
+        ReadBatches::new(unfold((self, 0_usize), move |(s, mut left)| async move {
             loop {
+                if left > 0
+                    && let Some(entry) = s.buffer.pop_front()
+                {
+                    left -= 1;
+                    let member = s.message(entry).map(|delivery| Member::new(delivery, left));
+                    if member.is_err() {
+                        // The rest of a read that failed goes with it, as it always did: the
+                        // entries stay pending and the claiming modes pick them up again.
+                        s.buffer.drain(..left.min(s.buffer.len()));
+                        left = 0;
+                    }
+                    return Some((member, (s, left)));
+                }
                 let _ = s.discard_stale();
                 if !s.buffer.is_empty() {
-                    // Move the entries out first so `s.message` can borrow `s` without overlapping
-                    // a live mutable borrow of `s.buffer`. The read already capped itself at
-                    // `count`; the split is what keeps a batch within `size` when a re-entered
-                    // subscription asks for a smaller one than the buffered read used.
-                    let tail = s.buffer.split_off(size.get().min(s.buffer.len()));
-                    let entries = std::mem::replace(&mut s.buffer, tail);
-                    let batch = entries
-                        .into_iter()
-                        .map(|entry| s.message(entry))
-                        .collect::<Result<Vec<_>, _>>();
-                    return Some((batch, s));
+                    // The read already capped itself at `count`; the cap here is what keeps a batch
+                    // within `size` when a re-entered subscription asks for a smaller one than the
+                    // buffered read used.
+                    left = size.get().min(s.buffer.len());
+                    continue;
                 }
                 if let Err(err) = s.fetch(count).await {
-                    return Some((Err(err), s));
+                    return Some((Err(err), (s, 0)));
                 }
             }
-        })
+        }))
     }
 }

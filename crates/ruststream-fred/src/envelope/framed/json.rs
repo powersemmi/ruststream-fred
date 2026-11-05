@@ -17,7 +17,7 @@ impl FrameCodec for JsonCodec {
     /// Writes the document straight into `value`: the payload embedded as is when it is a JSON
     /// text, its base64 otherwise. Neither form needs escaping, so no intermediate buffer is
     /// built.
-    fn frame(
+    fn write_frame(
         &self,
         headers: &HeaderMap,
         payload: &[u8],

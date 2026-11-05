@@ -36,17 +36,19 @@ use futures::stream::unfold;
 use ruststream::asyncapi::Bindings;
 use ruststream::runtime::IntoSource;
 use ruststream::{
-    AckError, AddressedCopies, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage,
-    Lend, PairError, Partitioned, PublishPolicy, RedeliveryAddress, RedeliveryAddressed,
-    RetryDeclaration, SubscriptionSource,
+    AckError, AddressedCopies, BatchStream, BatchSubscriber, BufferedSubscriber, HeaderMap,
+    IncomingMessage, Lend, OutgoingMessage, PairError, Partitioned, PublishMessageError,
+    PublishOutcome, PublishPolicy, Publisher, RedeliveryAddress, RedeliveryAddressed,
+    RetryDeclaration, Settle, Subscriber, SubscriptionSource,
 };
 
+use crate::batch::{Member, ReadBatches};
 use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::connection::{Connection, ReadConnection};
 use crate::envelope::{Body, Envelope, EnvelopeChoice, Inherited, RustStream};
 use crate::loopback::{InFlight, Loopback, Tap};
 use crate::partition::{RedisPublishOptions, resolved_headers};
-use crate::pipeline::{ListForm, RoundMessage, Window};
+use crate::pipeline::{ListForm, Round, RoundMessage, Window};
 use crate::publisher::joins_round;
 use crate::recovery::{self, RecoveryConfig};
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
@@ -554,7 +556,7 @@ impl<Env: Envelope> RedisListSubscriber<Env> {
     }
 }
 
-impl<Env: Envelope> ruststream::Subscriber for RedisListSubscriber<Env> {
+impl<Env: Envelope> Subscriber for RedisListSubscriber<Env> {
     type Message = RedisListMessage<Env>;
     type Error = RedisError;
 
@@ -582,7 +584,7 @@ impl<Env: Envelope> BatchSubscriber for RedisListSubscriber<Env> {
     fn batches(
         &mut self,
         size: NonZeroUsize,
-    ) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
+    ) -> impl BatchStream<Self::Batch, Error = Self::Error> + Send + '_ {
         self.0.batches(size)
     }
 }
@@ -966,42 +968,45 @@ impl<Env: Envelope> ListReader<Env> {
         &'a mut self,
         window: &'a Arc<Window<ListForm<Env>>>,
         size: NonZeroUsize,
-    ) -> impl Stream<Item = Result<Vec<RoundMessage<ListForm<Env>>>, RedisError>> + Send + 'a {
+    ) -> impl BatchStream<Vec<RoundMessage<ListForm<Env>>>, Error = RedisError> + Send + 'a {
         window.fill_at(size.get());
-        unfold(self, move |reader| async move {
-            loop {
-                if let Some(failure) = window.take_failure() {
-                    return Some((Err(failure), reader));
+        let state = (self, 0_usize, None::<Round>);
+        ReadBatches::new(unfold(
+            state,
+            move |(reader, mut left, mut round)| async move {
+                loop {
+                    if left > 0
+                        && let (Some(claimed), Some(open)) =
+                            (reader.buffer.pop_front(), round.as_ref())
+                    {
+                        left -= 1;
+                        let delivery = RoundMessage::new(
+                            reader.wire.message_of(claimed),
+                            Arc::clone(window),
+                            open.clone(),
+                        );
+                        return Some((Ok(Member::new(delivery, left)), (reader, left, round)));
+                    }
+                    if let Some(failure) = window.take_failure() {
+                        return Some((Err(failure), (reader, 0, None)));
+                    }
+                    if !reader.buffer.is_empty() {
+                        left = size.get().min(reader.buffer.len());
+                        let members = u32::try_from(left).unwrap_or(u32::MAX);
+                        round = Some(window.open_batch(members));
+                        continue;
+                    }
+                    if let Err(err) = reader.wire.claim(size.get(), &mut reader.buffer).await {
+                        return Some((Err(err), (reader, 0, None)));
+                    }
+                    window.fetched(reader.buffer.len());
                 }
-                if !reader.buffer.is_empty() {
-                    let take = size.get().min(reader.buffer.len());
-                    let members = u32::try_from(take).unwrap_or(u32::MAX);
-                    let round = window.open_batch(members);
-                    let batch = reader
-                        .buffer
-                        .drain(..take)
-                        .collect::<Vec<_>>()
-                        .into_iter()
-                        .map(|claimed| {
-                            RoundMessage::new(
-                                reader.wire.message_of(claimed),
-                                Arc::clone(window),
-                                round.clone(),
-                            )
-                        })
-                        .collect();
-                    return Some((Ok(batch), reader));
-                }
-                if let Err(err) = reader.wire.claim(size.get(), &mut reader.buffer).await {
-                    return Some((Err(err), reader));
-                }
-                window.fetched(reader.buffer.len());
-            }
-        })
+            },
+        ))
     }
 }
 
-impl<Env: Envelope> ruststream::Subscriber for ListWire<Env> {
+impl<Env: Envelope> Subscriber for ListWire<Env> {
     type Message = RedisListMessage<Env>;
     type Error = RedisError;
 
@@ -1095,7 +1100,9 @@ impl<Env: Envelope> IncomingMessage for RedisListMessage<Env> {
     fn partition_key(&self) -> Option<&[u8]> {
         Partitioned::partition_key(self)
     }
+}
 
+impl<Env: Envelope> Settle for RedisListMessage<Env> {
     async fn ack(self) -> Result<(), AckError> {
         let Some(handle) = self.ack else {
             return Err(AckError::Unsupported);
@@ -1372,7 +1379,7 @@ fn ttl_millis(ttl: Duration) -> i64 {
     i64::try_from(ttl.as_millis()).unwrap_or(i64::MAX).max(1)
 }
 
-impl<Env: Envelope> ruststream::Publisher for RedisListPublisher<Env> {
+impl<Env: Envelope> Publisher for RedisListPublisher<Env> {
     /// As on [`RedisPubSubPublisher`](crate::RedisPubSubPublisher): the entry the client is
     /// handed is an envelope this crate builds, so the payload is only read.
     type Payload = Lend;
@@ -1383,15 +1390,36 @@ impl<Env: Envelope> ruststream::Publisher for RedisListPublisher<Env> {
     /// the partition key, framed into the entry with the message's other headers.
     type Options = RedisPublishOptions;
 
-    async fn publish(
+    async fn publish<'msg>(
         &self,
-        msg: ruststream::OutgoingMessage<'_>,
+        msg: OutgoingMessage<'msg>,
         options: Option<&Self::Options>,
-    ) -> Result<(), Self::Error> {
+    ) -> PublishOutcome<'msg, Self::Error, Lend> {
         let (key, payload, headers) = msg.into_parts();
+        let headers = resolved_headers(headers, options);
+        match self.push_sealed(key, payload, &headers, options).await {
+            Ok(()) => Ok(()),
+            // The payload is only lent and the headers come back with the partition key the call
+            // set, so a republish of the returned message carries it.
+            Err(error) => Err(PublishMessageError::with_message(
+                error,
+                OutgoingMessage::with_payload(key, payload).with_headers(headers),
+            )),
+        }
+    }
+}
+
+impl<Env: Envelope> RedisListPublisher<Env> {
+    async fn push_sealed(
+        &self,
+        key: &str,
+        payload: &[u8],
+        headers: &HeaderMap,
+        options: Option<&RedisPublishOptions>,
+    ) -> Result<(), RedisError> {
         let mut body = Vec::with_capacity(payload.len());
         self.envelope
-            .seal(payload, &resolved_headers(headers, options), &mut body)
+            .seal(payload, headers, &mut body)
             .map_err(|err| RedisError::seal(key, err))?;
         if let Some(round) = self
             .core
@@ -1403,19 +1431,18 @@ impl<Env: Envelope> ruststream::Publisher for RedisListPublisher<Env> {
                 .await
                 .map_err(RedisError::publish);
         }
-        push(&self.core, self.ttl, key, body).await
+        push(&self.core.pool()?, self.ttl, key, body).await
     }
 }
 
 /// `LPUSH`es one sealed entry onto `key`, re-arming the key's `ttl` when there is one: the list
 /// publish, shared by [`RedisListPublisher`] and the broker's default publisher.
 pub(crate) async fn push(
-    core: &RedisCore,
+    pool: &Pool,
     ttl: Option<Duration>,
     key: &str,
     body: Vec<u8>,
 ) -> Result<(), RedisError> {
-    let pool = core.pool()?;
     let Some(ttl) = ttl else {
         let _: i64 = pool.lpush(key, body).await.map_err(RedisError::publish)?;
         return Ok(());

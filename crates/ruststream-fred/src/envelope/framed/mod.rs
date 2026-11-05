@@ -98,7 +98,7 @@ impl<Format> Debug for Framed<Format> {
 ///
 /// The provided methods write the payload as a byte string, so a service's own codec implements
 /// the trait with an empty body. `JsonCodec` overrides them with the `CloudEvents` convention.
-/// Every header value is text by the time [`frame`](Self::frame) runs.
+/// Every header value is text by the time [`write_frame`](Self::write_frame) runs.
 ///
 /// # Examples
 ///
@@ -117,6 +117,11 @@ impl<Format> Debug for Framed<Format> {
 ///
 /// impl Codec for AnalyticsCbor {
 ///     const CONTENT_TYPE: &'static str = "application/vnd.acme.analytics+cbor";
+///     type Frame<'a> = ();
+///
+///     fn frame<'a>(&'a self, _payload: &'a [u8]) -> Result<(), CodecError> {
+///         Ok(())
+///     }
 ///
 ///     fn encode<T: Serialize>(&self, value: &T) -> Result<BytesMut, CodecError> {
 ///         CborCodec.encode(value)
@@ -149,7 +154,7 @@ pub trait FrameCodec: Codec + Clone + 'static {
     /// # Errors
     ///
     /// Returns [`SealError::Encode`] when the codec cannot write the document.
-    fn frame(
+    fn write_frame(
         &self,
         headers: &HeaderMap,
         payload: &[u8],
@@ -202,13 +207,16 @@ impl<Format: FrameCodec> Envelope for Framed<Format> {
                     .into(),
             ));
         }
-        self.0.frame(headers, payload, value)
+        self.0.write_frame(headers, payload, value)
     }
 }
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use ruststream::codec::{CborCodec, JsonCodec, MsgpackCodec};
+    use ruststream::BytesMut;
+    use ruststream::codec::{CborCodec, CodecError, JsonCodec, MsgpackCodec};
+    use serde::Serialize;
+    use serde::de::DeserializeOwned;
 
     use super::*;
 
@@ -381,18 +389,23 @@ mod tests {
 
         impl Codec for JsonNamedCbor {
             const CONTENT_TYPE: &'static str = "application/json";
+            type Frame<'a> = ();
 
-            fn encode<T: serde::Serialize>(
+            fn frame<'a>(&'a self, _payload: &'a [u8]) -> Result<(), CodecError> {
+                Ok(())
+            }
+
+            fn encode<T: Serialize>(
                 &self,
                 value: &T,
-            ) -> Result<ruststream::BytesMut, ruststream::codec::CodecError> {
+            ) -> Result<BytesMut, CodecError> {
                 CborCodec.encode(value)
             }
 
-            fn decode<T: serde::de::DeserializeOwned>(
+            fn decode<T: DeserializeOwned>(
                 &self,
                 bytes: &[u8],
-            ) -> Result<T, ruststream::codec::CodecError> {
+            ) -> Result<T, CodecError> {
                 CborCodec.decode(bytes)
             }
         }

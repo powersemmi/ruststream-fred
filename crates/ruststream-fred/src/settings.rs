@@ -75,7 +75,7 @@ impl<Def, Source, State, DefCodec> RedisSubscribeExt
     for SubscriberBuilder<Def, Source, State, DefCodec>
 where
     Def: Declared,
-    Source: blocking::Blocks,
+    Source: blocking::Blocks + Clone,
 {
     fn block(self, block: Duration) -> Self {
         self.map_source(|source| source.block(block))

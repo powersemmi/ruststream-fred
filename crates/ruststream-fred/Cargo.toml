@@ -81,6 +81,8 @@ ruststream = { workspace = true, default-features = false }
 fred = { workspace = true, features = ["i-scripts", "i-client"] }
 bytes.workspace = true
 futures.workspace = true
+# Pins the stream a native batch fills its slot from in place, without boxing it.
+pin-project-lite = "0.2.13"
 serde = { version = "1", features = ["derive"] }
 # A stream entry another producer wrote, one without this crate's body field, is delivered as the
 # JSON object of its fields (the document tests read the generated AsyncAPI back with it too).

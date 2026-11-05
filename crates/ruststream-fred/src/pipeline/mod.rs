@@ -37,8 +37,8 @@ use fred::interfaces::ClientLike;
 use fred::types::{ClusterHash, CustomCommand, MultipleKeys, MultipleValues, Value};
 use ruststream::StartAt;
 use ruststream::runtime::{
-    Declared, ForReply, Outgoing, PublishContext, PublishTransform, Reads, SubscriberBuilder,
-    SubscriberSettings,
+    AsDeclared, Declared, ForReply, IntoDeclared, Outgoing, PublishContext, PublishTransform,
+    Reads, SubscriberBuilder, SubscriberSettings,
 };
 
 use crate::partition::RedisPublishOptions;
@@ -293,6 +293,7 @@ impl<Def, Source, State, DefCodec> PipelineStep for SubscriberBuilder<Def, Sourc
 where
     Def: Declared,
     Source: OpensWindow,
+    Source::Pipelined: Clone,
 {
     type Out = SubscriberBuilder<Def, Source::Pipelined, State, DefCodec>;
 
@@ -320,6 +321,7 @@ impl<Def, Source, State, DefCodec> AtomicStep for SubscriberBuilder<Def, Source,
 where
     Def: Declared,
     Source: Windowed,
+    Source::Atomic: Clone,
 {
     type Out = SubscriberBuilder<Def, Source::Atomic, State, DefCodec>;
 
@@ -405,7 +407,7 @@ where
 /// }
 /// # }
 /// ```
-pub trait RedisPipelineSteps: Declared {
+pub trait RedisPipelineSteps<Mk = AsDeclared>: IntoDeclared<Mk> {
     /// Opens a consumer window on the subscription: its settles and the commands its handlers
     /// queue through [`keys::Pipeline`](crate::context::keys::Pipeline) leave together, in one
     /// pipeline on a connection of the pool.
@@ -459,23 +461,23 @@ pub trait RedisPipelineSteps: Declared {
     /// # }
     /// # fn main() {}
     /// ```
-    fn pipeline(self) -> <Self::Settings as PipelineStep>::Out
+    fn pipeline(self) -> <<Self::Decl as Declared>::Settings as PipelineStep>::Out
     where
-        Self::Settings: PipelineStep,
+        <Self::Decl as Declared>::Settings: PipelineStep,
     {
-        self.declare().apply_pipeline()
+        self.into_declared().declare().apply_pipeline()
     }
 
     /// Makes each delivery's segment one `MULTI` / `EXEC`. Follows `.pipeline()`.
-    fn atomic(self) -> <Self::Settings as AtomicStep>::Out
+    fn atomic(self) -> <<Self::Decl as Declared>::Settings as AtomicStep>::Out
     where
-        Self::Settings: AtomicStep,
+        <Self::Decl as Declared>::Settings: AtomicStep,
     {
-        self.declare().apply_atomic()
+        self.into_declared().declare().apply_atomic()
     }
 }
 
-impl<D: Declared> RedisPipelineSteps for D {}
+impl<D: IntoDeclared<Mk>, Mk> RedisPipelineSteps<Mk> for D {}
 
 mod bindable {
     /// What a publisher of this crate is named by in a binding.
