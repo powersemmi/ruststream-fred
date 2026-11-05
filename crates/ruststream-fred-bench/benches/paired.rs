@@ -90,7 +90,7 @@ use fred::types::config::{Config, ServerConfig};
 use fred::types::lists::LMoveDirection;
 use futures::StreamExt;
 use ruststream::runtime::RunningApp;
-use ruststream::{ConnectedBroker, Subscriber};
+use ruststream::{ConnectedBroker, Settle, Subscriber};
 use ruststream_fred::prelude::*;
 use ruststream_fred::{ConnectedRedisBroker, PubSubMode};
 use serde::Deserialize;
@@ -583,9 +583,7 @@ async fn pubsub_consume(order: &Order, ctx: &mut Context<'_, (), Run>) -> Handle
 async fn start_stream(target: &Target, run: Run) -> RunningApp {
     RustStream::new(AppInfo::new("fred-bench", "0.0.0"))
         .on_startup(async move |()| Ok::<_, Infallible>(run))
-        .with_broker(target.broker().pool(POOL), |b| {
-            b.include(stream_consume);
-        })
+        .with_broker(target.broker().pool(POOL), |b| b.include(stream_consume))
         .start()
         .await
         .expect("the service starts")
@@ -594,9 +592,7 @@ async fn start_stream(target: &Target, run: Run) -> RunningApp {
 async fn start_list(target: &Target, run: Run) -> RunningApp {
     RustStream::new(AppInfo::new("fred-bench", "0.0.0"))
         .on_startup(async move |()| Ok::<_, Infallible>(run))
-        .with_broker(target.broker().pool(POOL), |b| {
-            b.include(list_consume);
-        })
+        .with_broker(target.broker().pool(POOL), |b| b.include(list_consume))
         .start()
         .await
         .expect("the service starts")
@@ -605,9 +601,7 @@ async fn start_list(target: &Target, run: Run) -> RunningApp {
 async fn start_pubsub(target: &Target, run: Run) -> RunningApp {
     RustStream::new(AppInfo::new("fred-bench", "0.0.0"))
         .on_startup(async move |()| Ok::<_, Infallible>(run))
-        .with_broker(target.broker().pool(POOL), |b| {
-            b.include(pubsub_consume);
-        })
+        .with_broker(target.broker().pool(POOL), |b| b.include(pubsub_consume))
         .start()
         .await
         .expect("the service starts")

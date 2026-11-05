@@ -28,9 +28,7 @@ async fn consume(order: &Order, ctx: &mut Context<'_, (), Latch>) -> HandlerOutc
 }
 
 fn app(messages: usize) -> Pending {
-    common::pending(messages, |b| {
-        b.include(consume);
-    })
+    common::pending(messages, |b| b.include(consume))
 }
 
 // Twice MESSAGES deliveries allocated 59,749 to 59,757 blocks over six runs, the client's
