@@ -89,7 +89,7 @@ pub use crate::list::RedisListPublish as Publish;
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
 ///             // The reply is `LPUSH`ed onto `jobs.done`, a queue of its own.
-///             b.include(run_job).out_reply(Publish::default());
+///             b.include(run_job).out_reply(Publish::default())
 ///         },
 ///     )
 /// }
@@ -184,8 +184,8 @@ fn empty_on_timeout<T>(
 ///     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(run_job);
-///             b.include(record);
+///             b.include(run_job)
+///                 .include(record)
 ///         },
 ///     )
 /// }
@@ -284,7 +284,7 @@ impl<Env> RedisList<Env> {
     ///         |b| {
     ///             // A faststream service writes these.
     ///             let source = RedisList::new("audit").envelope(FastStream);
-    ///             b.include(subscriber(source, Log).build());
+    ///             b.include(subscriber(source, Log).build())
     ///         },
     ///     )
     /// }
@@ -383,7 +383,7 @@ impl<Env> RedisList<Env> {
     ///     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
     ///         RedisBroker::standalone("redis://localhost:6379"),
     ///         |b| {
-    ///             b.include(run_job);
+    ///             b.include(run_job)
     ///         },
     ///     )
     /// }
@@ -1210,7 +1210,7 @@ impl<Env: Envelope> Partitioned for RedisListMessage<Env> {
 ///                 RedisListPublish::new()
 ///                     .envelope(Framed::new(JsonCodec))
 ///                     .ttl(Duration::from_secs(300)),
-///             );
+///             )
 ///         },
 ///     )
 /// }
@@ -1274,7 +1274,7 @@ impl<Env> RedisListPublish<Env> {
     ///         RedisBroker::standalone("redis://localhost:6379"),
     ///         |b| {
     ///             // A faststream worker drains `jobs`.
-    ///             b.include(plan).out_reply(Publish::new().envelope(FastStream));
+    ///             b.include(plan).out_reply(Publish::new().envelope(FastStream))
     ///         },
     ///     )
     /// }

@@ -35,7 +35,7 @@ use super::window::{Form, Round, Window};
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
 ///             // The subscription yields this type; the handler reads it as any delivery.
-///             b.include(work.pipeline());
+///             b.include(work.pipeline())
 ///         },
 ///     )
 /// }

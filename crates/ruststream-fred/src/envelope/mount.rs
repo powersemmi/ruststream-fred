@@ -40,7 +40,7 @@ use crate::pipeline::Pipelined;
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
 ///             // A faststream service fills this queue.
-///             b.include(run_job.envelope(FastStream));
+///             b.include(run_job.envelope(FastStream))
 ///         },
 ///     )
 /// }

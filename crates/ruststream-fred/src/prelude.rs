@@ -42,8 +42,8 @@
 //!         RedisBroker::standalone("redis://localhost:6379"),
 //!         |b| {
 //!             // A stream in, a Pub/Sub broadcast out: the form prefix says which `Publish`.
-//!             b.include(ship).out_reply(pubsub::Publish::default());
-//!             b.include(invoice);
+//!             b.include(ship).out_reply(pubsub::Publish::default())
+//!             .include(invoice)
 //!         },
 //!     )
 //! }

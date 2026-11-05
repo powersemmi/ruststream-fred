@@ -139,7 +139,7 @@ pub(crate) const PAYLOAD_FIELD: &str = "_payload";
 ///     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(run_job.envelope(MetaLine));
+///             b.include(run_job.envelope(MetaLine))
 ///         },
 ///     )
 /// }
@@ -433,7 +433,7 @@ impl EntryFields {
 ///     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379").envelope(FastStream),
 ///         |b| {
-///             b.include(run_job);
+///             b.include(run_job)
 ///         },
 ///     )
 /// }
@@ -479,7 +479,7 @@ mod sealed {
 ///     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379").envelope(FastStream),
 ///         |b| {
-///             b.include(run_job.envelope(NoOp));
+///             b.include(run_job.envelope(NoOp))
 ///         },
 ///     )
 /// }

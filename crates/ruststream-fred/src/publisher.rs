@@ -97,7 +97,7 @@ async fn flush_block(core: &RedisCore, buffered: Vec<Buffered>) -> Result<(), Re
 ///         |b| {
 ///             // `Publish` is this policy under the stream prelude's name. No connection exists
 ///             // yet; the runtime pairs it with the connected broker at startup.
-///             b.include(accept).out_reply(Publish);
+///             b.include(accept).out_reply(Publish)
 ///         },
 ///     )
 /// }
@@ -154,7 +154,7 @@ impl<Env> RedisPublish<Env> {
     ///         RedisBroker::standalone("redis://localhost:6379"),
     ///         |b| {
     ///             // A faststream service reads `orders.accepted`.
-    ///             b.include(accept).out_reply(Publish.envelope(FastStream));
+    ///             b.include(accept).out_reply(Publish.envelope(FastStream))
     ///         },
     ///     )
     /// }
@@ -232,7 +232,7 @@ where
 ///             // batch's replies land together, as one MULTI / EXEC block.
 ///             b.include(price.batch(nonzero!(32)))
 ///                 .out_reply(TransactionalPublish)
-///                 .transactional();
+///                 .transactional()
 ///         },
 ///     )
 /// }
@@ -285,7 +285,7 @@ impl<Env> RedisTransactionalPublish<Env> {
     ///             // A faststream service reads `orders.priced`, one batch at a time.
     ///             b.include(price.batch(nonzero!(32)))
     ///                 .out_reply(TransactionalPublish.envelope(FastStream))
-    ///                 .transactional();
+    ///                 .transactional()
     ///         },
     ///     )
     /// }
@@ -382,8 +382,8 @@ where
 ///         |b| {
 ///             // The reply names no policy, so it leaves through the default one: `jobs` is
 ///             // read as a list here, so the reply is an `LPUSH`.
-///             b.include(plan);
-///             b.include(work);
+///             b.include(plan)
+///                 .include(work)
 ///         },
 ///     )
 /// }
@@ -588,7 +588,9 @@ async fn append(pool: &Pool, key: &str, fields: Vec<(String, Vec<u8>)>) -> Resul
 ///
 /// ```
 /// # mod demo {
-/// use ruststream::OutgoingMessage;
+/// use std::error::Error;
+/// use std::io;
+///
 /// use ruststream_fred::stream::prelude::*;
 /// use serde::{Deserialize, Serialize};
 ///
@@ -602,25 +604,26 @@ async fn append(pool: &Pool, key: &str, fields: Vec<(String, Vec<u8>)>) -> Resul
 ///     Ok(orders.iter().map(|order| Order { id: order.id }).collect())
 /// }
 ///
+/// /// The owned kind: a value the service holds, committed as one MULTI / EXEC.
+/// async fn seed(publisher: impl OwnedTransactions) -> Result<(), Box<dyn Error + Send + Sync>> {
+///     let mut seed = publisher.owned_transaction().await?;
+///     seed.publish("processed", &Order { id: 0 }).await?;
+///     seed.commit().await?;
+///     Ok(())
+/// }
+///
 /// #[ruststream::app]
 /// fn app() -> impl App {
 ///     let broker = RedisBroker::standalone("redis://localhost:6379").default_group("workers");
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-///         // The borrowed kind: one batch's replies, buffered and committed as one MULTI / EXEC.
-///         b.include(process.batch(nonzero!(32)))
-///             .out_reply(TransactionalPublish)
-///             .transactional();
-///
-///         // The owned kind, in the hook where a service makes its first publishes.
+///         // The hook where a service makes its first publishes.
 ///         b.after_startup(TransactionalPublish, async move |publisher| {
-///             let mut seed = publisher.transaction().await?;
-///             seed.publish(
-///                 OutgoingMessage::new("processed", br#"{"id":0}"#.as_slice()),
-///                 None,
-///             )
-///             .await?;
-///             seed.commit().await
-///         });
+///             seed(publisher).await.map_err(io::Error::other)
+///         })
+///         // The borrowed kind: one batch's replies, buffered and committed as one MULTI / EXEC.
+///         .include(process.batch(nonzero!(32)))
+///         .out_reply(TransactionalPublish)
+///         .transactional()
 ///     })
 /// }
 /// # }
@@ -843,13 +846,21 @@ impl<Env: Envelope> OwnedTransactions for RedisPublisher<Env> {
 ///
 /// ```
 /// # mod demo {
-/// use ruststream::OutgoingMessage;
+/// use std::error::Error;
+/// use std::io;
+///
 /// use ruststream_fred::stream::prelude::*;
-/// # use serde::Deserialize;
-/// # #[derive(Deserialize)]
-/// # struct Order {
-/// #     id: u64,
-/// # }
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Deserialize, Serialize, Outgoing)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[derive(Serialize, Outgoing)]
+/// struct Seeded {
+///     count: u32,
+/// }
 /// #
 /// # #[subscriber(RedisStream::new("orders").group("workers"))]
 /// # async fn handle(order: &Order) -> HandlerOutcome {
@@ -857,23 +868,26 @@ impl<Env: Envelope> OwnedTransactions for RedisPublisher<Env> {
 /// #     HandlerOutcome::ack()
 /// # }
 ///
+/// /// Two buffers open at once on one handle; each commits as its own MULTI / EXEC.
+/// async fn seed(publisher: impl OwnedTransactions) -> Result<(), Box<dyn Error + Send + Sync>> {
+///     let mut orders = publisher.owned_transaction().await?;
+///     let mut audit = publisher.owned_transaction().await?;
+///     orders.publish("orders", &Order { id: 0 }).await?;
+///     audit.publish("audit", &Seeded { count: 1 }).await?;
+///     orders.commit().await?;
+///     audit.commit().await?;
+///     Ok(())
+/// }
+///
 /// #[ruststream::app]
 /// fn app() -> impl App {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(handle);
-///             // Two buffers open at once on one handle; each commits as its own MULTI / EXEC.
 ///             b.after_startup(TransactionalPublish, async move |publisher| {
-///                 let mut orders = publisher.transaction().await?;
-///                 let mut audit = publisher.transaction().await?;
-///                 let seed = OutgoingMessage::new("orders", br#"{"id":0}"#.as_slice());
-///                 orders.publish(seed, None).await?;
-///                 let note = OutgoingMessage::new("audit", br#"{"seeded":1}"#.as_slice());
-///                 audit.publish(note, None).await?;
-///                 orders.commit().await?;
-///                 audit.commit().await
-///             });
+///                 seed(publisher).await.map_err(io::Error::other)
+///             })
+///             .include(handle)
 ///         },
 ///     )
 /// }

@@ -55,7 +55,7 @@ use crate::stream::RedisStream;
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
 ///             // The size is the core's word, the block is Redis's, and they read in that order.
-///             b.include(bill.batch(nonzero!(6)).block(Duration::from_secs(5)));
+///             b.include(bill.batch(nonzero!(6)).block(Duration::from_secs(5)))
 ///         },
 ///     )
 /// }

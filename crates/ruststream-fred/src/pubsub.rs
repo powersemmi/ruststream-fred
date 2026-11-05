@@ -95,7 +95,7 @@ pub use crate::pubsub::RedisPubSubPublish as Publish;
 ///         |b| {
 ///             // Sharded in, sharded out: an `SPUBLISH` reaches only sharded subscribers.
 ///             b.include(on_event)
-///                 .out_reply(Publish::new().mode(PubSubMode::Sharded));
+///                 .out_reply(Publish::new().mode(PubSubMode::Sharded))
 ///         },
 ///     )
 /// }
@@ -190,8 +190,8 @@ impl PubSubMode {
 ///     RustStream::new(AppInfo::new("events", "0.1.0")).with_broker(
 ///         RedisBroker::cluster(["10.0.0.1:6379"]),
 ///         |b| {
-///             b.include(on_event);
-///             b.include(on_metric);
+///             b.include(on_event)
+///                 .include(on_metric)
 ///         },
 ///     )
 /// }
@@ -281,7 +281,7 @@ impl<Env> RedisPubSub<Env> {
     ///         |b| {
     ///             // A faststream service writes these.
     ///             let source = RedisPubSub::new("audit").envelope(FastStream);
-    ///             b.include(subscriber(source, Log).build());
+    ///             b.include(subscriber(source, Log).build())
     ///         },
     ///     )
     /// }
@@ -342,7 +342,7 @@ impl<Env> RedisPubSub<Env> {
     /// #     RustStream::new(AppInfo::new("events", "0.1.0")).with_broker(
     /// #         RedisBroker::standalone("redis://localhost:6379"),
     /// #         |b| {
-    /// #             b.include(on_event);
+    /// #             b.include(on_event)
     /// #         },
     /// #     )
     /// # }
@@ -429,7 +429,7 @@ impl<Env> RedisPubSub<Env> {
 ///             // retry copy goes.
 ///             b.include(on_any_event)
 ///                 .out_retry(Publish::default())
-///                 .to("events.retry");
+///                 .to("events.retry")
 ///         },
 ///     )
 /// }
@@ -519,7 +519,7 @@ impl<Env> RedisPubSubPattern<Env> {
     ///         |b| {
     ///             // A faststream service writes these.
     ///             let source = RedisPubSubPattern::new("audit.*").envelope(FastStream);
-    ///             b.include(subscriber(source, Log).build());
+    ///             b.include(subscriber(source, Log).build())
     ///         },
     ///     )
     /// }
@@ -572,7 +572,7 @@ impl<Env> RedisPubSubPattern<Env> {
     /// #     RustStream::new(AppInfo::new("events", "0.1.0")).with_broker(
     /// #         RedisBroker::standalone("redis://localhost:6379"),
     /// #         |b| {
-    /// #             b.include(on_event);
+    /// #             b.include(on_event)
     /// #         },
     /// #     )
     /// # }
@@ -1170,7 +1170,7 @@ impl<Env: Envelope> Partitioned for RedisPubSubMessage<Env> {
 ///         |b| {
 ///             // Read from a durable stream, broadcast to whoever is listening with `SPUBLISH`.
 ///             b.include(announce)
-///                 .out_reply(RedisPubSubPublish::new().mode(PubSubMode::Sharded));
+///                 .out_reply(RedisPubSubPublish::new().mode(PubSubMode::Sharded))
 ///         },
 ///     )
 /// }
@@ -1233,7 +1233,7 @@ impl<Env> RedisPubSubPublish<Env> {
     ///         RedisBroker::standalone("redis://localhost:6379"),
     ///         |b| {
     ///             // A dashboard that knows nothing of headers listens on `orders.live`.
-    ///             b.include(announce).out_reply(Publish::new().envelope(NoOp));
+    ///             b.include(announce).out_reply(Publish::new().envelope(NoOp))
     ///         },
     ///     )
     /// }

@@ -38,7 +38,7 @@ use fred::types::{ClusterHash, CustomCommand, MultipleKeys, MultipleValues, Valu
 use ruststream::StartAt;
 use ruststream::runtime::{
     AsDeclared, Declared, ForReply, IntoDeclared, Outgoing, PublishContext, PublishTransform,
-    Reads, SubscriberBuilder, SubscriberSettings,
+    Reads, Slot, SubscriberBuilder, SubscriberSettings,
 };
 
 use crate::partition::RedisPublishOptions;
@@ -82,7 +82,7 @@ pub(crate) use window::{Form, Owner, Round, Segment, Window};
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(record.pipeline());
+///             b.include(record.pipeline())
 ///         },
 ///     )
 /// }
@@ -175,7 +175,7 @@ mod sealed {
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
 ///             // `.pipeline()` opens the window as `Plain`, and `.atomic()` makes it `Atomic`.
-///             b.include(invoice.pipeline().atomic());
+///             b.include(invoice.pipeline().atomic())
 ///         },
 ///     )
 /// }
@@ -376,7 +376,7 @@ where
 ///     RustStream::new(AppInfo::new("invoices", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(invoice.pipeline().atomic());
+///             b.include(invoice.pipeline().atomic())
 ///         },
 ///     )
 /// }
@@ -401,7 +401,7 @@ where
 ///     RustStream::new(AppInfo::new("invoices", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(invoice.atomic());
+///             b.include(invoice.atomic())
 ///         },
 ///     )
 /// }
@@ -454,7 +454,7 @@ pub trait RedisPipelineSteps<Mk = AsDeclared>: IntoDeclared<Mk> {
     ///         RedisBroker::standalone("redis://localhost:6379"),
     ///         |b| {
     ///             // The reply joins the delivery's round and leaves after what the handler queued.
-    ///             b.include(record.pipeline()).out_reply(Publish).transform(InRound);
+    ///             b.include(record.pipeline()).out_reply(Publish).transform(InRound)
     ///         },
     ///     )
     /// }
@@ -524,7 +524,7 @@ mod bindable {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(record.pipeline()).out(DefaultSlot, Publish).build();
+///             b.include(record.pipeline()).out(DefaultSlot, Publish)
 ///         },
 ///     )
 /// }
@@ -536,9 +536,10 @@ mod bindable {
 /// ```compile_fail,E0277
 /// use std::convert::Infallible;
 ///
-/// use ruststream::{Lend, OutgoingMessage, Publisher};
+/// use ruststream::{Lend, OutgoingMessage, PublishOutcome, Publisher};
 /// use ruststream_fred::pipeline::Bindable;
 ///
+/// #[derive(Clone)]
 /// struct Elsewhere;
 ///
 /// impl Publisher for Elsewhere {
@@ -546,11 +547,11 @@ mod bindable {
 ///     type Error = Infallible;
 ///     type Options = ();
 ///
-///     async fn publish(
+///     async fn publish<'msg>(
 ///         &self,
-///         _msg: OutgoingMessage<'_, &[u8]>,
+///         _msg: OutgoingMessage<'msg>,
 ///         _options: Option<&()>,
-///     ) -> Result<(), Infallible> {
+///     ) -> PublishOutcome<'msg, Infallible, Lend> {
 ///         Ok(())
 ///     }
 /// }
@@ -593,6 +594,15 @@ impl bindable::Named for crate::RedisDefaultPublisher {
     }
 }
 
+/// The slot a handler is handed is named by the live publisher behind it.
+impl<Marker, Wire: bindable::Named, Codec, Pipe, Body> bindable::Named
+    for Slot<Marker, Wire, Codec, Pipe, Body>
+{
+    fn round_name(&self) -> u64 {
+        (**self).round_name()
+    }
+}
+
 /// The reply transform that puts a reply in the round of the delivery it answers.
 ///
 /// A reply is published after the handler returns and before the delivery settles. Mounted on
@@ -624,7 +634,7 @@ impl bindable::Named for crate::RedisDefaultPublisher {
 ///     RustStream::new(AppInfo::new("receipts", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(issue.pipeline()).out_reply(Publish).transform(InRound);
+///             b.include(issue.pipeline()).out_reply(Publish).transform(InRound)
 ///         },
 ///     )
 /// }
@@ -681,7 +691,7 @@ impl<C> PublishTransform<ForReply<C>, RedisPublishOptions> for InRound {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(record.pipeline());
+///             b.include(record.pipeline())
 ///         },
 ///     )
 /// }
@@ -709,7 +719,7 @@ impl<C> PublishTransform<ForReply<C>, RedisPublishOptions> for InRound {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
 ///         ruststream_fred::RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(record);
+///             b.include(record)
 ///         },
 ///     )
 /// }
@@ -777,7 +787,7 @@ impl RedisPipeline {
     /// #     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
     /// #         RedisBroker::standalone("redis://localhost:6379"),
     /// #         |b| {
-    /// #             b.include(record.pipeline()).out(DefaultSlot, Publish).build();
+    /// #             b.include(record.pipeline()).out(DefaultSlot, Publish)
     /// #         },
     /// #     )
     /// # }
@@ -826,7 +836,7 @@ impl RedisPipeline {
     /// #     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
     /// #         RedisBroker::standalone("redis://localhost:6379"),
     /// #         |b| {
-    /// #             b.include(record.pipeline());
+    /// #             b.include(record.pipeline())
     /// #         },
     /// #     )
     /// # }
@@ -876,7 +886,7 @@ impl RedisPipeline {
     /// #     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
     /// #         RedisBroker::standalone("redis://localhost:6379"),
     /// #         |b| {
-    /// #             b.include(record.pipeline());
+    /// #             b.include(record.pipeline())
     /// #         },
     /// #     )
     /// # }
@@ -952,7 +962,7 @@ impl RedisPipeline {
     /// #     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
     /// #         RedisBroker::standalone("redis://localhost:6379"),
     /// #         |b| {
-    /// #             b.include(record.pipeline());
+    /// #             b.include(record.pipeline())
     /// #         },
     /// #     )
     /// # }

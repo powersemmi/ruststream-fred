@@ -69,7 +69,7 @@ use super::{Envelope, Location, SealError};
 ///         |b| {
 ///             // The job is pushed as a JSON document a person reads in `redis-cli`.
 ///             b.include(plan.envelope(Framed::new(JsonCodec)))
-///                 .out_reply(Publish::new().envelope(Framed::new(JsonCodec)));
+///                 .out_reply(Publish::new().envelope(Framed::new(JsonCodec)))
 ///         },
 ///     )
 /// }
@@ -138,7 +138,7 @@ impl<Format> Debug for Framed<Format> {
 /// fn app() -> impl App {
 ///     let broker =
 ///         RedisBroker::standalone("redis://localhost:6379").envelope(Framed::new(AnalyticsCbor));
-///     RustStream::new(AppInfo::new("analytics", "0.1.0")).with_broker(broker, |_| {})
+///     RustStream::new(AppInfo::new("analytics", "0.1.0")).with_broker(broker, |b| b)
 /// }
 /// # }
 /// # fn main() {}
@@ -395,17 +395,11 @@ mod tests {
                 Ok(())
             }
 
-            fn encode<T: Serialize>(
-                &self,
-                value: &T,
-            ) -> Result<BytesMut, CodecError> {
+            fn encode<T: Serialize>(&self, value: &T) -> Result<BytesMut, CodecError> {
                 CborCodec.encode(value)
             }
 
-            fn decode<T: DeserializeOwned>(
-                &self,
-                bytes: &[u8],
-            ) -> Result<T, CodecError> {
+            fn decode<T: DeserializeOwned>(&self, bytes: &[u8]) -> Result<T, CodecError> {
                 CborCodec.decode(bytes)
             }
         }

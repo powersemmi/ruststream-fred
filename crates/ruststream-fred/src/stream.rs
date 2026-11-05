@@ -79,7 +79,7 @@ pub use crate::publisher::RedisTransactionalPublish as TransactionalPublish;
 ///             // One batch's replies land together, as one MULTI / EXEC block.
 ///             b.include(price.batch(nonzero!(32)))
 ///                 .out_reply(TransactionalPublish)
-///                 .transactional();
+///                 .transactional()
 ///         },
 ///     )
 /// }
@@ -229,8 +229,8 @@ pub(crate) enum RequeueMode {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(handle);
-///             b.include(recover);
+///             b.include(handle)
+///                 .include(recover)
 ///         },
 ///     )
 /// }
@@ -291,7 +291,7 @@ impl RedisStream {
     ///             // "orders.dlq" instead of back to "orders".
     ///             b.include(handle)
     ///                 .max_attempts(nonzero!(5u32))
-    ///                 .dead_letter("orders.dlq");
+    ///                 .dead_letter("orders.dlq")
     ///         },
     ///     )
     /// }
@@ -352,8 +352,8 @@ impl RedisStream {
     ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
     ///         RedisBroker::standalone("redis://localhost:6379"),
     ///         |b| {
-    ///             b.include(handle);
-    ///             b.include(recover);
+    ///             b.include(handle)
+    ///                 .include(recover)
     ///         },
     ///     )
     /// }
@@ -435,7 +435,7 @@ impl RedisStream {
     ///             // The server's delivery count feeds the cap.
     ///             b.include(handle)
     ///                 .max_attempts(nonzero!(5u32))
-    ///                 .dead_letter("orders.dlq");
+    ///                 .dead_letter("orders.dlq")
     ///         },
     ///     )
     /// }
@@ -502,7 +502,7 @@ impl<Env> RedisStream<Env> {
     ///         |b| {
     ///             // A faststream service writes these.
     ///             let source = RedisStream::new("audit").group("audit").envelope(FastStream);
-    ///             b.include(subscriber(source, Log).build());
+    ///             b.include(subscriber(source, Log).build())
     ///         },
     ///     )
     /// }

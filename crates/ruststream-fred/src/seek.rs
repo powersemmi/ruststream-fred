@@ -58,7 +58,7 @@ use crate::error::RedisError;
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(price);
+///             b.include(price)
 ///         },
 ///     )
 /// }
@@ -190,8 +190,8 @@ impl FromStr for EntryId {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(audit);
-///             b.include(work);
+///             b.include(audit)
+///                 .include(work)
 ///         },
 ///     )
 /// }
@@ -307,7 +307,7 @@ impl RedisGroupPosition {
 ///     RustStream::new(AppInfo::new("projection", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(project);
+///             b.include(project)
 ///         },
 ///     )
 /// }
