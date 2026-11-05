@@ -54,7 +54,7 @@ fn app(url: &str) -> impl App {
             subscriber(trail, Project)
                 .build()
                 .start_at(RedisGroupPosition::beginning()),
-        );
+        )
     })
 }
 // --8<-- [end:start-at]

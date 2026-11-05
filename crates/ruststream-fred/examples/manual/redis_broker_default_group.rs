@@ -46,9 +46,8 @@ impl Handle<Order> for Take {
 }
 
 fn service(broker: RedisBroker) -> impl App<State = ()> {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(subscriber("orders", Take).build());
-    })
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(broker, |b| b.include(subscriber("orders", Take).build()))
 }
 
 /// Every bare-name subscription of this broker reads in the group `workers`.

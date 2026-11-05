@@ -25,12 +25,10 @@ async fn take(order: &Order) -> HandlerOutcome {
 
 #[ruststream::app]
 fn app() -> impl App<State = ()> {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        RedisBroker::standalone("redis://localhost:6379"),
-        |b| {
-            b.include(take);
-        },
-    )
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
+            b.include(take)
+        })
 }
 // --8<-- [end:app]
 

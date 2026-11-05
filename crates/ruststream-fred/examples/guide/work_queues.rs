@@ -68,11 +68,11 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("images", "0.1.0")).with_broker(
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
-            b.include(warm_cache);
-            b.include(render);
-            // A queue nobody fed for a day expires, with whatever is left in it.
-            b.include(queue_thumbnail)
-                .out_reply(list::Publish::new().ttl(Duration::from_hours(24)));
+            b.include(warm_cache)
+                .include(render)
+                // A queue nobody fed for a day expires, with whatever is left in it.
+                .include(queue_thumbnail)
+                .out_reply(list::Publish::new().ttl(Duration::from_hours(24)))
         },
     )
 }

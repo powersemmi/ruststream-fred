@@ -158,17 +158,17 @@ fn app() -> impl App<State = Clients> {
             // Five deliveries of one refund, the first included; then the dead-letter stream.
             b.include(subscriber(refunds(), ProcessRefund).build())
                 .max_attempts(nonzero!(5u32))
-                .dead_letter("refunds.dlq");
-            b.include(subscriber(priority_refunds(), ProcessRefund).build())
+                .dead_letter("refunds.dlq")
+                .include(subscriber(priority_refunds(), ProcessRefund).build())
                 .max_attempts(nonzero!(5u32))
-                .dead_letter("refunds.dlq");
-            b.include(
-                subscriber(
-                    RedisStream::new("refunds.dlq").group("refunds-review"),
-                    Review,
+                .dead_letter("refunds.dlq")
+                .include(
+                    subscriber(
+                        RedisStream::new("refunds.dlq").group("refunds-review"),
+                        Review,
+                    )
+                    .build(),
                 )
-                .build(),
-            );
         })
 }
 

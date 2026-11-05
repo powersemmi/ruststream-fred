@@ -33,12 +33,10 @@ async fn request_label(order: &Order) -> LabelJob {
 fn app() -> impl App {
     // A queue nobody drains for an hour expires instead of growing.
     let jobs = list::Publish::new().ttl(Duration::from_secs(3600));
-    RustStream::new(AppInfo::new("labels", "0.1.0")).with_broker(
-        RedisBroker::standalone("redis://localhost:6379"),
-        |b| {
-            b.include(request_label).out_reply(jobs);
-        },
-    )
+    RustStream::new(AppInfo::new("labels", "0.1.0"))
+        .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
+            b.include(request_label).out_reply(jobs)
+        })
 }
 // --8<-- [end:list_publish]
 

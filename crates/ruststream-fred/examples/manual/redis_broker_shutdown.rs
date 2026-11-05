@@ -68,7 +68,7 @@ fn app() -> impl App<State = ()> {
                 subscriber(RedisStream::new("orders").group("workers"), Ship)
                     .reply()
                     .build(),
-            );
+            )
         })
         // Runs once every connection of the broker is closed.
         .after_shutdown(async move |_state| {

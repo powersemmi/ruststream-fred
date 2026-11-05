@@ -48,17 +48,17 @@ fn app() -> impl App<State = ()> {
     let broker = RedisBroker::standalone("redis://localhost:6379");
     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(broker, |b| {
         let orders = RedisStream::new("orders").group("billing");
-        b.include(subscriber(orders, Bill).batch(nonzero!(16)).build());
-        b.include(
-            subscriber(RedisList::new("jobs"), Pack)
-                .batch(nonzero!(16))
-                .build(),
-        );
-        b.include(
-            subscriber(RedisPubSub::new("clicks"), Count)
-                .batch(nonzero!(16))
-                .build(),
-        );
+        b.include(subscriber(orders, Bill).batch(nonzero!(16)).build())
+            .include(
+                subscriber(RedisList::new("jobs"), Pack)
+                    .batch(nonzero!(16))
+                    .build(),
+            )
+            .include(
+                subscriber(RedisPubSub::new("clicks"), Count)
+                    .batch(nonzero!(16))
+                    .build(),
+            )
     })
 }
 // --8<-- [end:stream]

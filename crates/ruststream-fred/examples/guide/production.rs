@@ -72,9 +72,8 @@ async fn confirm(order: &Order) -> Confirmation {
 }
 
 fn service(broker: RedisBroker) -> impl App<State = ()> {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(confirm).out_reply(Publish);
-    })
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(broker, |b| b.include(confirm).out_reply(Publish))
 }
 
 #[ruststream::app]

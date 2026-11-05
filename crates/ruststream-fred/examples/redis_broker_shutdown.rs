@@ -33,7 +33,7 @@ async fn ship(order: &Order) -> Shipment {
 fn app() -> impl App<State = ()> {
     RustStream::new(AppInfo::new("orders", "0.1.0"))
         .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
-            b.include(ship);
+            b.include(ship)
         })
         // Runs once every connection of the broker is closed.
         .after_shutdown(async move |_state| {

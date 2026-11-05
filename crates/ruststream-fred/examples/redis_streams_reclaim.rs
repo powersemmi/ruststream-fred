@@ -37,10 +37,8 @@ async fn recover(order: &Order) -> HandlerOutcome {
 
 fn app() -> impl App {
     let broker = RedisBroker::standalone("redis://localhost:6379");
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(work);
-        b.include(recover);
-    })
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(broker, |b| b.include(work).include(recover))
 }
 // --8<-- [end:reclaim]
 
@@ -79,12 +77,10 @@ mod tests {
     /// unfinished work.
     #[tokio::test(start_paused = true)]
     async fn the_recovery_path_reads_no_fresh_entry() -> Result<(), Box<dyn Error>> {
-        let recovery_only = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-            RedisBroker::standalone("redis://localhost:6379"),
-            |b| {
-                b.include(recover);
-            },
-        );
+        let recovery_only = RustStream::new(AppInfo::new("orders", "0.1.0"))
+            .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
+                b.include(recover)
+            });
         let tb = TestApp::start(recovery_only).await?;
         let broker = tb.broker::<RedisBroker>();
 

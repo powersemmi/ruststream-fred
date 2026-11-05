@@ -42,12 +42,10 @@ async fn trace(order: &Order, ctx: &mut Context<'_, StreamContext>) -> Trail {
 
 #[ruststream::app]
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("audit", "0.1.0")).with_broker(
-        RedisBroker::standalone("redis://localhost:6379"),
-        |b| {
-            b.include(trace).out_reply(Publish);
-        },
-    )
+    RustStream::new(AppInfo::new("audit", "0.1.0"))
+        .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
+            b.include(trace).out_reply(Publish)
+        })
 }
 
 #[cfg(test)]

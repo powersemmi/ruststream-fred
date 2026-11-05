@@ -88,13 +88,13 @@ impl Handle<Alert, (), (), StreamContext> for Notify {
 fn service(broker: RedisBroker) -> impl App {
     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker, |b| {
         let ledger = RedisStream::new("ledger").group("balances");
+        let alerts = RedisStream::new("alerts").group("notifier");
         b.include(
             subscriber(ledger, Rebuild)
                 .build()
                 .start_at(RedisGroupPosition::beginning()),
-        );
-        let alerts = RedisStream::new("alerts").group("notifier");
-        b.include(subscriber(alerts, Notify).build());
+        )
+        .include(subscriber(alerts, Notify).build())
     })
 }
 // --8<-- [end:app]

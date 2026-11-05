@@ -90,7 +90,7 @@ fn service(broker: RedisBroker) -> impl App<State = ()> {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         let orders = RedisStream::new("orders").group("orders-svc");
         b.include(subscriber(orders, Confirm).reply().build())
-            .out_reply(Publish);
+            .out_reply(Publish)
     })
 }
 

@@ -57,7 +57,7 @@ impl Handle<Job> for RunJob {
 /// The hash tag `{jobs}` keeps the queue and its processing list `{jobs}.processing` on one node.
 fn service(broker: RedisBroker) -> impl App<State = ()> {
     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(broker, |b| {
-        b.include(subscriber(RedisList::new("{jobs}").reliable(), RunJob).build());
+        b.include(subscriber(RedisList::new("{jobs}").reliable(), RunJob).build())
     })
 }
 
@@ -116,12 +116,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_reliable_list_across_two_slots_does_not_start() {
-        let app = RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
-            RedisBroker::cluster(["redis-1.internal:6379"]),
-            |b| {
-                b.include(subscriber(RedisList::new("jobs").reliable(), RunJob).build());
-            },
-        );
+        let app = RustStream::new(AppInfo::new("jobs", "0.1.0"))
+            .with_broker(RedisBroker::cluster(["redis-1.internal:6379"]), |b| {
+                b.include(subscriber(RedisList::new("jobs").reliable(), RunJob).build())
+            });
 
         let err = TestApp::start(app)
             .await

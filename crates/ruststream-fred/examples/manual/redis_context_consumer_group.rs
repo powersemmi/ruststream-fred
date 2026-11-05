@@ -53,7 +53,7 @@ fn app() -> impl App {
     let broker = RedisBroker::standalone("redis://localhost:6379").default_group("billing");
     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(broker, |b| {
         b.include(subscriber("orders", Bill).reply().build())
-            .out_reply(Publish);
+            .out_reply(Publish)
     })
 }
 // --8<-- [end:consumer_group]

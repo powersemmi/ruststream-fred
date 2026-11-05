@@ -99,8 +99,9 @@ fn service(broker: RedisBroker) -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         b.include(confirm.batch(nonzero!(32)))
             .out_reply(TransactionalPublish)
-            .transactional();
-        b.include(ship).out(Shipments, TransactionalPublish).build();
+            .transactional()
+            .include(ship)
+            .out(Shipments, TransactionalPublish)
     })
 }
 // --8<-- [end:app]

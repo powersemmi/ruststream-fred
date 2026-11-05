@@ -28,9 +28,7 @@ async fn price(order: &Order) -> Receipt {
 }
 
 fn service(broker: RedisBroker) -> impl App<State = ()> {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(price);
-    })
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| b.include(price))
 }
 
 // --8<-- [start:app]

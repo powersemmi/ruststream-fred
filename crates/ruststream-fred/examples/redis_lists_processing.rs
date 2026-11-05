@@ -29,12 +29,10 @@ async fn export(job: &Export) -> HandlerOutcome {
 
 #[ruststream::app]
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("exports", "0.1.0")).with_broker(
-        RedisBroker::cluster(["redis://localhost:7000"]),
-        |b| {
-            b.include(export);
-        },
-    )
+    RustStream::new(AppInfo::new("exports", "0.1.0"))
+        .with_broker(RedisBroker::cluster(["redis://localhost:7000"]), |b| {
+            b.include(export)
+        })
 }
 // --8<-- [end:processing]
 
@@ -72,12 +70,10 @@ mod tests {
 
     #[tokio::test]
     async fn keys_on_two_slots_do_not_start() {
-        let untagged = RustStream::new(AppInfo::new("exports", "0.1.0")).with_broker(
-            RedisBroker::cluster(["redis://localhost:7000"]),
-            |b| {
-                b.include(export_untagged);
-            },
-        );
+        let untagged = RustStream::new(AppInfo::new("exports", "0.1.0"))
+            .with_broker(RedisBroker::cluster(["redis://localhost:7000"]), |b| {
+                b.include(export_untagged)
+            });
 
         let refused = TestApp::start(untagged)
             .await

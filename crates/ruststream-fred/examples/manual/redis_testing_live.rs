@@ -67,7 +67,7 @@ fn app(url: &str) -> impl App<State = ()> {
                     Accept,
                 )
                 .build(),
-            );
+            )
         },
     )
 }

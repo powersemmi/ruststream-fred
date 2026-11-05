@@ -96,9 +96,9 @@ fn app() -> impl App<State = AppState> {
             })
         })
         .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
-            b.include(make_thumbnail);
-            b.include(render);
-            b.include(send_invoice);
+            b.include(make_thumbnail)
+                .include(render)
+                .include(send_invoice)
         })
 }
 
@@ -175,12 +175,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_recovery_set_without_min_idle_does_not_start() {
-        let unbounded = RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
-            RedisBroker::standalone("redis://localhost:6379"),
-            |b| {
-                b.include(send_invoice_unbounded);
-            },
-        );
+        let unbounded = RustStream::new(AppInfo::new("jobs", "0.1.0"))
+            .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
+                b.include(send_invoice_unbounded)
+            });
 
         let refused = TestApp::start(unbounded)
             .await

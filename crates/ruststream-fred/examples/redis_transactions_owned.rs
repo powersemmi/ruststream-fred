@@ -45,11 +45,11 @@ async fn seed_prices<P: OwnedTransactions>(
 /// The service on `broker`: a standalone or a sentinel deployment, where `MULTI` / `EXEC` runs.
 fn app_on(broker: RedisBroker) -> impl App<State = ()> {
     RustStream::new(AppInfo::new("catalog", "0.1.0")).with_broker(broker, |b| {
-        b.include(list_price);
         // Runs once the broker is connected and the subscription is open.
         b.after_startup(TransactionalPublish, async move |publisher| {
             seed_prices(publisher).await.map_err(io::Error::other)
-        });
+        })
+        .include(list_price)
     })
 }
 // --8<-- [end:owned_transaction]

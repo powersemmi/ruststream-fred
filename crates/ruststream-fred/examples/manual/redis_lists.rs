@@ -129,9 +129,9 @@ fn app() -> impl App<State = AppState> {
             })
         })
         .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
-            b.include(subscriber(thumbnails(), MakeThumbnail).build());
-            b.include(subscriber(renders(), Render).build());
-            b.include(subscriber(invoices(), SendInvoice).build());
+            b.include(subscriber(thumbnails(), MakeThumbnail).build())
+                .include(subscriber(renders(), Render).build())
+                .include(subscriber(invoices(), SendInvoice).build())
         })
 }
 
@@ -215,7 +215,7 @@ mod tests {
             })
             .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
                 let descriptor = RedisList::new("invoices").recovery_zset("invoices.claims");
-                b.include(subscriber(descriptor, SendInvoice).build());
+                b.include(subscriber(descriptor, SendInvoice).build())
             });
 
         let refused = TestApp::start(unbounded)

@@ -90,8 +90,8 @@ fn service(url: &str) -> impl App<State = ()> {
         |b| {
             b.include(charge)
                 .max_attempts(nonzero!(3u32))
-                .dead_letter("card-payments.review");
-            b.include(give_back);
+                .dead_letter("card-payments.review")
+                .include(give_back)
         },
     )
 }

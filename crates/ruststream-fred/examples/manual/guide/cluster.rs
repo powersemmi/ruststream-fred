@@ -91,11 +91,11 @@ impl Handle<Event> for OnEvent {
 // --8<-- [start:app]
 fn service(broker: RedisBroker) -> impl App<State = ()> {
     RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(broker, |b| {
-        b.include(subscriber(RedisList::new("{jobs}").reliable(), RunJob).build());
         let invoice = subscriber(RedisStream::new("{orders}").group("billing"), Invoice);
-        b.include(invoice.pipeline().atomic().build());
         let events = RedisPubSub::new("events").mode(PubSubMode::Sharded);
-        b.include(subscriber(events, OnEvent).build());
+        b.include(subscriber(RedisList::new("{jobs}").reliable(), RunJob).build())
+            .include(invoice.pipeline().atomic().build())
+            .include(subscriber(events, OnEvent).build())
     })
 }
 
@@ -197,12 +197,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_reliable_list_across_two_slots_does_not_start() {
-        let app = RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(
-            RedisBroker::cluster(["redis-1.internal:6379"]),
-            |b| {
-                b.include(subscriber(RedisList::new("jobs").reliable(), RunJob).build());
-            },
-        );
+        let app = RustStream::new(AppInfo::new("shop", "0.1.0"))
+            .with_broker(RedisBroker::cluster(["redis-1.internal:6379"]), |b| {
+                b.include(subscriber(RedisList::new("jobs").reliable(), RunJob).build())
+            });
 
         let err = TestApp::start(app)
             .await
@@ -238,7 +236,7 @@ mod tests {
             |b| {
                 let cross_slot =
                     subscriber(RedisStream::new("{orders}").group("billing"), CrossSlot);
-                b.include(cross_slot.pipeline().atomic().build());
+                b.include(cross_slot.pipeline().atomic().build())
             },
         );
         let tb = TestApp::start(app).await?;

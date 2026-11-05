@@ -35,7 +35,7 @@ fn app() -> impl App {
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
             // Each receipt is an `XADD` to the `receipts` stream.
-            b.include(confirm).out_reply(Publish);
+            b.include(confirm).out_reply(Publish)
         },
     )
 }

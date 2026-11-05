@@ -45,9 +45,7 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
-            b.include(
-                subscriber(RedisStream::new("orders").group("orders-svc"), TakeOrder).build(),
-            );
+            b.include(subscriber(RedisStream::new("orders").group("orders-svc"), TakeOrder).build())
         },
     )
 }

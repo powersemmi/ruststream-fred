@@ -50,7 +50,7 @@ fn app() -> impl App {
         |b| {
             let confirm = subscriber(RedisStream::new("orders").group("workers"), Confirm);
             // Each receipt is an `XADD` to the `receipts` stream.
-            b.include(confirm.reply().build()).out_reply(Publish);
+            b.include(confirm.reply().build()).out_reply(Publish)
         },
     )
 }

@@ -35,12 +35,8 @@ async fn accept(payment: &Payment) -> HandlerOutcome {
 
 /// The service on the server at `url`.
 fn app(url: &str) -> impl App<State = ()> {
-    RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
-        RedisBroker::standalone(url),
-        |b| {
-            b.include(accept);
-        },
-    )
+    RustStream::new(AppInfo::new("payments", "0.1.0"))
+        .with_broker(RedisBroker::standalone(url), |b| b.include(accept))
 }
 
 #[ruststream::app]

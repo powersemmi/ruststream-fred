@@ -38,9 +38,7 @@ async fn take(order: &Order) -> HandlerOutcome {
 }
 
 fn service(broker: RedisBroker) -> impl App<State = ()> {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(take);
-    })
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| b.include(take))
 }
 
 // --8<-- [start:pool]
@@ -48,7 +46,7 @@ fn service(broker: RedisBroker) -> impl App<State = ()> {
 fn pool(url: &str) -> Result<Pool, FredError> {
     Builder::from_config(Config::from_url(url)?)
         .with_performance_config(|performance| {
-            performance.default_command_timeout = Duration::from_secs(2);
+            performance.default_command_timeout = Duration::from_secs(2)
         })
         .set_policy(ReconnectPolicy::new_constant(0, 500))
         .build_pool(8)

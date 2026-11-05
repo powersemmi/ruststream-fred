@@ -32,9 +32,7 @@ async fn take(order: &Order) -> HandlerOutcome {
 }
 
 fn service(broker: RedisBroker) -> impl App<State = ()> {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(take);
-    })
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| b.include(take))
 }
 
 // --8<-- [start:app]

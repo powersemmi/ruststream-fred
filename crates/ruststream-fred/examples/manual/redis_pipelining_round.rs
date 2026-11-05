@@ -85,7 +85,6 @@ fn app() -> impl App {
                 .out_reply(Publish)
                 .transform(InRound)
                 .out(DefaultSlot, Publish)
-                .build();
         },
     )
 }

@@ -49,7 +49,7 @@ fn app() -> impl App {
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
             let request = subscriber(RedisStream::new("orders").group("labels"), RequestLabel);
-            b.include(request.reply().build()).out_reply(jobs);
+            b.include(request.reply().build()).out_reply(jobs)
         },
     )
 }

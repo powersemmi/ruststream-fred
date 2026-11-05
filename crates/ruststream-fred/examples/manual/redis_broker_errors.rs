@@ -97,7 +97,6 @@ fn app() -> impl App<State = ()> {
         |b| {
             b.include(subscriber(orders(), Book).build())
                 .out(Ledger, list::Publish::new())
-                .build();
         },
     )
 }
@@ -168,7 +167,6 @@ mod tests {
             |b| {
                 b.include(subscriber("orders", Book).build())
                     .out(Ledger, list::Publish::new())
-                    .build();
             },
         );
 

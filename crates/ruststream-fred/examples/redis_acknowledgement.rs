@@ -72,7 +72,7 @@ fn app() -> impl App<State = AppState> {
             })
         })
         .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
-            b.include(charge);
+            b.include(charge)
         })
 }
 

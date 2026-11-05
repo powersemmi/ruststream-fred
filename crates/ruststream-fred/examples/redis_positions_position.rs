@@ -36,9 +36,7 @@ async fn work(order: &Order, Ctx(seeker): Ctx<keys::SeekHandle>) -> HandlerOutco
 
 fn app() -> impl App {
     let broker = RedisBroker::standalone("redis://localhost:6379");
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(work);
-    })
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| b.include(work))
 }
 
 // The scenarios are the tests below; the command in the header runs them.

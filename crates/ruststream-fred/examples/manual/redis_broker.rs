@@ -47,12 +47,10 @@ impl Handle<Order> for Take {
 }
 
 fn app() -> impl App<State = ()> {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        RedisBroker::standalone("redis://localhost:6379"),
-        |b| {
-            b.include(subscriber(RedisStream::new("orders").group("workers"), Take).build());
-        },
-    )
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
+            b.include(subscriber(RedisStream::new("orders").group("workers"), Take).build())
+        })
 }
 // --8<-- [end:app]
 

@@ -134,8 +134,8 @@ fn service(url: &str) -> impl App<State = ()> {
                     .build(),
             )
             .max_attempts(nonzero!(3u32))
-            .dead_letter("card-payments.review");
-            b.include(subscriber(RedisList::new("card-refunds").reliable(), GiveBack).build());
+            .dead_letter("card-payments.review")
+            .include(subscriber(RedisList::new("card-refunds").reliable(), GiveBack).build())
         },
     )
 }

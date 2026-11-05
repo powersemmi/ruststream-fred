@@ -51,7 +51,7 @@ fn app() -> impl App {
             let on_event = subscriber(RedisPubSub::new("events"), OnEvent);
             // A `PUBLISH` to the `audit` channel, in place of the default publisher's `XADD`.
             b.include(on_event.reply().build())
-                .out_reply(Publish::new());
+                .out_reply(Publish::new())
         },
     )
 }

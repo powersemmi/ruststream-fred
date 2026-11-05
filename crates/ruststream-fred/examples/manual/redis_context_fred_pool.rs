@@ -61,7 +61,7 @@ fn app() -> impl App {
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
             let assign = subscriber(RedisStream::new("orders").group("numbering"), AssignNumber);
-            b.include(assign.reply().build()).out_reply(Publish);
+            b.include(assign.reply().build()).out_reply(Publish)
         },
     )
 }
