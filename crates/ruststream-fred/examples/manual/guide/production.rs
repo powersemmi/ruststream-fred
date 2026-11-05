@@ -7,6 +7,8 @@
 //!     cargo run --example manual_guide_production --features testing -- run
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 // The sentinel broker is the alternative a deployment picks; its test uses it.
 #![cfg_attr(not(test), allow(dead_code))]
 

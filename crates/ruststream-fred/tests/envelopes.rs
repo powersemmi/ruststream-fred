@@ -4,6 +4,8 @@
 //! refuses a header instead of losing it; and a subscription that never reads headers never
 //! parses them.
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 #![cfg(feature = "testing")]
 
 use std::collections::BTreeMap;

@@ -9,6 +9,8 @@
 //! The in-process server answers the mode the way Redis does, so these cases are the in-process
 //! twins of the live ones in `tests/integration_fred.rs`.
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 #![cfg(feature = "testing")]
 
 use std::time::Duration;

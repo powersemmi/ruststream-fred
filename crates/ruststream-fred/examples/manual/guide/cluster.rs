@@ -7,6 +7,9 @@
 //! REDIS_CLUSTER_TEST_URL=127.0.0.1:7000 cargo test --example manual_guide_cluster --features testing
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
+
 use std::future::{Future, ready};
 use std::process::ExitCode;
 

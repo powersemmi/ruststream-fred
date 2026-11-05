@@ -7,6 +7,9 @@
 //!     cargo test -p ruststream-fred --all-features --test suite integration_pipeline::
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};

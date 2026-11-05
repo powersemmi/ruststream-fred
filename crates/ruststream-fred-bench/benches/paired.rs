@@ -1,3 +1,5 @@
+// The service and its loops start on the bench's own runtime; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 // The benchmark is a binary of its own, not library surface: a measured loop panics on a broker
 // fault rather than threading a `Result` through a scenario nobody recovers from.
 #![allow(

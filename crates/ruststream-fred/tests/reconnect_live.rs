@@ -11,6 +11,8 @@
 //! the live suites run one test at a time (`--test-threads=1`), so nothing else is connected.
 //! The run needs `REDIS_TEST_URL`; under `RUSTSTREAM_REQUIRE_LIVE` a missing address fails it.
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 #![cfg(feature = "testing")]
 
 use std::collections::HashMap;
