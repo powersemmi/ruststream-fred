@@ -47,7 +47,7 @@ The tests start the same `service` with test credentials under `TestApp::start`;
 
 ```toml title="Cargo.toml"
 [dependencies]
-ruststream-fred = { version = "0.7", features = ["tls-rustls"] }
+ruststream-fred = { version = "0.8", features = ["tls-rustls"] }
 ```
 
 TLS is one of three features, mapped onto the TLS backends of `fred`: `tls-rustls` (rustls on `aws-lc-rs`), `tls-rustls-ring` (rustls on ring) and `tls-native-tls` (the platform's TLS library).

@@ -23,7 +23,7 @@ import TabItem from '@theme/TabItem';
 
 ```toml title="Cargo.toml"
 [dev-dependencies]
-ruststream-fred = { version = "0.7", features = ["testing"] }
+ruststream-fred = { version = "0.8", features = ["testing"] }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
 ```
 

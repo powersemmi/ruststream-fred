@@ -47,7 +47,7 @@ import TabItem from '@theme/TabItem';
 
 ```toml title="Cargo.toml"
 [dependencies]
-ruststream-fred = { version = "0.7", features = ["tls-rustls"] }
+ruststream-fred = { version = "0.8", features = ["tls-rustls"] }
 ```
 
 TLS включает одна из трёх фич, которые соответствуют реализациям TLS в `fred`: `tls-rustls` (rustls на `aws-lc-rs`), `tls-rustls-ring` (rustls на ring) и `tls-native-tls` (библиотека TLS платформы).

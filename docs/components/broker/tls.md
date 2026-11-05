@@ -28,7 +28,7 @@ A [`TestApp`](../testing/index.md) test runs no handshake, so it proves the serv
 The dependency line:
 
 ```toml
-ruststream-fred = { version = "0.7", features = ["tls-rustls"] }
+ruststream-fred = { version = "0.8", features = ["tls-rustls"] }
 ```
 
 The service reaches a cluster over TLS and logs in as the ACL user `worker`.

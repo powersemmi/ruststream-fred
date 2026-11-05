@@ -14,13 +14,13 @@ This guide installs `ruststream-fred`, starts a local Redis and runs a first ser
 
 ```toml title="Cargo.toml"
 [dependencies]
-ruststream = { version = "0.7", features = ["macros", "json", "logging"] }
-ruststream-fred = "0.7"
+ruststream = { version = "0.8", features = ["macros", "json", "logging"] }
+ruststream-fred = "0.8"
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
 
 [dev-dependencies]
-ruststream-fred = { version = "0.7", features = ["testing"] }
+ruststream-fred = { version = "0.8", features = ["testing"] }
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
 

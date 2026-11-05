@@ -212,7 +212,7 @@ jobs:
             {
               echo ""
               echo "[patch.crates-io]"
-              echo "ruststream = { path = \"$GITHUB_WORKSPACE/ruststream\" }"
+              echo "ruststream = { path = \"$GITHUB_WORKSPACE/ruststream/crates/ruststream\" }"
               echo "ruststream-fred = { path = \"$GITHUB_WORKSPACE/ruststream-fred/crates/ruststream-fred\" }"
             } >> "$dest/smoke/Cargo.toml"
             cargo check --manifest-path "$dest/smoke/Cargo.toml"

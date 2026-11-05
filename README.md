@@ -45,12 +45,12 @@ framework; this crate is the transport.
 
 ```toml
 [dependencies]
-ruststream = { version = "0.7", features = ["macros", "json"] }
-ruststream-fred = "0.7"
+ruststream = { version = "0.8", features = ["macros", "json"] }
+ruststream-fred = "0.8"
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
-ruststream-fred = { version = "0.7", features = ["testing"] }
+ruststream-fred = { version = "0.8", features = ["testing"] }
 ```
 
 Optional features: TLS (`tls-rustls`, `tls-rustls-ring`, `tls-native-tls`), `sentinel-auth` and
@@ -82,7 +82,7 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
-            b.include(confirm).out_reply(Publish);
+            b.include(confirm).out_reply(Publish)
         },
     )
 }
