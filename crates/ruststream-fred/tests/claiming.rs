@@ -118,9 +118,13 @@ fn app() -> impl App<State = ()> {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         RedisBroker::standalone(URL),
         |b| {
-            b.include(handle_order).out(Audit, Publish).build();
-            b.include(handle_flaky).out(Audit, Publish).build();
-            b.include(handle_impatient);
+            b.include(handle_order)
+                .out(Audit, Publish)
+                .build()
+                .include(handle_flaky)
+                .out(Audit, Publish)
+                .build()
+                .include(handle_impatient)
         },
     )
 }

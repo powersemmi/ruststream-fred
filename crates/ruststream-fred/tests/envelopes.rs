@@ -99,14 +99,10 @@ const FORMS: [&str; 3] = ["env.jobs", "env.events", "env.orders"];
 
 /// One service on a list, a channel and a stream, its broker reading through `envelope`.
 fn app<Env: Envelope>(envelope: Env) -> impl App {
-    RustStream::new(AppInfo::new("envelopes", "0.1.0")).with_broker(
-        RedisBroker::standalone(URL).envelope(envelope),
-        |b| {
-            b.include(job);
-            b.include(event);
-            b.include(order);
-        },
-    )
+    RustStream::new(AppInfo::new("envelopes", "0.1.0"))
+        .with_broker(RedisBroker::standalone(URL).envelope(envelope), |b| {
+            b.include(job).include(event).include(order)
+        })
 }
 
 /// Sends `ORDER` with the tenant header to each form, written in the broker's envelope, and holds
@@ -195,10 +191,10 @@ fn faststream_app() -> impl App {
     RustStream::new(AppInfo::new("faststream-peer", "0.1.0")).with_broker(
         RedisBroker::standalone(URL).envelope(FastStream),
         |b| {
-            b.include(faststream_producer);
-            b.include(job);
-            b.include(event);
-            b.include(order);
+            b.include(faststream_producer)
+                .include(job)
+                .include(event)
+                .include(order)
         },
     )
 }
@@ -259,8 +255,8 @@ fn relay_app() -> impl App {
     RustStream::new(AppInfo::new("relay", "0.1.0")).with_broker(RedisBroker::standalone(URL), |b| {
         b.include(relay)
             .out(Peer, RedisListPublish::new().envelope(FastStream))
-            .build();
-        b.include(wire.envelope(NoOp));
+            .build()
+            .include(wire.envelope(NoOp))
     })
 }
 
@@ -313,10 +309,10 @@ fn foreign_app<Env: Envelope>(envelope: Env) -> impl App {
     RustStream::new(AppInfo::new("foreign", "0.1.0")).with_broker(
         RedisBroker::standalone(URL).envelope(envelope),
         |b| {
-            b.include(foreign_producer);
-            b.include(job);
-            b.include(event);
-            b.include(order);
+            b.include(foreign_producer)
+                .include(job)
+                .include(event)
+                .include(order)
         },
     )
 }
@@ -399,7 +395,7 @@ fn bare_app() -> impl App {
     RustStream::new(AppInfo::new("bare", "0.1.0")).with_broker(RedisBroker::standalone(URL), |b| {
         b.include(keyed_bare)
             .out(Bare, RedisListPublish::new().envelope(NoOp))
-            .build();
+            .build()
     })
 }
 
@@ -480,10 +476,7 @@ async fn headers_are_parsed_only_where_a_handler_reads_them() {
     let counting = Counting::default();
     let tb = TestApp::start(RustStream::new(AppInfo::new("lazy", "0.1.0")).with_broker(
         RedisBroker::standalone(URL).envelope(counting.clone()),
-        |b| {
-            b.include(payload_only);
-            b.include(with_headers);
-        },
+        |b| b.include(payload_only).include(with_headers),
     ))
     .await
     .expect("start");
@@ -542,8 +535,8 @@ async fn the_mount_site_names_the_envelope_through_a_window() {
     let tb = TestApp::start(RustStream::new(AppInfo::new("piped", "0.1.0")).with_broker(
         RedisBroker::standalone(URL),
         |b| {
-            b.include(piped_producer);
-            b.include(piped.pipeline().envelope(FastStream));
+            b.include(piped_producer)
+                .include(piped.pipeline().envelope(FastStream))
         },
     ))
     .await

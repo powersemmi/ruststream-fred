@@ -1,5 +1,6 @@
 //! The integration suite, one test binary: each file under `tests/` is a module of it.
 
+mod lent;
 mod live;
 
 mod adopted_pool;

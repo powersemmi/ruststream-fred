@@ -55,14 +55,10 @@ async fn hear(order: &Order) -> HandlerOutcome {
 }
 
 fn app(url: &str) -> impl App<State = ()> {
-    RustStream::new(AppInfo::new("reconnect", "0.1.0")).with_broker(
-        RedisBroker::standalone(url),
-        |b| {
-            b.include(take_order);
-            b.include(run_job);
-            b.include(hear);
-        },
-    )
+    RustStream::new(AppInfo::new("reconnect", "0.1.0"))
+        .with_broker(RedisBroker::standalone(url), |b| {
+            b.include(take_order).include(run_job).include(hear)
+        })
 }
 
 /// Publishes `order` to each of the three subscriptions and checks each has now run `times`.

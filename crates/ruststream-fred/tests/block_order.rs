@@ -51,26 +51,26 @@ async fn block_follows_start_at() {
     let app = RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(
         RedisBroker::standalone(URL),
         |b| {
-            b.include(windowed.pipeline().block(BLOCK));
-            b.include(
-                subscriber(RedisStream::new("manual").group("workers"), TakeOrder)
+            b.include(windowed.pipeline().block(BLOCK))
+                .include(
+                    subscriber(RedisStream::new("manual").group("workers"), TakeOrder)
+                        .undocumented()
+                        .build()
+                        .start_at(RedisGroupPosition::beginning())
+                        .block(BLOCK),
+                )
+                .include(
+                    subscriber(
+                        RedisStream::new("manual.windowed").group("workers"),
+                        TakeOrder,
+                    )
                     .undocumented()
                     .build()
                     .start_at(RedisGroupPosition::beginning())
+                    .pipeline()
+                    .atomic()
                     .block(BLOCK),
-            );
-            b.include(
-                subscriber(
-                    RedisStream::new("manual.windowed").group("workers"),
-                    TakeOrder,
                 )
-                .undocumented()
-                .build()
-                .start_at(RedisGroupPosition::beginning())
-                .pipeline()
-                .atomic()
-                .block(BLOCK),
-            );
         },
     );
     let tb = TestApp::start(app).await.expect("start");

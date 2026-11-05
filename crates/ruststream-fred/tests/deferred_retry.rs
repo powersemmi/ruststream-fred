@@ -36,6 +36,7 @@ struct Order {
 /// recognisable downstream. The retry position reads the delivery being retried, the way a reply's
 /// transforms do, and this one writes no broker setting, so it is generic over the options type
 /// and mounts on any publisher.
+#[derive(Clone)]
 struct DeferredStamp;
 
 impl<C, Options> PublishTransform<ForReply<C>, Options> for DeferredStamp {
@@ -71,11 +72,11 @@ fn app() -> impl App<State = ()> {
         |b| {
             b.include(bill_order)
                 .out_retry(Publish)
-                .transform(DeferredStamp);
-            b.include(invoice_order);
-            b.include(file_receipt)
+                .transform(DeferredStamp)
+                .include(invoice_order)
+                .include(file_receipt)
                 .max_attempts(nonzero!(2u32))
-                .dead_letter("receipts.dlq");
+                .dead_letter("receipts.dlq")
         },
     )
 }

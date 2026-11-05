@@ -396,12 +396,10 @@ async fn a_retry_whose_write_fails_is_not_acknowledged() {
         .await
         .expect("acl log reset");
     let limited = url.replacen("redis://", &format!("redis://{user}:limited@"), 1);
-    let app = RustStream::new(AppInfo::new("pipeline", "0.1.0")).with_broker(
-        RedisBroker::standalone(limited),
-        |b| {
-            b.include(retried.pipeline());
-        },
-    );
+    let app = RustStream::new(AppInfo::new("pipeline", "0.1.0"))
+        .with_broker(RedisBroker::standalone(limited), |b| {
+            b.include(retried.pipeline())
+        });
     let running = app.start().await.expect("start");
     let body = serde_json::to_vec(&Order {
         id: 1,
@@ -466,12 +464,10 @@ async fn a_window_sends_what_acknowledged_handlers_queued_with_their_xack() {
     let Some(url) = redis_url() else {
         return;
     };
-    let app = RustStream::new(AppInfo::new("pipeline", "0.1.0")).with_broker(
-        RedisBroker::standalone(url.clone()),
-        |b| {
-            b.include(plain.pipeline());
-        },
-    );
+    let app = RustStream::new(AppInfo::new("pipeline", "0.1.0"))
+        .with_broker(RedisBroker::standalone(url.clone()), |b| {
+            b.include(plain.pipeline())
+        });
     run_window(&url, "plain", app).await;
 }
 
@@ -480,12 +476,10 @@ async fn an_atomic_window_sends_each_segment_inside_multi_exec() {
     let Some(url) = redis_url() else {
         return;
     };
-    let app = RustStream::new(AppInfo::new("pipeline", "0.1.0")).with_broker(
-        RedisBroker::standalone(url.clone()),
-        |b| {
-            b.include(atomic.pipeline().atomic());
-        },
-    );
+    let app = RustStream::new(AppInfo::new("pipeline", "0.1.0"))
+        .with_broker(RedisBroker::standalone(url.clone()), |b| {
+            b.include(atomic.pipeline().atomic())
+        });
     run_window(&url, "atomic", app).await;
 }
 
@@ -494,12 +488,10 @@ async fn a_channel_window_sends_what_acknowledged_handlers_queued() {
     let Some(url) = redis_url() else {
         return;
     };
-    let app = RustStream::new(AppInfo::new("pipeline", "0.1.0")).with_broker(
-        RedisBroker::standalone(url.clone()),
-        |b| {
-            b.include(channel.pipeline());
-        },
-    );
+    let app = RustStream::new(AppInfo::new("pipeline", "0.1.0"))
+        .with_broker(RedisBroker::standalone(url.clone()), |b| {
+            b.include(channel.pipeline())
+        });
     run_window(&url, "channel", app).await;
 }
 
@@ -513,7 +505,7 @@ async fn a_pattern_window_sends_what_acknowledged_handlers_queued() {
         |b| {
             b.include(pattern.pipeline())
                 .out_retry(RedisPubSubPublish::new())
-                .to(format!("{}.retry", key("pattern")));
+                .to(format!("{}.retry", key("pattern")))
         },
     );
     run_window(&url, "pattern", app).await;
@@ -529,7 +521,7 @@ async fn an_atomic_pattern_window_sends_each_segment_inside_multi_exec() {
         |b| {
             b.include(atomic_pattern.pipeline().atomic())
                 .out_retry(RedisPubSubPublish::new())
-                .to(format!("{}.retry", key("atomic-pattern")));
+                .to(format!("{}.retry", key("atomic-pattern")))
         },
     );
     run_window(&url, "atomic-pattern", app).await;
@@ -542,12 +534,10 @@ macro_rules! list_case {
             let Some(url) = redis_url() else {
                 return;
             };
-            let app = RustStream::new(AppInfo::new("pipeline", "0.1.0")).with_broker(
-                RedisBroker::standalone(url.clone()),
-                |b| {
-                    b.include($handler);
-                },
-            );
+            let app = RustStream::new(AppInfo::new("pipeline", "0.1.0"))
+                .with_broker(RedisBroker::standalone(url.clone()), |b| {
+                    b.include($handler)
+                });
             run_window(&url, $base, app).await;
         }
     };
@@ -575,12 +565,10 @@ async fn a_batch_window_sends_what_the_batch_queued_and_settles_every_entry() {
     let Some(url) = redis_url() else {
         return;
     };
-    let app = RustStream::new(AppInfo::new("pipeline", "0.1.0")).with_broker(
-        RedisBroker::standalone(url.clone()),
-        |b| {
-            b.include(batch.batch(nonzero!(8)).pipeline());
-        },
-    );
+    let app = RustStream::new(AppInfo::new("pipeline", "0.1.0"))
+        .with_broker(RedisBroker::standalone(url.clone()), |b| {
+            b.include(batch.batch(nonzero!(8)).pipeline())
+        });
     run_window(&url, "batch", app).await;
 }
 
@@ -600,7 +588,7 @@ async fn bound_publishes_and_replies_in_the_round_follow_the_outcome() {
                 .out_reply(stream::Publish)
                 .transform(InRound)
                 .out(DefaultSlot, stream::Publish)
-                .build();
+                .build()
         },
     );
     let watcher = connected(&url).await;
@@ -656,11 +644,9 @@ async fn a_queued_script_runs_with_the_ack() {
     let Some(url) = redis_url() else {
         return;
     };
-    let app = RustStream::new(AppInfo::new("pipeline", "0.1.0")).with_broker(
-        RedisBroker::standalone(url.clone()),
-        |b| {
-            b.include(scripted.pipeline());
-        },
-    );
+    let app = RustStream::new(AppInfo::new("pipeline", "0.1.0"))
+        .with_broker(RedisBroker::standalone(url.clone()), |b| {
+            b.include(scripted.pipeline())
+        });
     run_window(&url, "script", app).await;
 }

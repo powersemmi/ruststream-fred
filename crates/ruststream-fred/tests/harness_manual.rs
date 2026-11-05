@@ -69,25 +69,25 @@ async fn a_handle_body_mounts_on_each_redis_descriptor() {
                     .build()
                     .block(Duration::from_millis(50))
                     .start_at(RedisGroupPosition::beginning()),
-            );
-            b.include(
+            )
+            .include(
                 subscriber(RedisList::new("jobs"), TakeOrder)
                     .undocumented()
                     .build()
                     .block(Duration::from_millis(50)),
-            );
-            b.include(
+            )
+            .include(
                 subscriber(RedisPubSub::new("events"), TakeOrder)
                     .undocumented()
                     .build(),
-            );
-            b.include(
+            )
+            .include(
                 subscriber(RedisPubSubPattern::new("refunds.*"), TakeOrder)
                     .undocumented()
                     .build(),
             )
             .out_retry(Publish::default())
-            .to("refunds.retry");
+            .to("refunds.retry")
         },
     );
     let tb = TestApp::start(app).await.expect("start");
@@ -125,20 +125,20 @@ async fn a_handle_body_on_a_descriptor_opens_its_pipeline() {
                     .pipeline()
                     .atomic()
                     .block(Duration::from_millis(50)),
-            );
-            b.include(
+            )
+            .include(
                 subscriber(RedisList::new("jobs").reliable(), AuditOrder)
                     .undocumented()
                     .build()
                     .pipeline(),
-            );
-            b.include(
+            )
+            .include(
                 subscriber(RedisPubSub::new("events"), AuditOrder)
                     .undocumented()
                     .build()
                     .pipeline(),
-            );
-            b.include(
+            )
+            .include(
                 subscriber(RedisPubSubPattern::new("refunds.*"), AuditOrder)
                     .undocumented()
                     .build()
@@ -146,7 +146,7 @@ async fn a_handle_body_on_a_descriptor_opens_its_pipeline() {
                     .atomic(),
             )
             .out_retry(Publish::default())
-            .to("refunds.retry");
+            .to("refunds.retry")
         },
     );
     let tb = TestApp::start(app).await.expect("start");

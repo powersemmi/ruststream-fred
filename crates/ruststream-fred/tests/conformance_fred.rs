@@ -19,6 +19,7 @@
 use std::time::Duration;
 
 use ruststream::conformance::harness::InProcessBroker;
+use ruststream::conformance::lifecycle::{self, Unsent};
 use ruststream::conformance::{capabilities, harness};
 use ruststream::nonzero;
 use ruststream_fred::{
@@ -271,6 +272,37 @@ async fn in_process_passes_seeking() {
     .await;
 }
 
+// A publish refused after the shutdown hands its message back: the list and Pub/Sub publishers
+// only read the body, and the stream and default publishers check the connection before the body
+// becomes the client's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_returns_refused_messages() {
+    lifecycle::refused_publish_returns_message(
+        in_process,
+        |connected| connected.publisher(),
+        Unsent::Returned,
+    )
+    .await;
+    lifecycle::refused_publish_returns_message(
+        in_process,
+        |connected| connected.default_publisher(),
+        Unsent::Returned,
+    )
+    .await;
+    lifecycle::refused_publish_returns_message(
+        in_process,
+        |connected| connected.list_publisher(RedisListPublish::new()),
+        Unsent::Returned,
+    )
+    .await;
+    lifecycle::refused_publish_returns_message(
+        in_process,
+        |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
+        Unsent::Returned,
+    )
+    .await;
+}
+
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn passes_lifecycle() {
@@ -470,6 +502,38 @@ async fn passes_seeking() {
         },
         |connected| connected.publisher(),
     ))
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn returns_refused_messages() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let broker = move || RedisBroker::standalone(url.clone());
+    lifecycle::refused_publish_returns_message(
+        &broker,
+        |connected| connected.publisher(),
+        Unsent::Returned,
+    )
+    .await;
+    lifecycle::refused_publish_returns_message(
+        &broker,
+        |connected| connected.default_publisher(),
+        Unsent::Returned,
+    )
+    .await;
+    lifecycle::refused_publish_returns_message(
+        &broker,
+        |connected| connected.list_publisher(RedisListPublish::new()),
+        Unsent::Returned,
+    )
+    .await;
+    lifecycle::refused_publish_returns_message(
+        &broker,
+        |connected| connected.pubsub_publisher(RedisPubSubPublish::new()),
+        Unsent::Returned,
+    )
     .await;
 }
 

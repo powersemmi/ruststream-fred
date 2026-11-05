@@ -38,12 +38,10 @@ macro_rules! case {
     ($test:ident, $keep:literal, $expected:literal) => {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn $test() {
-            let app = RustStream::new(AppInfo::new("pipeline", "0.1.0")).with_broker(
-                RedisBroker::standalone(URL),
-                |b| {
-                    b.include(in_batches.batch(nonzero!(3)).pipeline());
-                },
-            );
+            let app = RustStream::new(AppInfo::new("pipeline", "0.1.0"))
+                .with_broker(RedisBroker::standalone(URL), |b| {
+                    b.include(in_batches.batch(nonzero!(3)).pipeline())
+                });
             let tb = TestApp::start(app).await.expect("start");
 
             for id in 0..3 {

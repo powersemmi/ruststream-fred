@@ -31,7 +31,7 @@ use ruststream::runtime::{PublishExt, RETRY_COUNT_HEADER};
 use ruststream::{
     AckError, BatchSubscriber, Broker, ConnectedBroker, HeaderMap, IncomingMessage, Outgoing,
     OutgoingMessage, OwnedTransactions, Partitioned, Positioned, Publisher, Seekable, Seeker,
-    Serialized, Subscribe, Subscriber, TransactionalPublisher,
+    Serialized, Settle, Subscribe, Subscriber, TransactionalPublisher,
 };
 use ruststream_fred::{
     ConnectedRedisBroker, DELIVERY_COUNT_HEADER, DelayedRetry, Framed, IDLE_MS_HEADER, RedisBroker,
@@ -39,6 +39,7 @@ use ruststream_fred::{
     RedisPublishSteps, RedisStream, StreamStart,
 };
 
+use crate::lent::lent;
 use crate::live;
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -265,7 +266,12 @@ async fn publisher_errors_after_shutdown() {
         .publish(OutgoingMessage::new(key.as_str(), b"after"), None)
         .await
         .expect_err("publishing through a handle aliasing a closed connection must error");
-    assert!(matches!(err, RedisError::ShutDown), "got {err}");
+    assert!(matches!(err.error(), RedisError::ShutDown), "got {err}");
+    let unsent = err
+        .into_message()
+        .expect("a refusal before the body is sealed hands it back");
+    assert_eq!(unsent.name(), key.as_str());
+    assert_eq!(unsent.into_payload().as_ref(), b"after");
 }
 
 // Redis Streams always read through a group, so the bare-string subscriber form needs the
@@ -887,7 +893,7 @@ async fn list_batches_are_capped_at_the_size_they_opened_with() {
         .subscribe_list(RedisList::new(&key).block(Duration::from_millis(50)))
         .await
         .expect("subscribe list");
-    let mut batches = Box::pin(sub.batches(BATCH));
+    let mut batches = lent(sub.batches(BATCH));
     let mut received = Vec::new();
     while received.len() < usize::from(COUNT) {
         let batch = next(&mut batches).await.expect("batch ok");
@@ -1789,7 +1795,7 @@ async fn stream_batches_cost_one_read_each() {
         .expect("subscribe");
 
     let before = xreadgroup_calls(&broker).await;
-    let mut batches = Box::pin(sub.batches(BATCH));
+    let mut batches = lent(sub.batches(BATCH));
     let mut received = Vec::new();
     while received.len() < usize::from(COUNT) {
         let batch = next(&mut batches).await.expect("batch ok");
