@@ -1,6 +1,7 @@
-//! A batch stream read the way the runtime reads it: one slot lent to every fill, drained after
-//! each one, so a test takes the batches as a stream of `Vec`s.
+//! A batch stream read the way the runtime reads it: a slot lent to each fill and emptied after
+//! it, so a test takes the batches as a stream of `Vec`s.
 
+use std::mem;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -13,7 +14,7 @@ pub(crate) struct Lent<Fill, Message> {
     slot: Vec<Message>,
 }
 
-/// Reads `fill` through one reused slot.
+/// Reads `fill` through a lent slot.
 pub(crate) fn lent<Fill, Message>(fill: Fill) -> Lent<Fill, Message>
 where
     Fill: BatchStream<Vec<Message>>,
@@ -38,6 +39,6 @@ where
         this.fill
             .as_mut()
             .poll_fill(cx, &mut this.slot)
-            .map(|fill| fill.map(|filled| filled.map(|()| this.slot.drain(..).collect())))
+            .map(|fill| fill.map(|filled| filled.map(|()| mem::take(&mut this.slot))))
     }
 }

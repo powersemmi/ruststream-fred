@@ -362,7 +362,7 @@ fn aside(work: impl AsyncFnOnce(Client) + Send) {
                 });
             })
             .join()
-            .expect("the side thread finishes")
+            .expect("the side thread finishes");
     });
 }
 

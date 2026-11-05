@@ -92,6 +92,7 @@ where
 #[cfg(test)]
 mod tests {
     use std::future::poll_fn;
+    use std::mem;
     use std::pin::pin;
 
     use futures::stream;
@@ -123,7 +124,7 @@ mod tests {
         let mut slot = Vec::new();
 
         assert_eq!(fill(batches.as_mut(), &mut slot).await, Some(Ok(())));
-        assert_eq!(slot.drain(..).collect::<Vec<_>>(), [1, 2, 3]);
+        assert_eq!(mem::take(&mut slot), [1, 2, 3]);
         assert_eq!(fill(batches.as_mut(), &mut slot).await, Some(Ok(())));
         assert_eq!(slot, [4]);
     }
@@ -135,7 +136,7 @@ mod tests {
         let mut slot = Vec::new();
 
         assert_eq!(fill(batches.as_mut(), &mut slot).await, Some(Err("decode")));
-        assert!(slot.is_empty());
+        assert_eq!(slot, Vec::<u32>::new());
         assert_eq!(fill(batches.as_mut(), &mut slot).await, Some(Ok(())));
         assert_eq!(slot, [3]);
     }
@@ -147,7 +148,7 @@ mod tests {
         let mut slot = Vec::new();
 
         assert_eq!(fill(batches.as_mut(), &mut slot).await, Some(Ok(())));
-        assert_eq!(slot.drain(..).collect::<Vec<_>>(), [1]);
+        assert_eq!(mem::take(&mut slot), [1]);
         assert_eq!(fill(batches.as_mut(), &mut slot).await, None);
         assert_eq!(fill(batches.as_mut(), &mut slot).await, None);
     }

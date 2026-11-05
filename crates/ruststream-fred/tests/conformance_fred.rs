@@ -275,6 +275,7 @@ async fn in_process_passes_seeking() {
 // A publish refused after the shutdown hands its message back: the list and Pub/Sub publishers
 // only read the body, and the stream and default publishers check the connection before the body
 // becomes the client's.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_process_returns_refused_messages() {
     lifecycle::refused_publish_returns_message(
@@ -505,6 +506,7 @@ async fn passes_seeking() {
     .await;
 }
 
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn returns_refused_messages() {
     let Some(url) = redis_url() else {
