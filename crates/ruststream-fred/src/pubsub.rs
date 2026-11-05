@@ -747,7 +747,7 @@ impl<Env: Envelope> BatchSubscriber for RedisPubSubSubscriber<Env> {
     ///
     /// # Cancel safety
     ///
-    /// Same as [`Subscriber::stream`](ruststream::Subscriber::stream). A batch abandoned mid-fill
+    /// Same as [`Subscriber::stream`]. A batch abandoned mid-fill
     /// loses the deliveries it holds, as any Pub/Sub delivery nobody is polling for is lost.
     fn batches(
         &mut self,

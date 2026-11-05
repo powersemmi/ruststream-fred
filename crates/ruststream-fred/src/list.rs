@@ -578,7 +578,7 @@ impl<Env: Envelope> BatchSubscriber for RedisListSubscriber<Env> {
     ///
     /// # Cancel safety
     ///
-    /// Same as [`Subscriber::stream`](ruststream::Subscriber::stream). Dropping the stream while a
+    /// Same as [`Subscriber::stream`]. Dropping the stream while a
     /// batch is filling abandons the entries it holds unsettled; in reliable mode they stay on the
     /// processing list until recovered.
     fn batches(
