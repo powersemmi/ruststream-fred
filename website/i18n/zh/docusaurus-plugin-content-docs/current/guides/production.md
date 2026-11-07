@@ -47,7 +47,7 @@ import TabItem from '@theme/TabItem';
 
 ```toml title="Cargo.toml"
 [dependencies]
-ruststream-fred = { version = "0.7", features = ["tls-rustls"] }
+ruststream-fred = { version = "0.8", features = ["tls-rustls"] }
 ```
 
 TLS 由三个 feature 之一提供，它们对应 `fred` 的 TLS 后端：`tls-rustls`（基于 `aws-lc-rs` 的 rustls）、`tls-rustls-ring`（基于 ring 的 rustls）和 `tls-native-tls`（平台的 TLS 库）。

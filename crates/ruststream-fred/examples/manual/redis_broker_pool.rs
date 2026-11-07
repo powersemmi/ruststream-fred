@@ -66,7 +66,7 @@ fn service(broker: RedisBroker) -> impl App<State = ()> {
             subscriber(RedisStream::new("orders").group("workers"), Price)
                 .reply()
                 .build(),
-        );
+        )
     })
 }
 

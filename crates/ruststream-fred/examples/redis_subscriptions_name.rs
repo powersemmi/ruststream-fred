@@ -27,9 +27,7 @@ async fn place(order: &Order) -> HandlerOutcome {
 
 fn app() -> impl App {
     let broker = RedisBroker::standalone("redis://localhost:6379").default_group("workers");
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(place);
-    })
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| b.include(place))
 }
 // --8<-- [end:name]
 
@@ -64,12 +62,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_service_with_no_default_group_does_not_start() {
-        let groupless = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-            RedisBroker::standalone("redis://localhost:6379"),
-            |b| {
-                b.include(place);
-            },
-        );
+        let groupless = RustStream::new(AppInfo::new("orders", "0.1.0"))
+            .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
+                b.include(place)
+            });
 
         let refused = TestApp::start(groupless)
             .await

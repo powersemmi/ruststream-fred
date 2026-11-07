@@ -120,12 +120,12 @@ fn app() -> impl App {
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
             let accept = subscriber(RedisStream::new("orders").group("fulfilment"), Accept);
+            let capture = subscriber(RedisStream::new("{payments}").group("ledger"), Capture);
             // The receipt joins the delivery's round and leaves after the picks.
             b.include(accept.pipeline().reply().build())
                 .out_reply(Publish)
-                .transform(InRound);
-            let capture = subscriber(RedisStream::new("{payments}").group("ledger"), Capture);
-            b.include(capture.pipeline().atomic().build());
+                .transform(InRound)
+                .include(capture.pipeline().atomic().build())
         },
     )
 }

@@ -70,7 +70,7 @@ fn app() -> impl App<State = AppState> {
             // The copy is `PUBLISH`ed on `payments.retry`, which the pattern reads again.
             b.include(screen)
                 .out_retry(Publish::default())
-                .to("payments.retry");
+                .to("payments.retry")
         })
 }
 // --8<-- [end:app]
@@ -125,7 +125,7 @@ mod tests {
                 Ok::<_, Infallible>(AppState { fraud })
             })
             .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
-                b.include(screen);
+                b.include(screen)
             });
 
         let refused = TestApp::start(unnamed)

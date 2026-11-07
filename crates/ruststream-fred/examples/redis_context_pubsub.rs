@@ -45,7 +45,7 @@ fn app() -> impl App {
             b.include(hear)
                 .out_reply(stream::Publish)
                 .out_retry(pubsub::Publish::new())
-                .to("events.retry");
+                .to("events.retry")
         },
     )
 }

@@ -59,16 +59,16 @@ fn app() -> impl App<State = ()> {
         |b| {
             b.include(never_ready)
                 .max_attempts(nonzero!(3u32))
-                .dead_letter("orders.dead");
-            b.include(never_ready_claimed)
+                .dead_letter("orders.dead")
+                .include(never_ready_claimed)
                 .max_attempts(nonzero!(3u32))
-                .dead_letter("claimed.dead");
-            b.include(never_ready_job)
+                .dead_letter("claimed.dead")
+                .include(never_ready_job)
                 .max_attempts(nonzero!(2u32))
-                .dead_letter("jobs.failed");
-            b.include(never_ready_event)
+                .dead_letter("jobs.failed")
+                .include(never_ready_event)
                 .max_attempts(nonzero!(2u32))
-                .dead_letter("events.dead");
+                .dead_letter("events.dead")
         },
     )
 }

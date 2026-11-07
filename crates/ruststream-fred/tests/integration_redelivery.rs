@@ -9,6 +9,9 @@
 //!     cargo test -p ruststream-fred --all-features --test suite integration_redelivery::
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -129,7 +132,7 @@ async fn a_stream_copy_and_its_dead_letter_leave_through_xadd() {
         |b| {
             b.include(stream_handler)
                 .max_attempts(nonzero!(2u32))
-                .dead_letter(dead.clone());
+                .dead_letter(dead.clone())
         },
     );
     let watcher = connected(&url).await;
@@ -165,7 +168,7 @@ async fn a_reliable_list_copy_and_its_dead_letter_leave_through_lpush() {
         |b| {
             b.include(reliable_handler)
                 .max_attempts(nonzero!(2u32))
-                .dead_letter(dead.clone());
+                .dead_letter(dead.clone())
         },
     );
     let watcher = connected(&url).await;
@@ -197,7 +200,7 @@ async fn a_plain_list_copy_and_its_dead_letter_leave_through_lpush() {
         |b| {
             b.include(plain_handler)
                 .max_attempts(nonzero!(2u32))
-                .dead_letter(dead.clone());
+                .dead_letter(dead.clone())
         },
     );
     let watcher = connected(&url).await;
@@ -229,7 +232,7 @@ async fn a_channel_copy_and_its_dead_letter_leave_through_publish() {
         |b| {
             b.include(channel_handler)
                 .max_attempts(nonzero!(2u32))
-                .dead_letter(dead.clone());
+                .dead_letter(dead.clone())
         },
     );
     let watcher = connected(&url).await;
@@ -294,7 +297,7 @@ async fn a_windowed_stream_copy_and_its_dead_letter_leave_through_xadd() {
         |b| {
             b.include(windowed_stream_handler.pipeline())
                 .max_attempts(nonzero!(2u32))
-                .dead_letter(dead.clone());
+                .dead_letter(dead.clone())
         },
     );
     let watcher = connected(&url).await;
@@ -329,7 +332,7 @@ async fn an_atomic_list_copy_and_its_dead_letter_leave_through_lpush() {
         |b| {
             b.include(atomic_list_handler.pipeline().atomic())
                 .max_attempts(nonzero!(2u32))
-                .dead_letter(dead.clone());
+                .dead_letter(dead.clone())
         },
     );
     let watcher = connected(&url).await;
@@ -364,7 +367,7 @@ async fn a_windowed_channel_copy_and_its_dead_letter_leave_through_publish() {
         |b| {
             b.include(windowed_channel_handler.pipeline())
                 .max_attempts(nonzero!(2u32))
-                .dead_letter(dead.clone());
+                .dead_letter(dead.clone())
         },
     );
     let watcher = connected(&url).await;
@@ -430,7 +433,7 @@ async fn a_windowed_pattern_copy_and_its_dead_letter_leave_through_publish() {
                 .max_attempts(nonzero!(2u32))
                 .dead_letter(key("windowed-pattern-dead"))
                 .out_retry(RedisPubSubPublish::new())
-                .to(format!("{}.retry", key("windowed-pattern")));
+                .to(format!("{}.retry", key("windowed-pattern")))
         },
     );
     pattern_moves_at_the_cap(url, "windowed-pattern", app).await;
@@ -448,7 +451,7 @@ async fn an_atomic_pattern_copy_and_its_dead_letter_leave_through_publish() {
                 .max_attempts(nonzero!(2u32))
                 .dead_letter(key("atomic-pattern-dead"))
                 .out_retry(RedisPubSubPublish::new())
-                .to(format!("{}.retry", key("atomic-pattern")));
+                .to(format!("{}.retry", key("atomic-pattern")))
         },
     );
     pattern_moves_at_the_cap(url, "atomic-pattern", app).await;

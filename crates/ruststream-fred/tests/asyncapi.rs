@@ -75,12 +75,14 @@ fn document() -> Value {
     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         RedisBroker::standalone(URL),
         |b| {
-            b.include(handle_order).out_reply(RedisPubSubPublish::new());
-            b.include(handle_job);
-            b.include(handle_event);
-            b.include(handle_audit).out_reply(RedisPublish);
-            b.include(handle_batch)
-                .out_reply(RedisListPublish::new().ttl(BATCH_TTL));
+            b.include(handle_order)
+                .out_reply(RedisPubSubPublish::new())
+                .include(handle_job)
+                .include(handle_event)
+                .include(handle_audit)
+                .out_reply(RedisPublish)
+                .include(handle_batch)
+                .out_reply(RedisListPublish::new().ttl(BATCH_TTL))
         },
     );
     let json = build_spec(&app).to_json().expect("the document serializes");
@@ -249,8 +251,8 @@ fn enveloped_document() -> Value {
         RedisBroker::standalone(URL).envelope(FastStream),
         |b| {
             b.include(handle_payment)
-                .out_reply(RedisPubSubPublish::new().envelope(Framed::new(JsonCodec)));
-            b.include(handle_document.envelope(Framed::new(JsonCodec)));
+                .out_reply(RedisPubSubPublish::new().envelope(Framed::new(JsonCodec)))
+                .include(handle_document.envelope(Framed::new(JsonCodec)))
         },
     );
     let json = build_spec(&app).to_json().expect("the document serializes");

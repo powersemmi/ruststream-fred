@@ -74,8 +74,9 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
-            b.include(post_payment);
-            b.include(screen_payment).out_reply(Publish);
+            b.include(post_payment)
+                .include(screen_payment)
+                .out_reply(Publish)
         },
     )
 }
@@ -103,9 +104,10 @@ fn app_before_8_4() -> impl App {
     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
-            b.include(post_new_payment);
-            b.include(recover_payment);
-            b.include(screen_payment).out_reply(Publish);
+            b.include(post_new_payment)
+                .include(recover_payment)
+                .include(screen_payment)
+                .out_reply(Publish)
         },
     )
 }

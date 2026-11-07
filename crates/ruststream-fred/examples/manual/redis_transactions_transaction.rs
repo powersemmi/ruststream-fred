@@ -84,7 +84,6 @@ fn app() -> impl App {
             let ship = subscriber(RedisStream::new("orders").group("shipping"), Ship);
             b.include(ship.workers(nonzero!(4)).build())
                 .out(Shipments, TransactionalPublish)
-                .build();
         },
     )
 }

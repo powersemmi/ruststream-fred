@@ -53,14 +53,8 @@ async fn confirm(order: &Order) -> Confirmation {
 /// The service's app over a pool it built from `url` and did not connect.
 fn app(url: &str) -> Result<impl App<State = ()>, Box<dyn Error>> {
     let pool = Pool::new(Config::from_url(url)?, None, None, None, 2)?;
-    Ok(
-        RustStream::new(AppInfo::new("adopted", "0.1.0")).with_broker(
-            RedisBroker::from_pool(pool),
-            |b| {
-                b.include(confirm);
-            },
-        ),
-    )
+    Ok(RustStream::new(AppInfo::new("adopted", "0.1.0"))
+        .with_broker(RedisBroker::from_pool(pool), |b| b.include(confirm)))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

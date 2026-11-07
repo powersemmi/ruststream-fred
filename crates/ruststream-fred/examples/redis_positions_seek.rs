@@ -42,9 +42,8 @@ async fn bill(orders: &[Order], ctx: &mut Context<'_, StreamBatchContext>) -> Ha
 
 fn app() -> impl App {
     let broker = RedisBroker::standalone("redis://localhost:6379");
-    RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(broker, |b| {
-        b.include(bill.batch(nonzero!(2)));
-    })
+    RustStream::new(AppInfo::new("billing", "0.1.0"))
+        .with_broker(broker, |b| b.include(bill.batch(nonzero!(2))))
 }
 
 // The scenarios are the tests below; the command in the header runs them.

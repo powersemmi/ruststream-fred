@@ -21,7 +21,7 @@ use fred::interfaces::{
 use fred::types::config::Options;
 use fred::types::{ClusterHash, CustomCommand, Value};
 use futures::future::join_all;
-use ruststream::{AckError, IncomingMessage};
+use ruststream::{AckError, Settle};
 use tokio::runtime::Handle;
 
 use super::{Rounds, pipeline_on};
@@ -296,7 +296,7 @@ impl Round {
 /// holds it is private.
 pub trait Form: Send + Sync + 'static {
     /// The form's own delivery.
-    type Message: IncomingMessage + Send + Sync + 'static;
+    type Message: Settle + Send + Sync + 'static;
     /// The broker's connection pool, which a delivery's context hands out.
     fn pool(msg: &Self::Message) -> &fred::clients::Pool;
     /// Takes the test harness's count of the delivery, which the window holds until the flush

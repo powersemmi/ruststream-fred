@@ -62,7 +62,7 @@ use crate::message::PARTITION_KEY_HEADER;
 /// pub fn app() -> impl App<State = ()> {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
 ///         .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
-///             b.include(forward).out(Ledger, Publish).build();
+///             b.include(forward).out(Ledger, Publish)
 ///         })
 /// }
 ///
@@ -151,7 +151,7 @@ pub struct RedisPublishOptions {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(intake).out(Orders, Publish).build();
+///             b.include(intake).out(Orders, Publish)
 ///         },
 ///     )
 /// }

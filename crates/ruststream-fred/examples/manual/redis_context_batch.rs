@@ -59,7 +59,7 @@ fn app() -> impl App {
         |b| {
             let bill_all = subscriber(RedisStream::new("orders").group("billing"), BillAll);
             b.include(bill_all.batch(nonzero!(32)).reply().build())
-                .out_reply(Publish);
+                .out_reply(Publish)
         },
     )
 }

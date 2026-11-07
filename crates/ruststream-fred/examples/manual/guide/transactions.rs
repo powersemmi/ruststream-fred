@@ -134,13 +134,12 @@ where
 fn service(broker: RedisBroker) -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         let confirm = subscriber(RedisStream::new("orders").group("confirmations"), Confirm);
+        let ship = subscriber(RedisStream::new("packed").group("shipping"), Ship);
         b.include(confirm.batch(nonzero!(32)).reply().build())
             .out_reply(TransactionalPublish)
-            .transactional();
-        let ship = subscriber(RedisStream::new("packed").group("shipping"), Ship);
-        b.include(ship.build())
+            .transactional()
+            .include(ship.build())
             .out(Shipments, TransactionalPublish)
-            .build();
     })
 }
 // --8<-- [end:app]

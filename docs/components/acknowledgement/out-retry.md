@@ -9,7 +9,7 @@ import TabItem from '@theme/TabItem';
 
 # out_retry
 
-Each descriptor names where a retry copy goes; a pattern names none, so its registration names the channel with [`out_retry`](api:ruststream::runtime::Mounting::out_retry).
+Each descriptor names where a retry copy goes; a pattern names none, so its registration names the channel with [`out_retry`](api:ruststream::runtime::RouterWith::out_retry).
 
 The runtime publishes a copy for a [`retry_after`](./retry-after.md), for a retry under a [cap](./dead-letter.md), and for a dead letter.
 A stream, a list and a channel subscription each answer with their own key or channel, so the copy reaches the same subscription again.

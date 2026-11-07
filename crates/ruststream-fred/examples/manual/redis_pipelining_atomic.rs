@@ -52,7 +52,7 @@ fn app() -> impl App {
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
             let invoice = subscriber(RedisStream::new("{orders}").group("billing"), Invoice);
-            b.include(invoice.pipeline().atomic().build());
+            b.include(invoice.pipeline().atomic().build())
         },
     )
 }

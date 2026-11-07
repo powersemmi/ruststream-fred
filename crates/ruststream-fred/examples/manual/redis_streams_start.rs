@@ -53,7 +53,7 @@ fn app() -> impl App {
         let orders = RedisStream::new("orders")
             .group("reports")
             .start_id(StreamStart::Beginning);
-        b.include(subscriber(orders, Report).build());
+        b.include(subscriber(orders, Report).build())
     })
 }
 // --8<-- [end:start]

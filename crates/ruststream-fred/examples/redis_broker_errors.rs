@@ -47,12 +47,10 @@ async fn book(order: &Order, Out(ledger): Out<impl Publisher, Ledger>) -> Handle
 
 #[ruststream::app]
 fn app() -> impl App<State = ()> {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        RedisBroker::standalone("redis://localhost:6379"),
-        |b| {
-            b.include(book).out(Ledger, list::Publish::new()).build();
-        },
-    )
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
+            b.include(book).out(Ledger, list::Publish::new())
+        })
 }
 
 #[cfg(test)]
@@ -117,12 +115,10 @@ mod tests {
     #[tokio::test]
     async fn a_failed_startup_carries_the_redis_error() {
         // A bare name and no default group: a stream is read only through a group.
-        let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-            RedisBroker::standalone("redis://localhost:6379"),
-            |b| {
-                b.include(by_name);
-            },
-        );
+        let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
+            .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
+                b.include(by_name)
+            });
 
         let failed = TestApp::start(app).await.err();
         let mut cause: Option<&(dyn Error + 'static)> = failed.as_ref().map(|err| err as _);

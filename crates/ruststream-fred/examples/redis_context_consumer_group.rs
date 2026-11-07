@@ -36,9 +36,8 @@ async fn bill(order: &Order, Ctx(group): Ctx<keys::ConsumerGroup>) -> Invoice {
 #[ruststream::app]
 fn app() -> impl App {
     let broker = RedisBroker::standalone("redis://localhost:6379").default_group("billing");
-    RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(broker, |b| {
-        b.include(bill).out_reply(Publish);
-    })
+    RustStream::new(AppInfo::new("billing", "0.1.0"))
+        .with_broker(broker, |b| b.include(bill).out_reply(Publish))
 }
 // --8<-- [end:consumer_group]
 

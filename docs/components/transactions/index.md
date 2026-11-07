@@ -8,7 +8,7 @@ import TabItem from '@theme/TabItem';
 
 # Transactions
 
-A stream publisher sends a group of publishes as one `MULTI` and `EXEC` block; a batch's replies commit together with [`.transactional()`](api:ruststream::runtime::Mounting::transactional).
+A stream publisher sends a group of publishes as one `MULTI` and `EXEC` block; a batch's replies commit together with [`.transactional()`](api:ruststream::runtime::RouterWith::transactional).
 
 The stream publisher, [`RedisPublisher`](api:ruststream_fred::RedisPublisher), buffers the publishes of a transaction and sends them on commit, in publish order.
 Subscribers then see the whole group or none of it.

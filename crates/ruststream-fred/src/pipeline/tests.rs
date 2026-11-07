@@ -18,7 +18,7 @@ use ruststream::conformance::harness::InProcessBroker;
 use ruststream::conformance::{capabilities, harness};
 use ruststream::testing::InProcess;
 use ruststream::{
-    Broker, BuildContext, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
+    Broker, BuildContext, ConnectedBroker, OutgoingMessage, Publisher, Settle, Subscriber,
     SubscriptionSource, nonzero,
 };
 use tokio::runtime::Builder;

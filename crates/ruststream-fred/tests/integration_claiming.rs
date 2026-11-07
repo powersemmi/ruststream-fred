@@ -20,7 +20,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use fred::interfaces::StreamsInterface;
 use futures::StreamExt;
 use ruststream::{
-    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
+    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, Settle, Subscriber,
 };
 use ruststream_fred::{
     ConnectedRedisBroker, DELIVERY_COUNT_HEADER, IDLE_MS_HEADER, RedisBroker, RedisError,

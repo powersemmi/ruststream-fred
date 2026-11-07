@@ -43,12 +43,10 @@ async fn accept_all(orders: &[Order], ctx: &mut Context<'_, PipelineContext>) ->
 
 #[ruststream::app]
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        RedisBroker::standalone("redis://localhost:6379"),
-        |b| {
-            b.include(accept_all.batch(nonzero!(64)).pipeline());
-        },
-    )
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
+            b.include(accept_all.batch(nonzero!(64)).pipeline())
+        })
 }
 // --8<-- [end:batch]
 

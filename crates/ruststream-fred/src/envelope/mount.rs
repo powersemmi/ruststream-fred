@@ -1,7 +1,9 @@
 //! The mount-site step that names a subscription's envelope on the macro path.
 
 use ruststream::StartAt;
-use ruststream::runtime::{Declared, SubscriberBuilder, SubscriberSettings};
+use ruststream::runtime::{
+    AsDeclared, Declared, IntoDeclared, SubscriberBuilder, SubscriberSettings,
+};
 
 use super::Envelope;
 use crate::pipeline::Pipelined;
@@ -38,14 +40,14 @@ use crate::pipeline::Pipelined;
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
 ///             // A faststream service fills this queue.
-///             b.include(run_job.envelope(FastStream));
+///             b.include(run_job.envelope(FastStream))
 ///         },
 ///     )
 /// }
 /// # }
 /// # fn main() {}
 /// ```
-pub trait RedisEnvelopeExt: Sized {
+pub trait RedisEnvelopeExt<Mk = AsDeclared>: IntoDeclared<Mk> {
     /// The registration once its subscription reads through `Named`.
     type Enveloped<Named: Envelope>;
 
@@ -54,9 +56,10 @@ pub trait RedisEnvelopeExt: Sized {
     fn envelope<Named: Envelope>(self, envelope: Named) -> Self::Enveloped<Named>;
 }
 
-impl<Decl, Def, Source, State, DefCodec> RedisEnvelopeExt for Decl
+impl<D, Mk, Def, Source, State, DefCodec> RedisEnvelopeExt<Mk> for D
 where
-    Decl: Declared<Settings = SubscriberBuilder<Def, Source, State, DefCodec>>,
+    D: IntoDeclared<Mk>,
+    D::Decl: Declared<Settings = SubscriberBuilder<Def, Source, State, DefCodec>>,
     Def: Declared,
     Source: enveloping::Enveloping,
 {
@@ -64,7 +67,8 @@ where
         SubscriberBuilder<Def, Source::Enveloped<Named>, State, DefCodec>;
 
     fn envelope<Named: Envelope>(self, envelope: Named) -> Self::Enveloped<Named> {
-        self.declare()
+        self.into_declared()
+            .declare()
             .map_source(|source| source.enveloped(envelope))
     }
 }
@@ -80,7 +84,7 @@ pub(crate) mod enveloping {
         label = "no envelope of ruststream-fred applies here"
     )]
     pub trait Enveloping {
-        type Enveloped<Named: Envelope>;
+        type Enveloped<Named: Envelope>: Clone;
 
         fn enveloped<Named: Envelope>(self, envelope: Named) -> Self::Enveloped<Named>;
     }
@@ -112,7 +116,7 @@ pub(crate) mod enveloping {
     }
 
     /// The same step after the core's `start_at(..)`, which wraps the source it positions.
-    impl<Source: Enveloping, Position> Enveloping for StartAt<Source, Position> {
+    impl<Source: Enveloping, Position: Clone> Enveloping for StartAt<Source, Position> {
         type Enveloped<Named: Envelope> = StartAt<Source::Enveloped<Named>, Position>;
 
         fn enveloped<Named: Envelope>(self, envelope: Named) -> Self::Enveloped<Named> {

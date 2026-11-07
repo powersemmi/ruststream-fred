@@ -41,8 +41,7 @@ fn app() -> impl App {
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
             // `jobs` is a list this service reads, so the default publisher pushes onto it.
-            b.include(plan);
-            b.include(work);
+            b.include(plan).include(work)
         },
     )
 }

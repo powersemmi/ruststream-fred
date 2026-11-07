@@ -8,6 +8,8 @@
 //! REDIS_CLUSTER_TEST_URL=127.0.0.1:7000 cargo test --example redis_broker_cluster --features testing
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 // A plain build compiles the service; the tests that use it exist only in the test build.
 #![cfg_attr(not(test), allow(dead_code, unused_imports))]
 
@@ -34,9 +36,7 @@ async fn run_job(job: &Job) -> HandlerOutcome {
 }
 
 fn service(broker: RedisBroker) -> impl App<State = ()> {
-    RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(broker, |b| {
-        b.include(run_job);
-    })
+    RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(broker, |b| b.include(run_job))
 }
 
 /// Two seeds: the client reaches the cluster through whichever answers first.
@@ -97,12 +97,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_reliable_list_across_two_slots_does_not_start() {
-        let app = RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
-            RedisBroker::cluster(["redis-1.internal:6379"]),
-            |b| {
-                b.include(untagged);
-            },
-        );
+        let app = RustStream::new(AppInfo::new("jobs", "0.1.0"))
+            .with_broker(RedisBroker::cluster(["redis-1.internal:6379"]), |b| {
+                b.include(untagged)
+            });
 
         let err = TestApp::start(app)
             .await

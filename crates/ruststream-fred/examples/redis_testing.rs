@@ -76,9 +76,10 @@ fn app() -> impl App<State = ()> {
     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
-            b.include(accept);
-            b.include(settle).out_reply(stream::Publish);
-            b.include(bill);
+            b.include(accept)
+                .include(settle)
+                .out_reply(stream::Publish)
+                .include(bill)
         },
     )
 }

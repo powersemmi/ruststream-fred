@@ -62,11 +62,11 @@ fn app() -> impl App {
         RedisBroker::cluster(["redis://localhost:7000"]),
         |b| {
             let orders = RedisPubSub::new("orders.eu").mode(PubSubMode::Sharded);
+            let shipments = RedisPubSub::new("shipments.eu").mode(PubSubMode::Sharded);
             // The reply leaves with `SPUBLISH`: a sharded subscriber hears only a sharded publish.
             b.include(subscriber(orders, Ship).reply().build())
-                .out_reply(Publish::new().mode(PubSubMode::Sharded));
-            let shipments = RedisPubSub::new("shipments.eu").mode(PubSubMode::Sharded);
-            b.include(subscriber(shipments, Track).build());
+                .out_reply(Publish::new().mode(PubSubMode::Sharded))
+                .include(subscriber(shipments, Track).build())
         },
     )
 }

@@ -59,7 +59,7 @@ const DATA_FIELD: &str = "__data__";
 ///     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379").envelope(FastStream),
 ///         |b| {
-///             b.include(bill);
+///             b.include(bill)
 ///         },
 ///     )
 /// }

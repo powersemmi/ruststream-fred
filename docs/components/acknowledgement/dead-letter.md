@@ -9,7 +9,7 @@ import TabItem from '@theme/TabItem';
 
 # dead_letter
 
-[`max_attempts(n)`](api:ruststream::runtime::Mounting::max_attempts) caps deliveries and [`dead_letter(name)`](api:ruststream::runtime::Mounting::dead_letter) names where a spent message goes, written with its own form's command.
+[`max_attempts(n)`](api:ruststream::runtime::RouterWith::max_attempts) caps deliveries and [`dead_letter(name)`](api:ruststream::runtime::RouterWith::dead_letter) names where a spent message goes, written with its own form's command.
 
 Both are steps of the mount chain, and they read the same on a stream, a list and a channel.
 `max_attempts(n)` counts every delivery of one message, the first one included.

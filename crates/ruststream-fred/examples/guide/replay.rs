@@ -65,10 +65,8 @@ async fn notify(alert: &Alert, Ctx(seeker): Ctx<keys::SeekHandle>) -> HandlerOut
 
 // --8<-- [start:app]
 fn service(broker: RedisBroker) -> impl App {
-    RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker, |b| {
-        b.include(rebuild);
-        b.include(notify);
-    })
+    RustStream::new(AppInfo::new("payments", "0.1.0"))
+        .with_broker(broker, |b| b.include(rebuild).include(notify))
 }
 // --8<-- [end:app]
 

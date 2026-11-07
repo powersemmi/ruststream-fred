@@ -127,19 +127,19 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("images", "0.1.0")).with_broker(
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
-            b.include(subscriber(RedisList::new("cache.warmups"), WarmCache).build());
-            b.include(subscriber(thumbnails(), Render).build());
-            // A queue nobody fed for a day expires, with whatever is left in it.
-            b.include(
-                subscriber(
-                    RedisStream::new("uploads").group("thumbnailer"),
-                    QueueThumbnail,
+            b.include(subscriber(RedisList::new("cache.warmups"), WarmCache).build())
+                .include(subscriber(thumbnails(), Render).build())
+                // A queue nobody fed for a day expires, with whatever is left in it.
+                .include(
+                    subscriber(
+                        RedisStream::new("uploads").group("thumbnailer"),
+                        QueueThumbnail,
+                    )
+                    .reply()
+                    .to("{thumbnails}")
+                    .build(),
                 )
-                .reply()
-                .to("{thumbnails}")
-                .build(),
-            )
-            .out_reply(list::Publish::new().ttl(Duration::from_hours(24)));
+                .out_reply(list::Publish::new().ttl(Duration::from_hours(24)))
         },
     )
 }

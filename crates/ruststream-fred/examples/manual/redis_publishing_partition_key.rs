@@ -86,10 +86,12 @@ fn app() -> impl App {
         RedisBroker::standalone("redis://localhost:6379"),
         |b| {
             let forward = subscriber(RedisStream::new("orders.in").group("intake"), Forward);
-            b.include(forward.build()).out(Ledger, Publish).build();
             // Four lanes; the orders of one customer share a lane and keep their order.
             let book = subscriber(RedisStream::new("orders.keyed").group("ledger"), Book);
-            b.include(book.workers_by_key(nonzero!(4)).build());
+            b.include(forward.build())
+                .out(Ledger, Publish)
+                .build()
+                .include(book.workers_by_key(nonzero!(4)).build())
         },
     )
 }

@@ -9,6 +9,8 @@
 //! The in-process server answers the mode the way Redis does, so these cases are the in-process
 //! twins of the live ones in `tests/integration_fred.rs`.
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 #![cfg(feature = "testing")]
 
 use std::time::Duration;
@@ -118,9 +120,13 @@ fn app() -> impl App<State = ()> {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         RedisBroker::standalone(URL),
         |b| {
-            b.include(handle_order).out(Audit, Publish).build();
-            b.include(handle_flaky).out(Audit, Publish).build();
-            b.include(handle_impatient);
+            b.include(handle_order)
+                .out(Audit, Publish)
+                .build()
+                .include(handle_flaky)
+                .out(Audit, Publish)
+                .build()
+                .include(handle_impatient)
         },
     )
 }

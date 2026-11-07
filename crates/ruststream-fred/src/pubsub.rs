@@ -17,6 +17,7 @@
 //! [publish]: https://powersemmi.github.io/ruststream-fred/latest/components/publishing/pubsub-publish/
 //! [prelude]: https://powersemmi.github.io/ruststream-fred/latest/components/broker/prelude/
 
+use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
 use std::future::{Future, ready};
 use std::num::NonZeroUsize;
@@ -33,9 +34,10 @@ use futures::stream::unfold;
 use ruststream::asyncapi::Bindings;
 use ruststream::runtime::IntoSource;
 use ruststream::{
-    AckError, AddressedCopies, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage,
-    Lend, NamedCopies, OutgoingMessage, PairError, Partitioned, PublishPolicy, Publisher,
-    RedeliveryAddress, RedeliveryAddressed, RetryDeclaration, SubscriptionSource,
+    AckError, AddressedCopies, BatchStream, BatchSubscriber, BufferedSubscriber, HeaderMap,
+    IncomingMessage, Lend, NamedCopies, OutgoingMessage, PairError, Partitioned,
+    PublishMessageError, PublishOutcome, PublishPolicy, Publisher, RedeliveryAddress,
+    RedeliveryAddressed, RetryDeclaration, Settle, Subscriber, SubscriptionSource,
 };
 use tokio::runtime::Handle;
 use tokio::sync::broadcast::Receiver;
@@ -43,11 +45,12 @@ use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::task::JoinHandle;
 use tracing::warn;
 
+use crate::batch::{Member, ReadBatches};
 use crate::broker::{ConnectedRedisBroker, RedisCore};
 use crate::envelope::{Body, Envelope, EnvelopeChoice, Inherited, RustStream};
 use crate::loopback::{InFlight, Tap};
 use crate::partition::{RedisPublishOptions, resolved_headers};
-use crate::pipeline::{PubSubForm, RoundMessage, Window};
+use crate::pipeline::{PubSubForm, Round, RoundMessage, Window};
 use crate::publisher::joins_round;
 use crate::{error::RedisError, message::PARTITION_KEY_HEADER};
 
@@ -92,7 +95,7 @@ pub use crate::pubsub::RedisPubSubPublish as Publish;
 ///         |b| {
 ///             // Sharded in, sharded out: an `SPUBLISH` reaches only sharded subscribers.
 ///             b.include(on_event)
-///                 .out_reply(Publish::new().mode(PubSubMode::Sharded));
+///                 .out_reply(Publish::new().mode(PubSubMode::Sharded))
 ///         },
 ///     )
 /// }
@@ -187,8 +190,8 @@ impl PubSubMode {
 ///     RustStream::new(AppInfo::new("events", "0.1.0")).with_broker(
 ///         RedisBroker::cluster(["10.0.0.1:6379"]),
 ///         |b| {
-///             b.include(on_event);
-///             b.include(on_metric);
+///             b.include(on_event)
+///                 .include(on_metric)
 ///         },
 ///     )
 /// }
@@ -278,7 +281,7 @@ impl<Env> RedisPubSub<Env> {
     ///         |b| {
     ///             // A faststream service writes these.
     ///             let source = RedisPubSub::new("audit").envelope(FastStream);
-    ///             b.include(subscriber(source, Log).build());
+    ///             b.include(subscriber(source, Log).build())
     ///         },
     ///     )
     /// }
@@ -339,7 +342,7 @@ impl<Env> RedisPubSub<Env> {
     /// #     RustStream::new(AppInfo::new("events", "0.1.0")).with_broker(
     /// #         RedisBroker::standalone("redis://localhost:6379"),
     /// #         |b| {
-    /// #             b.include(on_event);
+    /// #             b.include(on_event)
     /// #         },
     /// #     )
     /// # }
@@ -426,7 +429,7 @@ impl<Env> RedisPubSub<Env> {
 ///             // retry copy goes.
 ///             b.include(on_any_event)
 ///                 .out_retry(Publish::default())
-///                 .to("events.retry");
+///                 .to("events.retry")
 ///         },
 ///     )
 /// }
@@ -516,7 +519,7 @@ impl<Env> RedisPubSubPattern<Env> {
     ///         |b| {
     ///             // A faststream service writes these.
     ///             let source = RedisPubSubPattern::new("audit.*").envelope(FastStream);
-    ///             b.include(subscriber(source, Log).build());
+    ///             b.include(subscriber(source, Log).build())
     ///         },
     ///     )
     /// }
@@ -569,7 +572,7 @@ impl<Env> RedisPubSubPattern<Env> {
     /// #     RustStream::new(AppInfo::new("events", "0.1.0")).with_broker(
     /// #         RedisBroker::standalone("redis://localhost:6379"),
     /// #         |b| {
-    /// #             b.include(on_event);
+    /// #             b.include(on_event)
     /// #         },
     /// #     )
     /// # }
@@ -720,7 +723,7 @@ impl<Env: Envelope> RedisPubSubSubscriber<Env> {
     }
 }
 
-impl<Env: Envelope> ruststream::Subscriber for RedisPubSubSubscriber<Env> {
+impl<Env: Envelope> Subscriber for RedisPubSubSubscriber<Env> {
     type Message = RedisPubSubMessage<Env>;
     type Error = RedisError;
 
@@ -744,12 +747,12 @@ impl<Env: Envelope> BatchSubscriber for RedisPubSubSubscriber<Env> {
     ///
     /// # Cancel safety
     ///
-    /// Same as [`Subscriber::stream`](ruststream::Subscriber::stream). A batch abandoned mid-fill
+    /// Same as [`Subscriber::stream`]. A batch abandoned mid-fill
     /// loses the deliveries it holds, as any Pub/Sub delivery nobody is polling for is lost.
     fn batches(
         &mut self,
         size: NonZeroUsize,
-    ) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
+    ) -> impl BatchStream<Self::Batch, Error = Self::Error> + Send + '_ {
         self.0.batches(size)
     }
 }
@@ -914,50 +917,54 @@ impl<Env: Envelope> PubSubWire<Env> {
         &'a mut self,
         window: &'a Arc<Window<PubSubForm<Env>>>,
         size: NonZeroUsize,
-    ) -> impl Stream<Item = Result<Vec<RoundMessage<PubSubForm<Env>>>, RedisError>> + Send + 'a
-    {
+    ) -> impl BatchStream<Vec<RoundMessage<PubSubForm<Env>>>, Error = RedisError> + Send + 'a {
         window.fill_at(size.get());
         let (envelope, pool, tap, name) =
             (&self.envelope, &self.pool, &self.tap, self.name.as_str());
-        unfold(&mut self.rx, move |rx| async move {
-            loop {
-                if let Some(failure) = window.take_failure() {
-                    return Some((Err(failure), rx));
-                }
-                let first = match rx.recv().await {
-                    Ok(msg) => msg,
-                    Err(RecvError::Lagged(skipped)) => {
-                        lagged(name, tap, skipped);
-                        continue;
-                    }
-                    Err(RecvError::Closed) => return None,
-                };
-                let mut messages = vec![first];
-                while messages.len() < size.get() {
-                    match rx.try_recv() {
-                        Ok(msg) => messages.push(msg),
-                        Err(TryRecvError::Lagged(skipped)) => lagged(name, tap, skipped),
-                        Err(_) => break,
-                    }
-                }
-                let members = u32::try_from(messages.len()).unwrap_or(u32::MAX);
-                for _ in 0..members {
-                    window.yielded(rx.len());
-                }
-                let round = window.open_batch(members);
-                let batch = messages
-                    .into_iter()
-                    .map(|msg| {
-                        RoundMessage::new(
+        // What arrived behind a batch's first message, held until the batch's slot is open. It is
+        // allocated once, with room for a whole batch, and reused for every one.
+        let arrived = VecDeque::with_capacity(size.get());
+        let state = (&mut self.rx, arrived, None::<Round>);
+        ReadBatches::new(unfold(
+            state,
+            move |(rx, mut arrived, mut round)| async move {
+                loop {
+                    if let (Some(msg), Some(open)) = (arrived.pop_front(), round.as_ref()) {
+                        let delivery = RoundMessage::new(
                             to_message(msg, envelope, pool, tap),
                             Arc::clone(window),
-                            round.clone(),
-                        )
-                    })
-                    .collect();
-                return Some((Ok(batch), rx));
-            }
-        })
+                            open.clone(),
+                        );
+                        let member = Member::new(delivery, arrived.len());
+                        return Some((Ok(member), (rx, arrived, round)));
+                    }
+                    if let Some(failure) = window.take_failure() {
+                        return Some((Err(failure), (rx, arrived, None)));
+                    }
+                    let first = match rx.recv().await {
+                        Ok(msg) => msg,
+                        Err(RecvError::Lagged(skipped)) => {
+                            lagged(name, tap, skipped);
+                            continue;
+                        }
+                        Err(RecvError::Closed) => return None,
+                    };
+                    arrived.push_back(first);
+                    while arrived.len() < size.get() {
+                        match rx.try_recv() {
+                            Ok(msg) => arrived.push_back(msg),
+                            Err(TryRecvError::Lagged(skipped)) => lagged(name, tap, skipped),
+                            Err(_) => break,
+                        }
+                    }
+                    let members = u32::try_from(arrived.len()).unwrap_or(u32::MAX);
+                    for _ in 0..members {
+                        window.yielded(rx.len());
+                    }
+                    round = Some(window.open_batch(members));
+                }
+            },
+        ))
     }
 }
 
@@ -1013,7 +1020,7 @@ fn to_message<Env: Envelope>(
     }
 }
 
-impl<Env: Envelope> ruststream::Subscriber for PubSubWire<Env> {
+impl<Env: Envelope> Subscriber for PubSubWire<Env> {
     type Message = RedisPubSubMessage<Env>;
     type Error = RedisError;
 
@@ -1108,7 +1115,9 @@ impl<Env: Envelope> IncomingMessage for RedisPubSubMessage<Env> {
     fn partition_key(&self) -> Option<&[u8]> {
         Partitioned::partition_key(self)
     }
+}
 
+impl<Env: Envelope> Settle for RedisPubSubMessage<Env> {
     fn ack(self) -> impl Future<Output = Result<(), AckError>> {
         ready(Err(AckError::Unsupported))
     }
@@ -1161,7 +1170,7 @@ impl<Env: Envelope> Partitioned for RedisPubSubMessage<Env> {
 ///         |b| {
 ///             // Read from a durable stream, broadcast to whoever is listening with `SPUBLISH`.
 ///             b.include(announce)
-///                 .out_reply(RedisPubSubPublish::new().mode(PubSubMode::Sharded));
+///                 .out_reply(RedisPubSubPublish::new().mode(PubSubMode::Sharded))
 ///         },
 ///     )
 /// }
@@ -1224,7 +1233,7 @@ impl<Env> RedisPubSubPublish<Env> {
     ///         RedisBroker::standalone("redis://localhost:6379"),
     ///         |b| {
     ///             // A dashboard that knows nothing of headers listens on `orders.live`.
-    ///             b.include(announce).out_reply(Publish::new().envelope(NoOp));
+    ///             b.include(announce).out_reply(Publish::new().envelope(NoOp))
     ///         },
     ///     )
     /// }
@@ -1328,15 +1337,36 @@ impl<Env: Envelope> Publisher for RedisPubSubPublisher<Env> {
     /// the payload with the message's other headers.
     type Options = RedisPublishOptions;
 
-    async fn publish(
+    async fn publish<'msg>(
         &self,
-        msg: OutgoingMessage<'_>,
+        msg: OutgoingMessage<'msg>,
         options: Option<&Self::Options>,
-    ) -> Result<(), Self::Error> {
+    ) -> PublishOutcome<'msg, Self::Error, Lend> {
         let (channel, payload, headers) = msg.into_parts();
+        let headers = resolved_headers(headers, options);
+        match self.send_sealed(channel, payload, &headers, options).await {
+            Ok(()) => Ok(()),
+            // The payload is only lent and the headers come back with the partition key the call
+            // set, so a republish of the returned message carries it.
+            Err(error) => Err(PublishMessageError::with_message(
+                error,
+                OutgoingMessage::with_payload(channel, payload).with_headers(headers),
+            )),
+        }
+    }
+}
+
+impl<Env: Envelope> RedisPubSubPublisher<Env> {
+    async fn send_sealed(
+        &self,
+        channel: &str,
+        payload: &[u8],
+        headers: &HeaderMap,
+        options: Option<&RedisPublishOptions>,
+    ) -> Result<(), RedisError> {
         let mut body = Vec::with_capacity(payload.len());
         self.envelope
-            .seal(payload, &resolved_headers(headers, options), &mut body)
+            .seal(payload, headers, &mut body)
             .map_err(|err| RedisError::seal(channel, err))?;
         if let Some(round) = self
             .core
@@ -1348,19 +1378,18 @@ impl<Env: Envelope> Publisher for RedisPubSubPublisher<Env> {
                 .await
                 .map_err(RedisError::publish);
         }
-        send(&self.core, self.mode, channel, body).await
+        send(&self.core.pool()?, self.mode, channel, body).await
     }
 }
 
 /// Publishes one sealed message on `channel` in `mode`: the Pub/Sub publish, shared by
 /// [`RedisPubSubPublisher`] and the broker's default publisher.
 pub(crate) async fn send(
-    core: &RedisCore,
+    pool: &Pool,
     mode: PubSubMode,
     channel: &str,
     body: Vec<u8>,
 ) -> Result<(), RedisError> {
-    let pool = core.pool()?;
     let client = pool.next();
     let channel = channel.to_owned();
     let _: i64 = match mode {

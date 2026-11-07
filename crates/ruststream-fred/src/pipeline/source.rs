@@ -9,8 +9,8 @@ use futures::Stream;
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::Bindings;
 use ruststream::{
-    AddressedCopies, BatchSubscriber, NamedCopies, RedeliveryAddress, RedeliveryAddressed,
-    RetryDeclaration, Seekable, Subscriber, SubscriptionSource,
+    AddressedCopies, BatchStream, BatchSubscriber, NamedCopies, RedeliveryAddress,
+    RedeliveryAddressed, RetryDeclaration, Seekable, Subscriber, SubscriptionSource,
 };
 
 use super::forms::{ListForm, PubSubForm, StreamForm};
@@ -90,7 +90,7 @@ impl<Env: Envelope> BatchSubscriber for PipelinedSubscriber<RedisSubscriber<Env>
     fn batches(
         &mut self,
         size: NonZeroUsize,
-    ) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
+    ) -> impl BatchStream<Self::Batch, Error = Self::Error> + Send + '_ {
         self.inner.round_batches(&self.window, size)
     }
 }
@@ -156,7 +156,7 @@ impl<Env: Envelope> BatchSubscriber for PipelinedSubscriber<ChannelReader<Env>, 
     fn batches(
         &mut self,
         size: NonZeroUsize,
-    ) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
+    ) -> impl BatchStream<Self::Batch, Error = Self::Error> + Send + '_ {
         self.inner.0.round_batches(&self.window, size)
     }
 }
@@ -173,7 +173,7 @@ impl<Env: Envelope> BatchSubscriber for PipelinedSubscriber<ListReader<Env>, Lis
     fn batches(
         &mut self,
         size: NonZeroUsize,
-    ) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
+    ) -> impl BatchStream<Self::Batch, Error = Self::Error> + Send + '_ {
         self.inner.round_batches(&self.window, size)
     }
 }

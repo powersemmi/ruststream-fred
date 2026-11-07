@@ -7,6 +7,8 @@
 //!     cargo run --example manual_guide_production --features testing -- run
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 // The sentinel broker is the alternative a deployment picks; its test uses it.
 #![cfg_attr(not(test), allow(dead_code))]
 
@@ -90,7 +92,7 @@ fn service(broker: RedisBroker) -> impl App<State = ()> {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         let orders = RedisStream::new("orders").group("orders-svc");
         b.include(subscriber(orders, Confirm).reply().build())
-            .out_reply(Publish);
+            .out_reply(Publish)
     })
 }
 

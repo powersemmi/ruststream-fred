@@ -37,7 +37,7 @@ use super::{Envelope, Location, SealError};
 ///     RustStream::new(AppInfo::new("dashboard", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(show.envelope(NoOp));
+///             b.include(show.envelope(NoOp))
 ///         },
 ///     )
 /// }

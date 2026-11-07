@@ -117,15 +117,15 @@ fn app() -> impl App<State = AppState> {
             // Five deliveries per payment, the first included. The fifth failure goes to the
             // `payments.dlq` stream with `XADD`, payload and headers as they arrived.
             let payments = RedisStream::new("payments").group("billing");
-            b.include(subscriber(payments, Charge).build())
-                .max_attempts(nonzero!(5u32))
-                .dead_letter("payments.dlq");
             // Three deliveries per refund; the third failure is `LPUSH`ed onto `refunds.failed`.
             let refunds = RedisList::new("refunds").reliable();
-            b.include(subscriber(refunds, Refund).build())
+            b.include(subscriber(payments, Charge).build())
+                .max_attempts(nonzero!(5u32))
+                .dead_letter("payments.dlq")
+                .include(subscriber(refunds, Refund).build())
                 .max_attempts(nonzero!(3u32))
-                .dead_letter("refunds.failed");
-            b.include(subscriber(dead_letters(), OnDeadLetter).build());
+                .dead_letter("refunds.failed")
+                .include(subscriber(dead_letters(), OnDeadLetter).build())
         })
 }
 // --8<-- [end:declaration]

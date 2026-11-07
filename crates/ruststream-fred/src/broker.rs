@@ -228,7 +228,7 @@ impl std::fmt::Debug for AuthConfig {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
 ///         RedisBroker::standalone("redis://localhost:6379"),
 ///         |b| {
-///             b.include(handle);
+///             b.include(handle)
 ///         },
 ///     )
 /// }
@@ -270,7 +270,7 @@ impl std::fmt::Debug for AuthConfig {
 /// pub fn app() -> impl App<State = ()> {
 ///     RustStream::new(AppInfo::new("payments", "0.1.0"))
 ///         .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
-///             b.include(process);
+///             b.include(process)
 ///         })
 /// }
 ///
@@ -396,7 +396,7 @@ impl RedisBroker {
     ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
     ///         RedisBroker::from_pool(pool),
     ///         |b| {
-    ///             b.include(handle);
+    ///             b.include(handle)
     ///         },
     ///     )
     /// }
@@ -456,7 +456,7 @@ impl<Env: Envelope> RedisBroker<Env> {
     ///     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(
     ///         RedisBroker::standalone("redis://localhost:6379").envelope(FastStream),
     ///         |b| {
-    ///             b.include(bill).out_reply(Publish);
+    ///             b.include(bill).out_reply(Publish)
     ///         },
     ///     )
     /// }
@@ -523,7 +523,7 @@ impl<Env: Envelope> RedisBroker<Env> {
     ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
     ///         RedisBroker::cluster(["10.0.0.1:6379"]).credentials("worker", "s3cr3t"),
     ///         |b| {
-    ///             b.include(handle);
+    ///             b.include(handle)
     ///         },
     ///     )
     /// }
@@ -561,7 +561,7 @@ impl<Env: Envelope> RedisBroker<Env> {
     ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
     ///         RedisBroker::sentinel("mymaster", ["10.0.0.1:26379"]).password("s3cr3t"),
     ///         |b| {
-    ///             b.include(handle);
+    ///             b.include(handle)
     ///         },
     ///     )
     /// }
@@ -609,7 +609,7 @@ impl<Env: Envelope> RedisBroker<Env> {
     ///         .tls(tls);
     ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
     ///         .with_broker(broker, |b| {
-    ///             b.include(handle);
+    ///             b.include(handle)
     ///         })
     ///         .run()
     ///         .await?;
@@ -659,7 +659,7 @@ impl<Env: Envelope> RedisBroker<Env> {
     ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
     ///         broker,
     ///         |b| {
-    ///             b.include(handle);
+    ///             b.include(handle)
     ///         },
     ///     )
     /// }
@@ -707,7 +707,7 @@ impl<Env: Envelope> RedisBroker<Env> {
     ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
     ///         broker,
     ///         |b| {
-    ///             b.include(handle);
+    ///             b.include(handle)
     ///         },
     ///     )
     /// }
@@ -767,7 +767,7 @@ impl<Env: Envelope> RedisBroker<Env> {
     ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
     ///         broker,
     ///         |b| {
-    ///             b.include(handle);
+    ///             b.include(handle)
     ///         },
     ///     )
     /// }

@@ -65,12 +65,12 @@ fn app() -> impl App {
     let broker = RedisBroker::standalone("redis://localhost:6379");
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         let billing = RedisStream::new("orders").group("billing");
-        b.include(subscriber(billing, Bill).build());
         // A second group reads the same entries again.
         let shipping = RedisStream::new("orders")
             .group("shipping")
             .consumer("shipping-1");
-        b.include(subscriber(shipping, Ship).build());
+        b.include(subscriber(billing, Bill).build())
+            .include(subscriber(shipping, Ship).build())
     })
 }
 // --8<-- [end:groups]

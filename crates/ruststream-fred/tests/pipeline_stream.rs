@@ -75,11 +75,9 @@ macro_rules! app_with {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_queued_command_leaves_with_the_ack() {
-    let tb = TestApp::start(app_with!(|b| {
-        b.include(windowed.pipeline());
-    }))
-    .await
-    .expect("start");
+    let tb = TestApp::start(app_with!(|b| { b.include(windowed.pipeline()) }))
+        .await
+        .expect("start");
 
     tb.broker::<RedisBroker>()
         .message(&order(1, "ack"))
@@ -102,11 +100,9 @@ async fn a_queued_command_leaves_with_the_ack() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_dropped_delivery_leaves_nothing_it_queued() {
-    let tb = TestApp::start(app_with!(|b| {
-        b.include(windowed.pipeline());
-    }))
-    .await
-    .expect("start");
+    let tb = TestApp::start(app_with!(|b| { b.include(windowed.pipeline()) }))
+        .await
+        .expect("start");
 
     tb.broker::<RedisBroker>()
         .message(&order(2, "drop"))
@@ -133,7 +129,7 @@ async fn a_retried_delivery_leaves_only_what_its_acknowledged_redelivery_queued(
     let tb = TestApp::start(app_with!(|b| {
         b.include(windowed.pipeline())
             .max_attempts(nonzero!(3u32))
-            .dead_letter("orders.dead");
+            .dead_letter("orders.dead")
     }))
     .await
     .expect("start");
@@ -159,11 +155,9 @@ async fn a_retried_delivery_leaves_only_what_its_acknowledged_redelivery_queued(
 /// A delayed retry drops what the delivery queued too, and the copy comes back after the delay.
 #[tokio::test(start_paused = true)]
 async fn a_delayed_retry_leaves_nothing_it_queued() {
-    let tb = TestApp::start(app_with!(|b| {
-        b.include(windowed.pipeline());
-    }))
-    .await
-    .expect("start");
+    let tb = TestApp::start(app_with!(|b| { b.include(windowed.pipeline()) }))
+        .await
+        .expect("start");
 
     tb.broker::<RedisBroker>()
         .message(&order(4, "later"))
@@ -188,11 +182,9 @@ async fn a_delayed_retry_leaves_nothing_it_queued() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_atomic_segment_leaves_with_the_ack() {
-    let tb = TestApp::start(app_with!(|b| {
-        b.include(atomic.pipeline().atomic());
-    }))
-    .await
-    .expect("start");
+    let tb = TestApp::start(app_with!(|b| { b.include(atomic.pipeline().atomic()) }))
+        .await
+        .expect("start");
 
     tb.broker::<RedisBroker>()
         .message(&order(5, "ack"))
@@ -211,11 +203,9 @@ async fn an_atomic_segment_leaves_with_the_ack() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_atomic_segment_of_a_dropped_delivery_never_leaves() {
-    let tb = TestApp::start(app_with!(|b| {
-        b.include(atomic.pipeline().atomic());
-    }))
-    .await
-    .expect("start");
+    let tb = TestApp::start(app_with!(|b| { b.include(atomic.pipeline().atomic()) }))
+        .await
+        .expect("start");
 
     tb.broker::<RedisBroker>()
         .message(&order(6, "drop"))
@@ -237,11 +227,9 @@ async fn an_atomic_segment_of_a_dropped_delivery_never_leaves() {
 /// A window of several deliveries sends every acknowledged delivery's commands.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_acknowledged_delivery_of_a_window_leaves() {
-    let tb = TestApp::start(app_with!(|b| {
-        b.include(windowed.pipeline());
-    }))
-    .await
-    .expect("start");
+    let tb = TestApp::start(app_with!(|b| { b.include(windowed.pipeline()) }))
+        .await
+        .expect("start");
 
     for id in 10..15 {
         tb.broker::<RedisBroker>()
@@ -264,11 +252,9 @@ async fn every_acknowledged_delivery_of_a_window_leaves() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_delivery_that_queues_nothing_settles_as_before() {
-    let tb = TestApp::start(app_with!(|b| {
-        b.include(queues_nothing.pipeline());
-    }))
-    .await
-    .expect("start");
+    let tb = TestApp::start(app_with!(|b| { b.include(queues_nothing.pipeline()) }))
+        .await
+        .expect("start");
 
     tb.broker::<RedisBroker>()
         .message(&order(7, "ack"))

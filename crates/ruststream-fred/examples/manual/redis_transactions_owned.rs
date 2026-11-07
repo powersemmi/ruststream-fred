@@ -59,11 +59,11 @@ async fn seed_prices<P: OwnedTransactions>(
 fn app_on(broker: RedisBroker) -> impl App<State = ()> {
     RustStream::new(AppInfo::new("catalog", "0.1.0")).with_broker(broker, |b| {
         let list_price = subscriber(RedisStream::new("prices").group("catalog"), ListPrice);
-        b.include(list_price.build());
         // Runs once the broker is connected and the subscription is open.
         b.after_startup(TransactionalPublish, async move |publisher| {
             seed_prices(publisher).await.map_err(io::Error::other)
-        });
+        })
+        .include(list_price.build())
     })
 }
 // --8<-- [end:owned_transaction]

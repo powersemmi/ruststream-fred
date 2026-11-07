@@ -52,8 +52,8 @@ fn app() -> impl App<State = ()> {
                     .reply()
                     .build(),
             )
-            .out_reply(pubsub::Publish::new());
-            b.include(subscriber(RedisPubSub::new("shipments"), Notify).build());
+            .out_reply(pubsub::Publish::new())
+            .include(subscriber(RedisPubSub::new("shipments"), Notify).build())
         },
     )
 }

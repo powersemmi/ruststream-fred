@@ -70,7 +70,7 @@ macro_rules! case {
                 |b| {
                     b.include($handler)
                         .out(DefaultSlot, stream::Publish)
-                        .build();
+                        .build()
                 },
             );
             let tb = TestApp::start(app).await.expect("start");
@@ -150,7 +150,7 @@ async fn a_reply_in_the_round_leaves_after_what_the_handler_queued() {
         |b| {
             b.include(replies.pipeline())
                 .out_reply(stream::Publish)
-                .transform(InRound);
+                .transform(InRound)
         },
     );
     let tb = TestApp::start(app).await.expect("start");
@@ -171,12 +171,10 @@ async fn a_reply_in_the_round_leaves_after_what_the_handler_queued() {
 /// the window sends what the handler queued.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reply_outside_the_round_leaves_before_the_window() {
-    let app = RustStream::new(AppInfo::new("pipeline", "0.1.0")).with_broker(
-        RedisBroker::standalone(URL),
-        |b| {
-            b.include(replies.pipeline()).out_reply(stream::Publish);
-        },
-    );
+    let app = RustStream::new(AppInfo::new("pipeline", "0.1.0"))
+        .with_broker(RedisBroker::standalone(URL), |b| {
+            b.include(replies.pipeline()).out_reply(stream::Publish)
+        });
     let tb = TestApp::start(app).await.expect("start");
 
     tb.broker::<RedisBroker>()

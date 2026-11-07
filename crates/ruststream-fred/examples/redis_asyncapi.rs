@@ -67,11 +67,12 @@ fn broker(password: &str) -> RedisBroker {
 // --8<-- [start:operations]
 fn service(broker: RedisBroker) -> impl App<State = ()> {
     RustStream::new(AppInfo::new("orders", "1.0.0")).with_broker_labeled("redis", broker, |b| {
-        b.include(confirm).out_reply(pubsub::Publish::new());
-        b.include(run_job)
-            .out_reply(list::Publish::new().ttl(Duration::from_mins(1)));
-        b.include(on_event);
-        b.include(audit);
+        b.include(confirm)
+            .out_reply(pubsub::Publish::new())
+            .include(run_job)
+            .out_reply(list::Publish::new().ttl(Duration::from_mins(1)))
+            .include(on_event)
+            .include(audit)
     })
 }
 // --8<-- [end:operations]

@@ -33,7 +33,7 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         RedisBroker::standalone("redis://localhost:6379").default_group("workers"),
         |b| {
-            b.include(handle);
+            b.include(handle)
         },
     )
 }

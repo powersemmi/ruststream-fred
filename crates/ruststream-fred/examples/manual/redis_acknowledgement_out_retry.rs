@@ -81,7 +81,7 @@ fn app() -> impl App<State = AppState> {
             let payments = RedisPubSubPattern::new("payments.*");
             b.include(subscriber(payments, Screen).build())
                 .out_retry(Publish::default())
-                .to("payments.retry");
+                .to("payments.retry")
         })
 }
 // --8<-- [end:app]
@@ -136,7 +136,7 @@ mod tests {
             .on_startup(async move |()| Ok::<_, Infallible>(startup()))
             .with_broker(RedisBroker::standalone("redis://localhost:6379"), |b| {
                 let payments = RedisPubSubPattern::new("payments.*");
-                b.include(subscriber(payments, Screen).build());
+                b.include(subscriber(payments, Screen).build())
             });
 
         let refused = TestApp::start(unnamed)

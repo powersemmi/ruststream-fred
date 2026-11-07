@@ -29,9 +29,7 @@ async fn report(order: &Order) -> HandlerOutcome {
 
 fn app() -> impl App {
     let broker = RedisBroker::standalone("redis://localhost:6379");
-    RustStream::new(AppInfo::new("reports", "0.1.0")).with_broker(broker, |b| {
-        b.include(report);
-    })
+    RustStream::new(AppInfo::new("reports", "0.1.0")).with_broker(broker, |b| b.include(report))
 }
 
 // The scenarios are the tests below; the command in the header runs them.

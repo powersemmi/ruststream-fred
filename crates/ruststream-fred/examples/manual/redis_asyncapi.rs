@@ -106,11 +106,11 @@ fn service(broker: RedisBroker) -> impl App<State = ()> {
                 .to("orders.done")
                 .build(),
         )
-        .out_reply(pubsub::Publish::new());
-        b.include(subscriber(jobs(), Confirm).reply().to("jobs.done").build())
-            .out_reply(list::Publish::new().ttl(Duration::from_mins(1)));
-        b.include(subscriber(events(), Log("event")).build());
-        b.include(subscriber(audit(), Log("audit")).build());
+        .out_reply(pubsub::Publish::new())
+        .include(subscriber(jobs(), Confirm).reply().to("jobs.done").build())
+        .out_reply(list::Publish::new().ttl(Duration::from_mins(1)))
+        .include(subscriber(events(), Log("event")).build())
+        .include(subscriber(audit(), Log("audit")).build())
     })
 }
 // --8<-- [end:operations]
